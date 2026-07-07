@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "wrangler": "^4.107.0"
+  },
+  "scripts": {
+    "build:web": "flutter build web --release",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
+  }
+}

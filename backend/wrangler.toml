@@ -1,0 +1,40 @@
+name = "mymate-api"
+main = "src/worker.js"
+compatibility_date = "2026-06-24"
+
+[secrets]
+required = ["OPENAI_API_KEY", "APP_SECRET"]
+
+[vars]
+# Set to "true" in production once CHAT_LOGS_DB is configured.
+# When true, chat requests fail if a conversation log cannot be written.
+REQUIRE_CHAT_LOGS = "false"
+
+# Web app origin used after optional Instagram auth completes.
+# For local testing, keep http://localhost:8787.
+# For production, set this to your deployed web app origin.
+APP_ORIGIN = "http://localhost:8787"
+
+# Optional Instagram auth. Add INSTAGRAM_CLIENT_SECRET with:
+# wrangler secret put INSTAGRAM_CLIENT_SECRET
+# The callback URL in Meta should be:
+# https://your-api-worker.workers.dev/auth/instagram/callback
+# INSTAGRAM_CLIENT_ID = "your_instagram_client_id"
+# INSTAGRAM_REDIRECT_URI = "https://your-api-worker.workers.dev/auth/instagram/callback"
+
+# Create the database with:
+# wrangler d1 create mymate-chat-logs
+# Then replace database_id below and uncomment this binding.
+# [[d1_databases]]
+# binding = "CHAT_LOGS_DB"
+# database_name = "mymate-chat-logs"
+# database_id = "replace-with-d1-database-id"
+# migrations_dir = "migrations"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
