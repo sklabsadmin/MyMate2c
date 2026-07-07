@@ -32,9 +32,11 @@ class AppConfig {
     return dotenv.env['WORKER_URL'] ?? '';
   }
 
-  static String get appSecret => _appSecretFromDefine.isNotEmpty
-      ? _appSecretFromDefine
-      : dotenv.env['APP_SECRET'] ?? ''; // For HMAC
+  static String get appSecret {
+    if (_appSecretFromDefine.isNotEmpty) return _appSecretFromDefine;
+    if (kIsWeb || !dotenv.isInitialized) return '';
+    return dotenv.env['APP_SECRET'] ?? ''; // For HMAC
+  }
 
   static String apiUrl(String path, {Map<String, String>? queryParameters}) {
     if (workerUrl.isEmpty) return '';

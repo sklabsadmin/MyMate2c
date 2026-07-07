@@ -3,7 +3,7 @@
     "wrangler": "^4.107.0"
   },
   "scripts": {
-    "build:web": "flutter build web --release",
+    "build:web": "flutter build web --release --dart-define=APP_SECRET=$APP_SECRET",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev"
   }
