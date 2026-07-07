@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "y-ate1-3x",
+  "name": "mymate2c",
   "main": "backend/src/worker.js",
   "compatibility_date": "2026-07-05",
   "observability": {
