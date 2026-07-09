@@ -84,6 +84,38 @@ To prevent your OpenAI API keys from being scraped from the mobile app, all AI r
 
 ---
 
+## 📊 Chat Logging (v2)
+
+The worker already contains the code to log every `/api/chat` request (user message, assistant reply, token usage, errors) to a D1 database — see `persistConversationLog()` in `backend/src/worker.js` and the schema in `backend/migrations/0001_conversation_logs.sql`. It's inert by default (requests just skip logging) until the D1 database is provisioned, since deploying `wrangler.jsonc` with an unresolved `database_id` would break the auto-deploy.
+
+### One-time setup
+1. Create the database:
+   ```bash
+   npx wrangler d1 create mymate-chat-logs
+   ```
+2. Copy the `database_id` it prints, then uncomment and fill in the `d1_databases` block at the bottom of `wrangler.jsonc`.
+3. Apply the schema:
+   ```bash
+   npx wrangler d1 migrations apply CHAT_LOGS_DB --remote
+   ```
+4. Deploy:
+   ```bash
+   npm run deploy
+   ```
+5. Optional: once you've confirmed logs are landing, set `REQUIRE_CHAT_LOGS` to `"true"` in `wrangler.jsonc`'s `vars` so chat requests fail loudly instead of silently skipping the log if the database is ever unreachable.
+
+### Viewing logs
+A minimal admin viewer is served directly by the worker (kept separate from the end-user app), protected by HTTP Basic Auth:
+1. Set an admin secret: `npx wrangler secret put ADMIN_TOKEN`
+2. Visit `https://<your-worker>/admin/logs` and sign in with any username and that token as the password.
+3. Filter by `user_id` / `chat_id` / `status`, paginate, and click a row to see the full request/response payloads.
+
+The same data is available as JSON at `GET /api/admin/logs` (list, supports `?user_id=`, `?chat_id=`, `?status=`, `?limit=`, `?offset=`) and `GET /api/admin/logs/:id` (single record), both behind the same Basic Auth.
+
+Conversation logs contain full user/assistant message text — treat `ADMIN_TOKEN` as sensitive and be mindful of privacy/retention obligations for what's stored.
+
+---
+
 ## 💰 Monetization (RevenueCat)
 
 The app handles premium subscriptions (e.g., unlocking limits or features) via **RevenueCat**.

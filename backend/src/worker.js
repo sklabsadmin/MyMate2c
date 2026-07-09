@@ -42,6 +42,32 @@ export default {
             ]);
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/logs") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminLogsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/logs") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const result = await listConversationLogs(env, url.searchParams);
+            return jsonResponse(result, { headers: corsHeaders(request) });
+        }
+
+        if (request.method === "GET" && /^\/api\/admin\/logs\/[^/]+$/.test(url.pathname)) {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const id = decodeURIComponent(url.pathname.split("/").pop());
+            const log = await getConversationLog(env, id);
+            if (!log) {
+                return jsonResponse({ error: "Not found" }, { status: 404, headers: corsHeaders(request) });
+            }
+            return jsonResponse(log, { headers: corsHeaders(request) });
+        }
+
         if (request.method !== "POST" || url.pathname !== "/api/chat") {
             return new Response("Method not allowed", {
                 status: 405,
@@ -618,4 +644,315 @@ async function checkRateLimit(kv, userId) {
     ]);
 
     return true;
+}
+
+/**
+ * Admin log viewer (v2)
+ *
+ * Protects /admin/logs and /api/admin/logs* with HTTP Basic Auth checked
+ * against the ADMIN_TOKEN secret (wrangler secret put ADMIN_TOKEN).
+ * Deliberately kept separate from the end-user Flutter app.
+ */
+function requireAdminAuth(request, env) {
+    if (!env.ADMIN_TOKEN) {
+        return jsonResponse({ error: "Admin access is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+
+    const authHeader = request.headers.get("Authorization") || "";
+    const match = authHeader.match(/^Basic\s+(.+)$/i);
+    if (match) {
+        try {
+            const decoded = atob(match[1]);
+            const separatorIndex = decoded.indexOf(":");
+            const password = separatorIndex >= 0 ? decoded.slice(separatorIndex + 1) : decoded;
+            if (timingSafeEqual(password, env.ADMIN_TOKEN)) {
+                return null;
+            }
+        } catch (_) {
+            // fall through to 401
+        }
+    }
+
+    return new Response("Authentication required", {
+        status: 401,
+        headers: {
+            ...corsHeaders(request),
+            "WWW-Authenticate": 'Basic realm="mymate-admin", charset="UTF-8"',
+        },
+    });
+}
+
+function timingSafeEqual(a, b) {
+    if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) {
+        return false;
+    }
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+        result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+}
+
+async function listConversationLogs(env, params) {
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", logs: [], limit: 0, offset: 0 };
+    }
+
+    const limit = Math.min(Math.max(parseInt(params.get("limit") || "50", 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(params.get("offset") || "0", 10) || 0, 0);
+
+    const filters = [];
+    const binds = [];
+    const userId = params.get("user_id");
+    const chatId = params.get("chat_id");
+    const status = params.get("status");
+    if (userId) { filters.push("user_id = ?"); binds.push(userId); }
+    if (chatId) { filters.push("chat_id = ?"); binds.push(chatId); }
+    if (status) { filters.push("status = ?"); binds.push(status); }
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT id, created_at, user_id, chat_id, scenario, language, model, status, status_code,
+               user_message, assistant_message, error, prompt_tokens, completion_tokens, total_tokens
+        FROM conversation_logs
+        ${where}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    `).bind(...binds, limit, offset).all();
+
+    return { logs: results, limit, offset };
+}
+
+async function getConversationLog(env, id) {
+    if (!env.CHAT_LOGS_DB) return null;
+    const row = await env.CHAT_LOGS_DB.prepare(
+        `SELECT * FROM conversation_logs WHERE id = ?`
+    ).bind(id).first();
+    return row || null;
+}
+
+function adminLogsPageHtml() {
+    return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>MyMate - Chat Logs</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
+  header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; }
+  input, select, button { background: #1c1c24; border: 1px solid #33333d; color: #e6e6ea; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { background: #26262f; }
+  main { padding: 16px 24px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #22222a; vertical-align: top; }
+  th { color: #9a9aa5; font-weight: 600; }
+  tr.log-row { cursor: pointer; }
+  tr.log-row:hover { background: #17171d; }
+  .status-completed { color: #6fd08c; }
+  .status-openai_error, .status-rejected_validation { color: #e57373; }
+  .status-rate_limited { color: #e5b573; }
+  .preview { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail-row td { background: #14141a; }
+  .detail-row pre { white-space: pre-wrap; word-break: break-word; background: #0b0b0f; padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; }
+  .detail-label { font-weight: 600; margin: 8px 0 4px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .empty, .error { padding: 24px; color: #9a9aa5; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chat Logs</h1>
+  <input id="f-user" placeholder="user_id">
+  <input id="f-chat" placeholder="chat_id">
+  <select id="f-status">
+    <option value="">any status</option>
+    <option value="completed">completed</option>
+    <option value="openai_error">openai_error</option>
+    <option value="rejected_validation">rejected_validation</option>
+    <option value="rate_limited">rate_limited</option>
+  </select>
+  <button id="search-btn">Search</button>
+</header>
+<main>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>User</th><th>Chat</th><th>Status</th><th>Model</th><th>Tokens</th><th>User message</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="pager">
+    <button id="prev-btn">Prev</button>
+    <span id="page-info"></span>
+    <button id="next-btn">Next</button>
+  </div>
+</main>
+<script>
+(function () {
+  var limit = 50;
+  var offset = 0;
+  var rowsEl = document.getElementById("rows");
+  var pageInfoEl = document.getElementById("page-info");
+  var openDetailRow = null;
+  var openForRow = null;
+
+  function currentParams() {
+    var sp = new URLSearchParams();
+    sp.set("limit", limit);
+    sp.set("offset", offset);
+    var userId = document.getElementById("f-user").value.trim();
+    var chatId = document.getElementById("f-chat").value.trim();
+    var status = document.getElementById("f-status").value;
+    if (userId) sp.set("user_id", userId);
+    if (chatId) sp.set("chat_id", chatId);
+    if (status) sp.set("status", status);
+    return sp;
+  }
+
+  function fmtTime(iso) {
+    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+  }
+
+  function td(text) {
+    var el = document.createElement("td");
+    el.textContent = (text === null || text === undefined) ? "" : String(text);
+    return el;
+  }
+
+  function emptyMessage(text, className) {
+    rowsEl.innerHTML = "";
+    var row = document.createElement("tr");
+    var cell = document.createElement("td");
+    cell.colSpan = 7;
+    cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    rowsEl.appendChild(row);
+  }
+
+  function load() {
+    openDetailRow = null;
+    openForRow = null;
+    emptyMessage("Loading...", "empty");
+
+    fetch("/api/admin/logs?" + currentParams().toString())
+      .then(function (r) { return r.json(); })
+      .then(renderRows)
+      .catch(function (err) {
+        emptyMessage("Failed to load logs: " + err.message, "error");
+      });
+  }
+
+  function renderRows(data) {
+    rowsEl.innerHTML = "";
+
+    if (data.error) {
+      emptyMessage(data.error, "error");
+      pageInfoEl.textContent = "";
+      return;
+    }
+
+    var logs = data.logs || [];
+    if (logs.length === 0) {
+      emptyMessage("No logs found.", "empty");
+    }
+
+    logs.forEach(function (log) {
+      var row = document.createElement("tr");
+      row.className = "log-row";
+      row.appendChild(td(fmtTime(log.created_at)));
+      row.appendChild(td(log.user_id));
+      row.appendChild(td(log.chat_id));
+
+      var statusCell = td(log.status + " (" + log.status_code + ")");
+      statusCell.className = "status-" + log.status;
+      row.appendChild(statusCell);
+
+      row.appendChild(td(log.model));
+      row.appendChild(td(log.total_tokens != null ? log.total_tokens : "-"));
+
+      var previewCell = td(log.user_message);
+      previewCell.className = "preview";
+      row.appendChild(previewCell);
+
+      row.addEventListener("click", function () { toggleDetail(row, log.id); });
+      rowsEl.appendChild(row);
+    });
+
+    pageInfoEl.textContent = "Showing " + logs.length + " (offset " + offset + ")";
+  }
+
+  function toggleDetail(row, id) {
+    if (openDetailRow) {
+      var wasForThisRow = (openForRow === row);
+      openDetailRow.remove();
+      openDetailRow = null;
+      openForRow = null;
+      if (wasForThisRow) return;
+    }
+
+    var detailRow = document.createElement("tr");
+    detailRow.className = "detail-row";
+    var cell = document.createElement("td");
+    cell.colSpan = 7;
+    cell.textContent = "Loading...";
+    detailRow.appendChild(cell);
+    row.after(detailRow);
+    openDetailRow = detailRow;
+    openForRow = row;
+
+    fetch("/api/admin/logs/" + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (log) {
+        cell.textContent = "";
+        appendDetailField(cell, "User message", log.user_message);
+        appendDetailField(cell, "Assistant message", log.assistant_message);
+        appendDetailField(cell, "Error", log.error);
+        appendDetailField(cell, "Request messages", prettyJson(log.request_messages_json));
+        appendDetailField(cell, "Response", prettyJson(log.response_json));
+      })
+      .catch(function (err) {
+        cell.textContent = "Failed to load detail: " + err.message;
+      });
+  }
+
+  function prettyJson(text) {
+    if (!text) return "";
+    try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
+  }
+
+  function appendDetailField(container, label, value) {
+    if (!value) return;
+    var h = document.createElement("div");
+    h.className = "detail-label";
+    h.textContent = label;
+    var pre = document.createElement("pre");
+    pre.textContent = value;
+    container.appendChild(h);
+    container.appendChild(pre);
+  }
+
+  document.getElementById("search-btn").addEventListener("click", function () {
+    offset = 0;
+    load();
+  });
+  document.getElementById("prev-btn").addEventListener("click", function () {
+    offset = Math.max(0, offset - limit);
+    load();
+  });
+  document.getElementById("next-btn").addEventListener("click", function () {
+    offset = offset + limit;
+    load();
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>`;
 }
