@@ -53,19 +53,30 @@ export default {
         if (request.method === "GET" && url.pathname === "/api/admin/logs") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
-            const result = await listConversationLogs(env, url.searchParams);
-            return jsonResponse(result, { headers: corsHeaders(request) });
+            try {
+                const result = await listConversationLogs(env, url.searchParams);
+                return jsonResponse(result);
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
         }
 
         if (request.method === "GET" && /^\/api\/admin\/logs\/[^/]+$/.test(url.pathname)) {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
-            const id = decodeURIComponent(url.pathname.split("/").pop());
-            const log = await getConversationLog(env, id);
-            if (!log) {
-                return jsonResponse({ error: "Not found" }, { status: 404, headers: corsHeaders(request) });
+            if (!env.CHAT_LOGS_DB) {
+                return jsonResponse({ error: "CHAT_LOGS_DB is not configured" }, { status: 503 });
             }
-            return jsonResponse(log, { headers: corsHeaders(request) });
+            try {
+                const id = decodeURIComponent(url.pathname.split("/").pop());
+                const log = await getConversationLog(env, id);
+                if (!log) {
+                    return jsonResponse({ error: "Not found" }, { status: 404 });
+                }
+                return jsonResponse(log);
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
         }
 
         if (request.method !== "POST" || url.pathname !== "/api/chat") {
@@ -654,11 +665,13 @@ async function checkRateLimit(kv, userId) {
  * Deliberately kept separate from the end-user Flutter app.
  */
 function requireAdminAuth(request, env) {
+    // Deliberately does not send Access-Control-Allow-Origin/-Credentials:
+    // these routes are only ever opened directly in a browser (same-origin).
+    // corsHeaders() reflects any request Origin with credentials allowed,
+    // which would let a malicious cross-origin page piggyback on a cached
+    // Basic Auth session to read out logged chat transcripts.
     if (!env.ADMIN_TOKEN) {
-        return jsonResponse({ error: "Admin access is not configured" }, {
-            status: 503,
-            headers: corsHeaders(request),
-        });
+        return jsonResponse({ error: "Admin access is not configured" }, { status: 503 });
     }
 
     const authHeader = request.headers.get("Authorization") || "";
@@ -676,22 +689,24 @@ function requireAdminAuth(request, env) {
         }
     }
 
-    return new Response("Authentication required", {
+    return jsonResponse({ error: "Authentication required" }, {
         status: 401,
         headers: {
-            ...corsHeaders(request),
             "WWW-Authenticate": 'Basic realm="mymate-admin", charset="UTF-8"',
         },
     });
 }
 
 function timingSafeEqual(a, b) {
-    if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) {
-        return false;
-    }
-    let result = 0;
-    for (let i = 0; i < a.length; i++) {
-        result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    // Iterate a fixed length (independent of the actual input lengths) so a
+    // wrong-length guess doesn't return faster than a right-length one.
+    const compareLen = Math.max(a.length, b.length, 32);
+    let result = a.length === b.length ? 0 : 1;
+    for (let i = 0; i < compareLen; i++) {
+        const charA = i < a.length ? a.charCodeAt(i) : 0;
+        const charB = i < b.length ? b.charCodeAt(i) : 0;
+        result |= charA ^ charB;
     }
     return result === 0;
 }
@@ -701,8 +716,10 @@ async function listConversationLogs(env, params) {
         return { error: "CHAT_LOGS_DB is not configured", logs: [], limit: 0, offset: 0 };
     }
 
-    const limit = Math.min(Math.max(parseInt(params.get("limit") || "50", 10) || 50, 1), 200);
-    const offset = Math.max(parseInt(params.get("offset") || "0", 10) || 0, 0);
+    const rawLimit = parseInt(params.get("limit"), 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 0), 200) : 50;
+    const rawOffset = parseInt(params.get("offset"), 10);
+    const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
 
     const filters = [];
     const binds = [];
@@ -798,6 +815,8 @@ function adminLogsPageHtml() {
   var offset = 0;
   var rowsEl = document.getElementById("rows");
   var pageInfoEl = document.getElementById("page-info");
+  var prevBtnEl = document.getElementById("prev-btn");
+  var nextBtnEl = document.getElementById("next-btn");
   var openDetailRow = null;
   var openForRow = null;
 
@@ -854,6 +873,8 @@ function adminLogsPageHtml() {
     if (data.error) {
       emptyMessage(data.error, "error");
       pageInfoEl.textContent = "";
+      prevBtnEl.disabled = offset === 0;
+      nextBtnEl.disabled = true;
       return;
     }
 
@@ -861,6 +882,9 @@ function adminLogsPageHtml() {
     if (logs.length === 0) {
       emptyMessage("No logs found.", "empty");
     }
+
+    prevBtnEl.disabled = offset === 0;
+    nextBtnEl.disabled = logs.length < limit;
 
     logs.forEach(function (log) {
       var row = document.createElement("tr");
