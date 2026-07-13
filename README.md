@@ -84,6 +84,41 @@ To prevent your OpenAI API keys from being scraped from the mobile app, all AI r
 
 ---
 
+## 📊 Chat Logging (v2)
+
+The worker already contains the code to log every `/api/chat` request (user message, assistant reply, token usage, errors) to a D1 database — see `persistConversationLog()` in `backend/src/worker.js` and the schema in `backend/migrations/0001_conversation_logs.sql`. Without a D1 database bound, requests just skip logging (see `REQUIRE_CHAT_LOGS` below).
+
+The `mymate2c` D1 database is already created and bound in `wrangler.jsonc` (`CHAT_LOGS_DB`). If you're setting this up fresh for a different environment/account, adjust the steps below accordingly.
+
+### One-time setup
+1. Create the database (skip if it already exists):
+   ```bash
+   npx wrangler d1 create mymate2c
+   ```
+2. Copy the `database_id` it prints into the `d1_databases` block in `wrangler.jsonc` (or grab it from the Cloudflare dashboard: Workers & Pages → D1 → your database → overview page).
+3. Apply the schema — either run this locally:
+   ```bash
+   npx wrangler d1 migrations apply CHAT_LOGS_DB --remote
+   ```
+   or paste the contents of `backend/migrations/0001_conversation_logs.sql` into the D1 database's **Console** tab in the Cloudflare dashboard and execute it.
+4. Deploy (or just merge to `main` — the existing auto-deploy picks up the `wrangler.jsonc` binding):
+   ```bash
+   npm run deploy
+   ```
+5. Optional: once you've confirmed logs are landing, set `REQUIRE_CHAT_LOGS` to `"true"` in `wrangler.jsonc`'s `vars` so chat requests fail loudly instead of silently skipping the log if the database is ever unreachable.
+
+### Viewing logs
+A minimal admin viewer is served directly by the worker (kept separate from the end-user app), protected by HTTP Basic Auth:
+1. Set an admin secret, either via CLI (`npx wrangler secret put ADMIN_TOKEN`) or in the dashboard: Workers & Pages → the worker → Settings → Variables and Secrets → Add → type "Secret" → name `ADMIN_TOKEN`.
+2. Visit `https://<your-worker>/admin/logs` and sign in with any username and that token as the password.
+3. Filter by `user_id` / `chat_id` / `status`, paginate, and click a row to see the full request/response payloads.
+
+The same data is available as JSON at `GET /api/admin/logs` (list, supports `?user_id=`, `?chat_id=`, `?status=`, `?limit=`, `?offset=`) and `GET /api/admin/logs/:id` (single record), both behind the same Basic Auth.
+
+Conversation logs contain full user/assistant message text — treat `ADMIN_TOKEN` as sensitive and be mindful of privacy/retention obligations for what's stored.
+
+---
+
 ## 💰 Monetization (RevenueCat)
 
 The app handles premium subscriptions (e.g., unlocking limits or features) via **RevenueCat**.
