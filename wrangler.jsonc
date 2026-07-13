@@ -21,20 +21,13 @@
   },
   "compatibility_flags": [
     "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "CHAT_LOGS_DB",
+      "database_name": "mymate2c",
+      "database_id": "2484da34-70b6-47a2-a1cb-85c0dccd248f",
+      "migrations_dir": "backend/migrations"
+    }
   ]
-  // Chat logging (v2): create the D1 database once with
-  // `wrangler d1 create mymate-chat-logs`, then uncomment the block below
-  // with the real database_id it prints, and run
-  // `wrangler d1 migrations apply CHAT_LOGS_DB --remote`.
-  // Left commented out until then — an unresolved database_id here would
-  // break the auto-deploy on push to main.
-  // See README.md "Chat Logging (v2)" for the full walkthrough.
-  // "d1_databases": [
-  //   {
-  //     "binding": "CHAT_LOGS_DB",
-  //     "database_name": "mymate-chat-logs",
-  //     "database_id": "REPLACE_WITH_D1_DATABASE_ID",
-  //     "migrations_dir": "backend/migrations"
-  //   }
-  // ]
 }
