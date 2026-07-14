@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mymate2c",
+  // mymate-v2 is the new active-development worker. mymate2c is now a
+  // frozen checkpoint (same pattern as mymate-api for the 1.39 App Store
+  // build) — nothing should deploy to it going forward.
+  "name": "mymate-v2",
   "main": "backend/src/worker.js",
   "compatibility_date": "2026-07-05",
   "observability": {
@@ -17,17 +20,22 @@
   },
   "vars": {
     "REQUIRE_CHAT_LOGS": "false",
-    "APP_ORIGIN": "http://localhost:8787"
+    // Update this once the worker's real URL is confirmed (used for
+    // Instagram-auth redirects only; not load-bearing for chat/logging).
+    "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev"
   },
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "d1_databases": [
-    {
-      "binding": "CHAT_LOGS_DB",
-      "database_name": "mymate2c",
-      "database_id": "2484da34-70b6-47a2-a1cb-85c0dccd248f",
-      "migrations_dir": "backend/migrations"
-    }
-  ]
+  // Left commented out until the mymate2_db database exists and its real
+  // database_id is filled in (see README "Chat Logging (v2)") — an
+  // unresolved database_id here would break the deploy.
+  // "d1_databases": [
+  //   {
+  //     "binding": "CHAT_LOGS_DB",
+  //     "database_name": "mymate2_db",
+  //     "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+  //     "migrations_dir": "backend/migrations"
+  //   }
+  // ]
 }
