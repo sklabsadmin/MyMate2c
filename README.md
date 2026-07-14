@@ -88,12 +88,12 @@ To prevent your OpenAI API keys from being scraped from the mobile app, all AI r
 
 The worker already contains the code to log every `/api/chat` request (user message, assistant reply, token usage, errors) to a D1 database — see `persistConversationLog()` in `backend/src/worker.js` and the schema in `backend/migrations/0001_conversation_logs.sql`. Without a D1 database bound, requests just skip logging (see `REQUIRE_CHAT_LOGS` below).
 
-The `mymate2c` D1 database is already created and bound in `wrangler.jsonc` (`CHAT_LOGS_DB`). If you're setting this up fresh for a different environment/account, adjust the steps below accordingly.
+The `mymate-v2` worker is the active development target; `mymate2c` is a frozen checkpoint (nothing deploys to it anymore). Its D1 database is `mymate2_db`, bound in `wrangler.jsonc` (`CHAT_LOGS_DB`). If you're setting this up fresh for a different environment/account, adjust the steps below accordingly.
 
 ### One-time setup
 1. Create the database (skip if it already exists):
    ```bash
-   npx wrangler d1 create mymate2c
+   npx wrangler d1 create mymate2_db
    ```
 2. Copy the `database_id` it prints into the `d1_databases` block in `wrangler.jsonc` (or grab it from the Cloudflare dashboard: Workers & Pages → D1 → your database → overview page).
 3. Apply the schema — either run this locally:
