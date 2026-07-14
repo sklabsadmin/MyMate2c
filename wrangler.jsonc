@@ -27,15 +27,12 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  // Left commented out until the mymate2_db database exists and its real
-  // database_id is filled in (see README "Chat Logging (v2)") — an
-  // unresolved database_id here would break the deploy.
-  // "d1_databases": [
-  //   {
-  //     "binding": "CHAT_LOGS_DB",
-  //     "database_name": "mymate2_db",
-  //     "database_id": "REPLACE_WITH_D1_DATABASE_ID",
-  //     "migrations_dir": "backend/migrations"
-  //   }
-  // ]
+  "d1_databases": [
+    {
+      "binding": "CHAT_LOGS_DB",
+      "database_name": "mymate2_db",
+      "database_id": "5ada4bd9-a4ad-4a75-8c0a-5f4d023f578f",
+      "migrations_dir": "backend/migrations"
+    }
+  ]
 }
