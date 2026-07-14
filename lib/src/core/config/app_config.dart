@@ -9,12 +9,16 @@ class AppConfig {
   /// When ready for monetization, set this to FALSE.
   static const bool isFreeTier = true;
 
-  /// How many of the built-in characters to show on the dashboard, in the
-  /// order they're defined. Lower this to hide characters from the end of
-  /// the roster without deleting their definitions. Does not affect
-  /// user-created custom characters, which are always shown in addition
-  /// to this count.
-  static const int maxCharactersDisplayed = 14;
+  /// Which built-in characters (by id) to show on the dashboard, and in
+  /// what order. Hides the rest without deleting their definitions. Does
+  /// not affect user-created custom characters, which are always shown
+  /// after this list.
+  static const List<String> visibleCharacterIds = [
+    'zeus',
+    'badboy',
+    'poet',
+    'surfer',
+  ];
 
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';

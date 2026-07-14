@@ -129,12 +129,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     },
   ];
 
+  /// Built-in characters allowed by AppConfig.visibleCharacterIds, in that
+  /// list's order.
+  List<Map<String, dynamic>> get _visibleCharacters {
+    return AppConfig.visibleCharacterIds
+        .map((id) => _characters.firstWhere((c) => c['id'] == id))
+        .toList();
+  }
+
   @override
   void initState() {
     super.initState();
     // Precache all character images for smooth scrolling
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (final character in _characters.take(AppConfig.maxCharactersDisplayed)) {
+      for (final character in _visibleCharacters) {
         precacheImage(AssetImage(character['image'] as String), context);
       }
     });
@@ -143,8 +151,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final customChars = ref.watch(customCharactersProvider);
-    final visibleCharacters = _characters.take(AppConfig.maxCharactersDisplayed);
-    final allCharacters = [...visibleCharacters, ...customChars];
+    final allCharacters = [..._visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
     final score = ref.watch(userScoreProvider);
