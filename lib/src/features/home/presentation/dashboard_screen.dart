@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../core/config/app_config.dart';
 import '../../../core/services/storage_service.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -133,7 +134,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     super.initState();
     // Precache all character images for smooth scrolling
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (final character in _characters) {
+      for (final character in _characters.take(AppConfig.maxCharactersDisplayed)) {
         precacheImage(AssetImage(character['image'] as String), context);
       }
     });
@@ -142,7 +143,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final customChars = ref.watch(customCharactersProvider);
-    final allCharacters = [..._characters, ...customChars];
+    final visibleCharacters = _characters.take(AppConfig.maxCharactersDisplayed);
+    final allCharacters = [...visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
     final score = ref.watch(userScoreProvider);
