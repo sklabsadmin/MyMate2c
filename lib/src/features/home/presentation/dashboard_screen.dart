@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../core/config/app_config.dart';
 import '../../../core/services/storage_service.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -128,12 +129,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     },
   ];
 
+  /// Built-in characters allowed by AppConfig.visibleCharacterIds, in that
+  /// list's order.
+  List<Map<String, dynamic>> get _visibleCharacters {
+    return AppConfig.visibleCharacterIds
+        .map((id) => _characters.firstWhere((c) => c['id'] == id))
+        .toList();
+  }
+
   @override
   void initState() {
     super.initState();
     // Precache all character images for smooth scrolling
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (final character in _characters) {
+      for (final character in _visibleCharacters) {
         precacheImage(AssetImage(character['image'] as String), context);
       }
     });
@@ -142,7 +151,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final customChars = ref.watch(customCharactersProvider);
-    final allCharacters = [..._characters, ...customChars];
+    final allCharacters = [..._visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
     final score = ref.watch(userScoreProvider);

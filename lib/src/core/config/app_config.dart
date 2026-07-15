@@ -9,6 +9,17 @@ class AppConfig {
   /// When ready for monetization, set this to FALSE.
   static const bool isFreeTier = true;
 
+  /// Which built-in characters (by id) to show on the dashboard, and in
+  /// what order. Hides the rest without deleting their definitions. Does
+  /// not affect user-created custom characters, which are always shown
+  /// after this list.
+  static const List<String> visibleCharacterIds = [
+    'zeus',
+    'badboy',
+    'poet',
+    'surfer',
+  ];
+
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';
 
