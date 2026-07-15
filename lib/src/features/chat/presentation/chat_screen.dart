@@ -243,7 +243,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "Rule beside me tonight. ⚡"
         ];
       }
-      
+
+      if (scenario.contains('Odysseus') || scenario.contains('Ithaca')) {
+        return [
+          "Ten years I sailed, and still I was not lost — not truly — until I met you.",
+          "Every siren's song I resisted... yet your voice, I would follow anywhere.",
+          "I have outwitted gods and monsters. You, I have no defense against.",
+          "Come, sit by the fire and tell me your story. I have all the patience of a wanderer.",
+          "Home was never a place. Perhaps it is you. 🌊"
+        ];
+      }
+
+      if (scenario.contains('Oedipus') || scenario.contains('Thebes')) {
+        return [
+          "I solved the Sphinx's riddle, yet you remain the mystery I most want to unravel.",
+          "Fate has broken me before. Still, I find myself drawn to you.",
+          "A king learns hard truths. Tell me yours — I am listening.",
+          "Even a man cursed by prophecy can still hope for one good thing. Perhaps that is you.",
+          "Walk with me. Thebes can wait tonight. 👑"
+        ];
+      }
+
       if (scenario.contains('Husband') || scenario.contains('Comfort')) {
            return [
              "Welcome home, honey.",
@@ -393,6 +413,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         lastMessage: message.text,
         timestamp: message.timestamp,
         vibe: _currentVibe,
+        characterId: widget.characterId,
       );
     }
 

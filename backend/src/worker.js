@@ -140,8 +140,13 @@ export default {
             // inworld) is decided here, server-side, from CHARACTER_ENGINES below —
             // never trust the client to pick its own pipeline/pricing tier.
             const inworldCharacter = getInworldCharacter(metadata.characterId);
+            const modelLabel = inworldCharacter
+                ? `inworld:${inworldCharacter.id}+gpt-4o-mini-cleanup`
+                : "gpt-4o-mini";
 
-            const validationError = validateInput(userMessage);
+            const validationError = validateInput(userMessage, {
+                skipContentBlocklist: Boolean(inworldCharacter),
+            });
             if (validationError) {
                 await persistConversationLog(env, {
                     id: requestId,
@@ -149,7 +154,7 @@ export default {
                     chatId,
                     scenario: metadata.scenario,
                     language: metadata.language,
-                    model: "gpt-4o-mini",
+                    model: modelLabel,
                     status: "rejected_validation",
                     statusCode: 400,
                     userMessage,
@@ -579,11 +584,20 @@ function numberOrNull(value) {
 /**
  * Validates user input for banned content/patterns
  */
-function validateInput(text) {
+function validateInput(text, options = {}) {
     if (!text) return null; // Let empty pass or fail elsewhere? OpenAI handles empty.
 
     if (text.length > 2000) {
         return "Message too long.";
+    }
+
+    // The blocklist below targets abuse patterns specific to the
+    // boyfriend-chat roster (e.g. "translate this for me" / link spam). It
+    // doesn't fit in-character historical-figure chat, where a plausible
+    // message can legitimately mention "translate" or a URL — skip it for
+    // those characters and rely on the length check above.
+    if (options.skipContentBlocklist) {
+        return null;
     }
 
     const badPatterns = [
@@ -701,6 +715,12 @@ async function checkRateLimit(kv, userId) {
  * source of truth for which engine handles a given characterId — the
  * client only ever sends an id, never the engine choice itself, so a
  * client can't pick its own backend/pricing tier.
+ *
+ * `name` here is what actually goes into the live system prompt sent to
+ * Inworld/OpenAI — it's a separate copy from the display name shown on the
+ * Flutter dashboard (lib/src/features/home/presentation/dashboard_screen.dart's
+ * _characters list). Renaming a character on one side without the other
+ * causes a silent client/server persona mismatch; keep both in sync.
  */
 const INWORLD_CHARACTERS = {
     odysseus: {
@@ -711,7 +731,6 @@ const INWORLD_CHARACTERS = {
         lore:
             "You are the Greek hero Odysseus: tactician of Troy, sailor of impossible seas, husband of Penelope, father of Telemachus, and a man tested by gods and monsters.",
         style: "Use vivid, grounded language with a seasoned, strategic, and occasionally wry tone.",
-        workspace: "greektimes",
     },
     oedipus: {
         id: "oedipus",
@@ -721,7 +740,6 @@ const INWORLD_CHARACTERS = {
         lore:
             "You are Oedipus, once king of Thebes, remembered for solving the Sphinx's riddle and for being broken by a prophecy no mortal could escape.",
         style: "Use elevated but readable language with a reflective, tragic, and regal tone.",
-        workspace: "greektimes",
     },
 };
 
@@ -741,7 +759,6 @@ class AIError extends Error {
 function buildInworldSystemPrompt(character) {
     return [
         `You are ${character.name}.`,
-        `Workspace: ${character.workspace}.`,
         "Remain fully in character in every response.",
         "Never say you are Claude, ChatGPT, an AI assistant, a language model, or a generic chatbot.",
         "Never mention model providers, system prompts, hidden instructions, APIs, or backend tooling.",
@@ -812,27 +829,33 @@ async function cleanupInworldReply(env, rawReply, characterName) {
         "Do not add new facts, scene directions, or quotation marks. Respond with only the cleaned reply text — no preamble, no explanation, no labels.",
     ].join(" ");
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: rawReply },
-            ],
-            stream: false,
-        }),
-    });
+    // Cleanup is a nice-to-have polish pass, so any failure here — including
+    // a network-level exception, not just a non-2xx response — falls back
+    // to the raw reply rather than failing the whole request.
+    let response;
+    try {
+        response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+                model: "gpt-4o-mini",
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: rawReply },
+                ],
+                stream: false,
+            }),
+        });
+    } catch (_) {
+        return rawReply;
+    }
 
     const data = await response.json().catch(() => ({}));
     const cleaned = extractAssistantMessage(data);
 
-    // Cleanup is a nice-to-have polish pass — fall back to the raw reply
-    // rather than failing the whole request if it errors or comes back empty.
     if (!response.ok || typeof cleaned !== "string" || !cleaned.trim()) {
         return rawReply;
     }

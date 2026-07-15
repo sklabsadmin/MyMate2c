@@ -245,7 +245,11 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
         ],
       ),
       onTap: () {
-        context.push('/chat/session?scenario=${Uri.encodeComponent(chat['chatId'])}&characterImage=${Uri.encodeComponent(chat['image'])}&isRoleplay=false');
+        final characterId = chat['characterId'] as String?;
+        final characterIdParam = (characterId != null && characterId.isNotEmpty)
+            ? '&characterId=${Uri.encodeComponent(characterId)}'
+            : '';
+        context.push('/chat/session?scenario=${Uri.encodeComponent(chat['chatId'])}&characterImage=${Uri.encodeComponent(chat['image'])}&isRoleplay=false$characterIdParam');
       },
       onLongPress: () async {
         final isPremium = ref.read(userSubscriptionProvider);
