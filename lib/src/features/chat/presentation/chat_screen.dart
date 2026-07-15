@@ -367,32 +367,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
          await Future.delayed(const Duration(milliseconds: 1000));
       }
 
-      for (final text in initialMessages) {
-         if (!mounted) return;
-         
-         // 1. Simulate Typing
-         setState(() => _isTyping = true);
-         _scrollToBottom();
-         
-         // Random typing duration based on length
-         final typingDuration = 800 + (text.length * 30);
-         await Future.delayed(Duration(milliseconds: typingDuration));
+      // Show a single opening line rather than the whole sequence — enough
+      // to set the tone without flooding a brand-new chat with 5 bubbles.
+      if (initialMessages.isEmpty) return;
+      final text = initialMessages.first;
 
-         if (!mounted) return;
+      if (!mounted) return;
 
-         // 2. Stop Typing & Send Message
-         setState(() => _isTyping = false);
-         
-         _addMessage(ChatMessage(
-           id: 'welcome_${DateTime.now().millisecondsSinceEpoch}', 
-           text: text,
-           isUser: false,
-           timestamp: DateTime.now(),
-         ));
+      // 1. Simulate Typing
+      setState(() => _isTyping = true);
+      _scrollToBottom();
 
-         // 3. Pause before next message (reading time)
-         await Future.delayed(const Duration(milliseconds: 2000));
-      }
+      // Random typing duration based on length
+      final typingDuration = 800 + (text.length * 30);
+      await Future.delayed(Duration(milliseconds: typingDuration));
+
+      if (!mounted) return;
+
+      // 2. Stop Typing & Send Message
+      setState(() => _isTyping = false);
+
+      _addMessage(ChatMessage(
+        id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
+        text: text,
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
   }
 
   void _addMessage(ChatMessage message) {
