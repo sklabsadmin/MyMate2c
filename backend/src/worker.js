@@ -204,18 +204,18 @@ export default {
             // 4. Generate the reply. Which engine handles this is decided purely by
             // metadata.characterId against CHARACTER_ENGINES (server-side config) —
             // everything above this point (auth, validation, rate limiting) is
-            // identical for every character regardless of engine.
+            // identical for every character regardless of engine. modelLabel is
+            // already computed above (needed by the validation/rate-limit log
+            // entries too), so only the response itself varies by branch here.
             let responseData;
             let responseStatus;
             let responseOk;
-            let modelLabel;
 
             if (inworldCharacter) {
                 // Inworld generates the in-character reply, then OpenAI does a
                 // cleanup pass. Reshaped into the same {choices:[...]} envelope
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
-                modelLabel = `inworld:${inworldCharacter.id}+gpt-4o-mini-cleanup`;
                 try {
                     const cleanedText = await runInworldPipeline(env, inworldCharacter, body.messages);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
@@ -244,7 +244,6 @@ export default {
                     body: JSON.stringify(openAiBody)
                 });
 
-                modelLabel = openAiBody.model;
                 responseData = await openAiResponse.json();
                 responseStatus = openAiResponse.status;
                 responseOk = openAiResponse.ok;
