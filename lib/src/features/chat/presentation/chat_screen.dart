@@ -13,12 +13,14 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String? scenario;
   final String? characterImage;
   final bool isRoleplay; // Distinction flag
+  final String? characterId;
 
   const ChatScreen({
     super.key,
     this.scenario,
     this.characterImage,
     this.isRoleplay = false, // Default to false (Character mode)
+    this.characterId,
   });
 
   @override
@@ -73,10 +75,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() {
           _messages.addAll(history);
         });
-        _aiService = OpenAIService(history: history, scenario: widget.scenario);
+        _aiService = OpenAIService(
+          history: history,
+          scenario: widget.scenario,
+          characterId: widget.characterId,
+        );
         Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
       } else {
-         _aiService = OpenAIService(history: [], scenario: widget.scenario);
+         _aiService = OpenAIService(
+           history: [],
+           scenario: widget.scenario,
+           characterId: widget.characterId,
+         );
       }
       
 
@@ -90,7 +100,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // Corrupt history or error -> Reset and start fresh
       print("Error loading history: $e");
       if (mounted) {
-         _aiService = OpenAIService(history: [], scenario: widget.scenario);
+         _aiService = OpenAIService(
+           history: [],
+           scenario: widget.scenario,
+           characterId: widget.characterId,
+         );
          _triggerWelcomeSequence();
       }
     }

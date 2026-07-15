@@ -18,6 +18,8 @@ class AppConfig {
     'badboy',
     'poet',
     'surfer',
+    'odysseus',
+    'oedipus',
   ];
 
   /// The model to use.

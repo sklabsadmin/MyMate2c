@@ -124,8 +124,31 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'name': 'Kai',
       'vibe': 'Surfer',
       'desc': 'Sun, salt, and endless chill vibes.',
-      'image': 'assets/images/avatar_badboy_real.png', 
+      'image': 'assets/images/avatar_badboy_real.png',
       'color': Colors.cyanAccent,
+    },
+    // Imported from SKLabChat — these two run on the Inworld pipeline
+    // instead of the direct-OpenAI one every character above uses. The
+    // worker decides the engine from 'id'; this 'engine' field is just
+    // local documentation of that choice, not something sent to the
+    // backend. Placeholder art — needs real portraits before shipping.
+    {
+      'id': 'odysseus',
+      'name': 'Odysseus',
+      'vibe': 'King of Ithaca',
+      'desc': 'A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.',
+      'image': 'assets/images/avatar_odysseus_placeholder.png',
+      'color': const Color(0xFF9D4F2F),
+      'engine': 'inworld',
+    },
+    {
+      'id': 'oedipus',
+      'name': 'Oedipus',
+      'vibe': 'King of Thebes',
+      'desc': 'A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.',
+      'image': 'assets/images/avatar_oedipus_placeholder.png',
+      'color': const Color(0xFF7D3F25),
+      'engine': 'inworld',
     },
   ];
 
@@ -297,7 +320,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return GestureDetector(
       onTap: () {
         // Navigate to Chat
-        context.push('/chat/session?scenario=${Uri.encodeComponent(character['name'] + " (" + character['vibe'] + ")")}&characterImage=${Uri.encodeComponent(character['image'])}&isRoleplay=false'); 
+        final characterId = character['id'] as String?;
+        final characterIdParam = (characterId != null && characterId.isNotEmpty)
+            ? '&characterId=${Uri.encodeComponent(characterId)}'
+            : '';
+        context.push('/chat/session?scenario=${Uri.encodeComponent(character['name'] + " (" + character['vibe'] + ")")}&characterImage=${Uri.encodeComponent(character['image'])}&isRoleplay=false$characterIdParam');
       },
       onLongPress: isCustom ? () {
         // Show delete dialog for custom characters

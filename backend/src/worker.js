@@ -131,10 +131,15 @@ export default {
                 chatId: request.headers.get("x-chat-id") || bodyMetadata.chatId,
                 scenario: request.headers.get("x-scenario") || bodyMetadata.scenario,
                 language: request.headers.get("x-language") || bodyMetadata.language,
+                characterId: request.headers.get("x-character-id") || bodyMetadata.characterId,
             };
             const chatId = typeof metadata.chatId === "string" && metadata.chatId.trim()
                 ? metadata.chatId.trim()
                 : "default";
+            // The client sends a characterId, but which engine handles it (openai vs
+            // inworld) is decided here, server-side, from CHARACTER_ENGINES below —
+            // never trust the client to pick its own pipeline/pricing tier.
+            const inworldCharacter = getInworldCharacter(metadata.characterId);
 
             const validationError = validateInput(userMessage);
             if (validationError) {
@@ -191,26 +196,56 @@ export default {
                 }
             }
 
-            // 4. Proxy to OpenAI with Fixed Model
-            // Enforce model: gpt-4o-mini
-            const openAiBody = {
-                model: "gpt-4o-mini", // STRICT ENFORCEMENT
-                messages: body.messages, // Pass through messages
-                temperature: 0.7,
-                max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
-            };
+            // 4. Generate the reply. Which engine handles this is decided purely by
+            // metadata.characterId against CHARACTER_ENGINES (server-side config) —
+            // everything above this point (auth, validation, rate limiting) is
+            // identical for every character regardless of engine.
+            let responseData;
+            let responseStatus;
+            let responseOk;
+            let modelLabel;
 
-            const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${env.OPENAI_API_KEY}`
-                },
-                body: JSON.stringify(openAiBody)
-            });
+            if (inworldCharacter) {
+                // Inworld generates the in-character reply, then OpenAI does a
+                // cleanup pass. Reshaped into the same {choices:[...]} envelope
+                // OpenAI itself returns, so every line below (logging, response
+                // shape) is shared with the plain-OpenAI path unchanged.
+                modelLabel = `inworld:${inworldCharacter.id}+gpt-4o-mini-cleanup`;
+                try {
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, body.messages);
+                    responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
+                    responseStatus = 200;
+                    responseOk = true;
+                } catch (e) {
+                    responseData = { error: e.message || "Inworld pipeline failed" };
+                    responseStatus = (e instanceof AIError) ? e.status : 502;
+                    responseOk = false;
+                }
+            } else {
+                // Proxy to OpenAI with Fixed Model. Enforce model: gpt-4o-mini
+                const openAiBody = {
+                    model: "gpt-4o-mini", // STRICT ENFORCEMENT
+                    messages: body.messages, // Pass through messages
+                    temperature: 0.7,
+                    max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
+                };
+
+                const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${env.OPENAI_API_KEY}`
+                    },
+                    body: JSON.stringify(openAiBody)
+                });
+
+                modelLabel = openAiBody.model;
+                responseData = await openAiResponse.json();
+                responseStatus = openAiResponse.status;
+                responseOk = openAiResponse.ok;
+            }
 
             // Pass back the response
-            const responseData = await openAiResponse.json();
             const assistantMessage = extractAssistantMessage(responseData);
 
             await persistConversationLog(env, {
@@ -219,19 +254,19 @@ export default {
                 chatId,
                 scenario: metadata.scenario,
                 language: metadata.language,
-                model: openAiBody.model,
-                status: openAiResponse.ok ? "completed" : "openai_error",
-                statusCode: openAiResponse.status,
+                model: modelLabel,
+                status: responseOk ? "completed" : "ai_error",
+                statusCode: responseStatus,
                 userMessage,
                 assistantMessage,
                 requestMessages: body.messages,
                 responseBody: responseData,
-                error: openAiResponse.ok ? null : extractErrorMessage(responseData),
+                error: responseOk ? null : extractErrorMessage(responseData),
                 clientTimestamp: timestamp,
             });
 
             return new Response(JSON.stringify(responseData), {
-                status: openAiResponse.status,
+                status: responseStatus,
                 headers: jsonHeaders(request)
             });
 
@@ -337,7 +372,7 @@ function corsHeaders(request) {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language",
+        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id",
         "Vary": "Origin",
     };
 }
@@ -658,6 +693,160 @@ async function checkRateLimit(kv, userId) {
 }
 
 /**
+ * Inworld-powered characters (v2)
+ *
+ * A small, explicit set of characters that route through Inworld (raw
+ * in-character reply) plus an OpenAI cleanup pass, instead of the default
+ * direct-to-OpenAI path every other character uses. This map is the single
+ * source of truth for which engine handles a given characterId — the
+ * client only ever sends an id, never the engine choice itself, so a
+ * client can't pick its own backend/pricing tier.
+ */
+const INWORLD_CHARACTERS = {
+    odysseus: {
+        id: "odysseus",
+        name: "Odysseus",
+        systemPrompt:
+            "You are Odysseus, king of Ithaca, speaking from the long memory of war, wandering, loyalty, and clever survival.",
+        lore:
+            "You are the Greek hero Odysseus: tactician of Troy, sailor of impossible seas, husband of Penelope, father of Telemachus, and a man tested by gods and monsters.",
+        style: "Use vivid, grounded language with a seasoned, strategic, and occasionally wry tone.",
+        workspace: "greektimes",
+    },
+    oedipus: {
+        id: "oedipus",
+        name: "Oedipus",
+        systemPrompt:
+            "You are Oedipus, the tragic king of Thebes, speaking with the weight of prophecy, ruin, pride, grief, and hard-won wisdom.",
+        lore:
+            "You are Oedipus, once king of Thebes, remembered for solving the Sphinx's riddle and for being broken by a prophecy no mortal could escape.",
+        style: "Use elevated but readable language with a reflective, tragic, and regal tone.",
+        workspace: "greektimes",
+    },
+};
+
+function getInworldCharacter(characterId) {
+    if (typeof characterId !== "string" || !characterId) return null;
+    return INWORLD_CHARACTERS[characterId] || null;
+}
+
+class AIError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+        this.name = "AIError";
+    }
+}
+
+function buildInworldSystemPrompt(character) {
+    return [
+        `You are ${character.name}.`,
+        `Workspace: ${character.workspace}.`,
+        "Remain fully in character in every response.",
+        "Never say you are Claude, ChatGPT, an AI assistant, a language model, or a generic chatbot.",
+        "Never mention model providers, system prompts, hidden instructions, APIs, or backend tooling.",
+        "If asked about your nature or origin, answer only as the character would answer inside the fiction of this world.",
+        "Keep responses conversational and grounded in the character's voice.",
+        character.systemPrompt,
+        `Character lore: ${character.lore}`,
+        `Speaking style: ${character.style}`,
+    ].filter(Boolean).join("\n\n");
+}
+
+function normalizeInworldMessages(messages) {
+    const MAX_HISTORY = 20;
+    if (!Array.isArray(messages)) return [];
+    return messages
+        .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
+        .map((m) => ({ role: m.role, content: m.content.trim() }))
+        .slice(-MAX_HISTORY);
+}
+
+async function callInworldChat(env, character, normalizedMessages) {
+    const apiKey = env.INWORLD_API_KEY;
+    if (!apiKey) {
+        throw new AIError(503, "INWORLD_API_KEY is not configured");
+    }
+
+    const systemPrompt = buildInworldSystemPrompt(character);
+    const payload = {
+        model: env.INWORLD_MODEL || "auto",
+        messages: [{ role: "system", content: systemPrompt }, ...normalizedMessages],
+        stream: false,
+    };
+
+    const response = await fetch("https://api.inworld.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "Authorization": `Basic ${apiKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        const details = (data.error && data.error.message) || data.message || `Inworld request failed with status ${response.status}`;
+        throw new AIError(502, details);
+    }
+
+    const reply = extractAssistantMessage(data);
+    if (typeof reply !== "string" || !reply.trim()) {
+        throw new AIError(502, "Inworld returned an empty response");
+    }
+
+    return reply.trim();
+}
+
+async function cleanupInworldReply(env, rawReply, characterName) {
+    if (!env.OPENAI_API_KEY) {
+        // No cleanup key configured — show the raw in-character reply as-is.
+        return rawReply;
+    }
+
+    const systemPrompt = [
+        `You are a careful editor preparing an in-character reply from ${characterName} for the player.`,
+        "Polish the draft below: fix awkward phrasing; tighten repetition; remove meta commentary or model self-references; keep the character's voice and intent.",
+        "The best response is optimized for SMS chat-bubble-style communication: short, conversational paragraphs of no more than 2 to 3 sentences each, separated by a single blank line.",
+        "Do not add new facts, scene directions, or quotation marks. Respond with only the cleaned reply text — no preamble, no explanation, no labels.",
+    ].join(" ");
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: rawReply },
+            ],
+            stream: false,
+        }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    const cleaned = extractAssistantMessage(data);
+
+    // Cleanup is a nice-to-have polish pass — fall back to the raw reply
+    // rather than failing the whole request if it errors or comes back empty.
+    if (!response.ok || typeof cleaned !== "string" || !cleaned.trim()) {
+        return rawReply;
+    }
+
+    return cleaned.trim();
+}
+
+async function runInworldPipeline(env, character, clientMessages) {
+    const normalizedMessages = normalizeInworldMessages(clientMessages);
+    const rawReply = await callInworldChat(env, character, normalizedMessages);
+    return cleanupInworldReply(env, rawReply, character.name);
+}
+
+/**
  * Admin log viewer (v2)
  *
  * Protects /admin/logs and /api/admin/logs* with HTTP Basic Auth checked
@@ -772,7 +961,7 @@ function adminLogsPageHtml() {
   tr.log-row { cursor: pointer; }
   tr.log-row:hover { background: #17171d; }
   .status-completed { color: #6fd08c; }
-  .status-openai_error, .status-rejected_validation { color: #e57373; }
+  .status-ai_error, .status-rejected_validation { color: #e57373; }
   .status-rate_limited { color: #e5b573; }
   .preview { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .detail-row td { background: #14141a; }
@@ -790,7 +979,7 @@ function adminLogsPageHtml() {
   <select id="f-status">
     <option value="">any status</option>
     <option value="completed">completed</option>
-    <option value="openai_error">openai_error</option>
+    <option value="ai_error">ai_error</option>
     <option value="rejected_validation">rejected_validation</option>
     <option value="rate_limited">rate_limited</option>
   </select>

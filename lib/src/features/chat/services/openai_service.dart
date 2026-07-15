@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class OpenAIService {
   final List<Map<String, dynamic>> _conversationHistory = [];
   final String? _scenario;
+  final String? _characterId;
   String _currentLanguage = 'English';
   final Dio _dio = Dio();
 
@@ -16,7 +17,9 @@ class OpenAIService {
     List<dynamic> history = const [],
     String language = 'English',
     String? scenario,
-  }) : _scenario = scenario {
+    String? characterId,
+  }) : _scenario = scenario,
+       _characterId = characterId {
     _currentLanguage = language;
 
     // Validate Config
@@ -99,6 +102,9 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       };
       if (scenario != null) {
         headers['x-scenario'] = scenario;
+      }
+      if (_characterId != null && _characterId!.isNotEmpty) {
+        headers['x-character-id'] = _characterId!;
       }
 
       // Call Backend Worker
