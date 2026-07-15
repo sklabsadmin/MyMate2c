@@ -492,6 +492,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     for (var i = 0; i < bubbles.length; i++) {
       if (!mounted) return;
       setState(() => _isTyping = true);
+      Future.delayed(const Duration(milliseconds: 50), _scrollToBottom);
 
       final delayMs = 200 + _bubbleDelayRandom.nextInt(1201); // 200-1400ms
       await Future.delayed(Duration(milliseconds: delayMs));
@@ -753,8 +754,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     top: 130,
                     bottom: 8,
                   ),
-                  itemCount: _messages.length,
+                  itemCount: _messages.length + (_isTyping ? 1 : 0),
                   itemBuilder: (context, index) {
+                    if (index == _messages.length) {
+                      return const _TypingBubble();
+                    }
                     final msg = _messages[index];
                     return _ChatBubble(
                       message: msg,
@@ -776,22 +780,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       _buildStarterChip(theme, "Roleplay: First Date 🍷"),
                       _buildStarterChip(theme, "I had a bad day 😔"),
                     ],
-                  ),
-                ),
-
-              if (_isTyping)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 24, bottom: 8),
-                    child: Text(
-                      'typing...',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontStyle: FontStyle.italic,
-                        color: Colors.white60,
-                        fontSize: 12,
-                      ),
-                    ),
                   ),
                 ),
               _buildInputArea(theme),
@@ -937,6 +925,84 @@ class _ChatBubble extends StatelessWidget {
               height: 1.3,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A left-aligned bubble with three pulsing dots, styled like an incoming
+/// message bubble so it appears exactly where the next reply will land —
+/// makes the pacing between split-up bubbles actually visible instead of
+/// relying on an easy-to-miss caption elsewhere on screen.
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble();
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.1),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20),
+            topRight: Radius.circular(20),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(20),
+          ),
+        ),
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (i) {
+                final t = (_controller.value - (i * 0.2)) % 1.0;
+                final pulse = t < 0.5 ? t * 2 : (1 - t) * 2;
+                final opacity = (0.3 + 0.7 * pulse).clamp(0.0, 1.0);
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: Opacity(
+                    opacity: opacity,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            );
+          },
         ),
       ),
     );
