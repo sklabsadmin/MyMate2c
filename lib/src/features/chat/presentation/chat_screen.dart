@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +32,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  final Random _bubbleDelayRandom = Random();
   bool _isTyping = false;
   String _currentVibe = "Gentle";
   String _currentLanguage = "en";
@@ -430,6 +432,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  /// Splits a reply on blank lines into separate chat-bubble-sized chunks
+  /// (the Inworld cleanup pass formats replies this way; plain OpenAI
+  /// replies are usually one paragraph already and just come back as a
+  /// single chunk).
+  List<String> _splitIntoBubbles(String text) {
+    return text
+        .split(RegExp(r'\n\s*\n'))
+        .map((chunk) => chunk.trim())
+        .where((chunk) => chunk.isNotEmpty)
+        .toList();
+  }
+
   void _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -465,16 +479,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final responseText = await _aiService!.sendMessage(text);
 
     if (!mounted) return;
-    setState(() => _isTyping = false);
 
-    _addMessage(
-      ChatMessage(
-        id: DateTime.now().toString(),
-        text: responseText,
-        isUser: false,
-        timestamp: DateTime.now(),
-      ),
-    );
+    // Complex Characters' cleanup pass formats replies as blank-line
+    // separated paragraphs — show each as its own bubble, paced out like a
+    // real conversation rather than dumping the whole reply at once.
+    final bubbles = _splitIntoBubbles(responseText);
+    if (bubbles.isEmpty) {
+      setState(() => _isTyping = false);
+      return;
+    }
+
+    for (var i = 0; i < bubbles.length; i++) {
+      if (!mounted) return;
+      setState(() => _isTyping = true);
+
+      final delayMs = 200 + _bubbleDelayRandom.nextInt(1201); // 200-1400ms
+      await Future.delayed(Duration(milliseconds: delayMs));
+
+      if (!mounted) return;
+      setState(() => _isTyping = false);
+
+      _addMessage(
+        ChatMessage(
+          id: '${DateTime.now().millisecondsSinceEpoch}_$i',
+          text: bubbles[i],
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      );
+    }
   }
 
   void _showVibeSelector() {
