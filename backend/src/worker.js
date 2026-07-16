@@ -79,6 +79,50 @@ export default {
             }
         }
 
+        if (request.method === "GET" && url.pathname === "/api/admin/conversations") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                const result = await listConversations(env, url.searchParams);
+                return jsonResponse(result);
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/transcript") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                const userId = url.searchParams.get("user_id");
+                const chatId = url.searchParams.get("chat_id");
+                if (!userId || !chatId) {
+                    return jsonResponse({ error: "user_id and chat_id are required" }, { status: 400 });
+                }
+                const result = await getTranscript(env, userId, chatId);
+                return jsonResponse(result);
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/export") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                const text = await buildExportText(env, url.searchParams);
+                const stamp = new Date().toISOString().slice(0, 10);
+                return new Response(text, {
+                    headers: {
+                        "Content-Type": "text/plain; charset=utf-8",
+                        "Content-Disposition": `attachment; filename="mymate-chat-logs-${stamp}.txt"`,
+                    },
+                });
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
         if (request.method !== "POST" || url.pathname !== "/api/chat") {
             return new Response("Method not allowed", {
                 status: 405,
@@ -1006,6 +1050,167 @@ async function getConversationLog(env, id) {
     return row || null;
 }
 
+/**
+ * One row per conversation (user_id + chat_id pair) with aggregates,
+ * newest activity first. Optional filters: character (substring of
+ * chat_id), user_id (exact), errors_only.
+ */
+async function listConversations(env, params) {
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", conversations: [], limit: 0, offset: 0 };
+    }
+
+    const rawLimit = parseInt(params.get("limit"), 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 0), 200) : 50;
+    const rawOffset = parseInt(params.get("offset"), 10);
+    const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
+
+    const filters = [];
+    const binds = [];
+    const character = params.get("character");
+    const userId = params.get("user_id");
+    if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
+    if (userId) { filters.push("user_id = ?"); binds.push(userId); }
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+    const having = params.get("errors_only") === "1"
+        ? "HAVING SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) > 0"
+        : "";
+
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT user_id, chat_id,
+               COUNT(*) AS message_count,
+               MIN(created_at) AS first_at,
+               MAX(created_at) AS last_at,
+               SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) AS error_count,
+               SUM(COALESCE(total_tokens, 0)) AS total_tokens
+        FROM conversation_logs
+        ${where}
+        GROUP BY user_id, chat_id
+        ${having}
+        ORDER BY last_at DESC
+        LIMIT ? OFFSET ?
+    `).bind(...binds, limit, offset).all();
+
+    return { conversations: results, limit, offset };
+}
+
+/** All exchanges of one conversation, oldest first. */
+async function getTranscript(env, userId, chatId) {
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", messages: [] };
+    }
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT id, created_at, user_message, assistant_message, status, status_code,
+               model, error, total_tokens
+        FROM conversation_logs
+        WHERE user_id = ? AND chat_id = ?
+        ORDER BY created_at ASC
+        LIMIT 2000
+    `).bind(userId, chatId).all();
+    return { user_id: userId, chat_id: chatId, messages: results };
+}
+
+/**
+ * Plain-text transcript export for offline analysis (e.g. uploading to an
+ * LLM to study user behavior). User ids are replaced with User-N aliases;
+ * technical error detail is reduced to a "[message failed]" marker.
+ *
+ * Params: user_id + chat_id for a single conversation, or days (default 30,
+ * max 365) + optional character substring for a bulk export.
+ */
+async function buildExportText(env, params) {
+    if (!env.CHAT_LOGS_DB) return "CHAT_LOGS_DB is not configured";
+
+    const filters = [];
+    const binds = [];
+    const userId = params.get("user_id");
+    const chatId = params.get("chat_id");
+    const character = params.get("character");
+    if (userId && chatId) {
+        filters.push("user_id = ?", "chat_id = ?");
+        binds.push(userId, chatId);
+    } else {
+        const rawDays = parseInt(params.get("days"), 10);
+        const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
+        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+            .toISOString().replace("T", " ").slice(0, 19);
+        filters.push("created_at >= ?");
+        binds.push(since);
+        if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
+    }
+
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT created_at, user_id, chat_id, user_message, assistant_message, status
+        FROM conversation_logs
+        WHERE ${filters.join(" AND ")}
+        ORDER BY user_id, chat_id, created_at ASC
+        LIMIT 10000
+    `).bind(...binds).all();
+
+    if (!results.length) return "No conversations found for the selected filters.\n";
+
+    const userAliases = new Map();
+    const alias = (id) => {
+        if (!userAliases.has(id)) userAliases.set(id, `User-${userAliases.size + 1}`);
+        return userAliases.get(id);
+    };
+    const characterName = (chat) => {
+        const parenIndex = chat.indexOf(" (");
+        return parenIndex > 0 ? chat.slice(0, parenIndex) : chat;
+    };
+    const fmtDay = (d) => d.toISOString().slice(0, 10);
+    const fmtStamp = (d) => d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    const fmtGap = (ms) => {
+        const mins = Math.round(ms / 60000);
+        if (mins < 60) return `${mins} minutes later`;
+        const hours = Math.round(mins / 60);
+        if (hours < 48) return `${hours} hours later`;
+        return `${Math.round(hours / 24)} days later`;
+    };
+
+    const lines = [];
+    let convIndex = 0;
+    let prevAt = null;
+
+    // Group header needs the per-conversation stats, so bucket rows first.
+    const buckets = new Map();
+    for (const row of results) {
+        const key = `${row.user_id} ${row.chat_id}`;
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(row);
+    }
+
+    for (const rows of buckets.values()) {
+        convIndex += 1;
+        const first = new Date(rows[0].created_at + "Z");
+        const last = new Date(rows[rows.length - 1].created_at + "Z");
+        const who = alias(rows[0].user_id);
+        const name = characterName(rows[0].chat_id);
+        if (convIndex > 1) lines.push("", "");
+        lines.push(
+            `=== Conversation ${convIndex}: ${who} x ${name} — ${rows.length} exchanges, ${fmtDay(first)} to ${fmtDay(last)} ===`,
+            ""
+        );
+        prevAt = null;
+        for (const row of rows) {
+            const at = new Date(row.created_at + "Z");
+            if (prevAt && at - prevAt > 30 * 60 * 1000) {
+                lines.push("", `· ${fmtGap(at - prevAt)} ·`, "");
+            }
+            prevAt = at;
+            lines.push(`[${fmtStamp(at)}] ${who}: ${row.user_message}`);
+            if (row.status === "completed" && row.assistant_message) {
+                lines.push(`[${fmtStamp(at)}] ${name}: ${row.assistant_message}`);
+            } else {
+                lines.push(`[${fmtStamp(at)}] ${name}: [message failed]`);
+            }
+        }
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+
 function adminLogsPageHtml() {
     return `<!doctype html>
 <html>
@@ -1020,77 +1225,91 @@ function adminLogsPageHtml() {
   input, select, button { background: #1c1c24; border: 1px solid #33333d; color: #e6e6ea; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
   button { cursor: pointer; }
   button:hover { background: #26262f; }
-  main { padding: 16px 24px; }
+  label.chk { font-size: 13px; color: #9a9aa5; display: flex; align-items: center; gap: 4px; }
+  main { padding: 16px 24px; max-width: 1100px; margin: 0 auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #22222a; vertical-align: top; }
   th { color: #9a9aa5; font-weight: 600; }
-  tr.log-row { cursor: pointer; }
-  tr.log-row:hover { background: #17171d; }
+  tr.conv-row, tr.log-row { cursor: pointer; }
+  tr.conv-row:hover, tr.log-row:hover { background: #17171d; }
+  .err-badge { color: #e57373; font-weight: 600; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .empty, .error { padding: 24px; color: #9a9aa5; text-align: center; }
+  h2 { font-size: 15px; color: #9a9aa5; margin: 28px 0 8px; }
   .status-completed { color: #6fd08c; }
   .status-ai_error, .status-rejected_validation { color: #e57373; }
   .status-rate_limited { color: #e5b573; }
   .preview { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .detail-row td { background: #14141a; }
-  .detail-row pre { white-space: pre-wrap; word-break: break-word; background: #0b0b0f; padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; }
-  .detail-label { font-weight: 600; margin: 8px 0 4px; }
-  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
-  .empty, .error { padding: 24px; color: #9a9aa5; text-align: center; }
+
+  /* Transcript view */
+  #t-meta { color: #9a9aa5; font-size: 13px; margin-bottom: 16px; }
+  .bubble-row { display: flex; margin-bottom: 4px; }
+  .bubble { max-width: 72%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.4; }
+  .bubble.user { margin-left: auto; background: #52203f; border-bottom-right-radius: 4px; }
+  .bubble.ai { margin-right: auto; background: #1c1c24; border-bottom-left-radius: 4px; }
+  .bubble.failed { background: #2a1518; color: #e57373; font-style: italic; }
+  .ex-meta { font-size: 11px; color: #55555f; margin: 2px 0 14px; }
+  .ex-meta .err-text { color: #e57373; }
+  .gap-divider { text-align: center; color: #9a9aa5; font-size: 12px; margin: 16px 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>Chat Logs</h1>
-  <input id="f-user" placeholder="user_id">
-  <input id="f-chat" placeholder="chat_id">
-  <select id="f-status">
-    <option value="">any status</option>
-    <option value="completed">completed</option>
-    <option value="ai_error">ai_error</option>
-    <option value="rejected_validation">rejected_validation</option>
-    <option value="rate_limited">rate_limited</option>
-  </select>
-  <button id="search-btn">Search</button>
+  <span id="list-controls" style="display: contents;">
+    <input id="f-character" placeholder="character">
+    <input id="f-user" placeholder="user_id">
+    <label class="chk"><input type="checkbox" id="f-errors"> errors only</label>
+    <button id="search-btn">Search</button>
+    <select id="export-days">
+      <option value="7">last 7 days</option>
+      <option value="30" selected>last 30 days</option>
+      <option value="90">last 90 days</option>
+    </select>
+    <button id="export-btn">Export</button>
+  </span>
+  <span id="transcript-controls" style="display: none;">
+    <button id="back-btn">&larr; Back</button>
+    <button id="export-conv-btn">Export conversation</button>
+  </span>
 </header>
 <main>
-  <table>
-    <thead>
-      <tr><th>Time</th><th>User</th><th>Chat</th><th>Status</th><th>Model</th><th>Tokens</th><th>User message</th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <div class="pager">
-    <button id="prev-btn">Prev</button>
-    <span id="page-info"></span>
-    <button id="next-btn">Next</button>
-  </div>
+  <section id="view-list">
+    <table>
+      <thead>
+        <tr><th>Character</th><th>User</th><th>Messages</th><th>Errors</th><th>Tokens</th><th>First</th><th>Last active</th></tr>
+      </thead>
+      <tbody id="conv-rows"></tbody>
+    </table>
+    <div class="pager">
+      <button id="prev-btn">Prev</button>
+      <span id="page-info"></span>
+      <button id="next-btn">Next</button>
+    </div>
+    <h2>Recent errors</h2>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>User</th><th>Chat</th><th>Status</th><th>User message</th></tr>
+      </thead>
+      <tbody id="error-rows"></tbody>
+    </table>
+  </section>
+  <section id="view-transcript" style="display: none;">
+    <div id="t-meta"></div>
+    <div id="t-messages"></div>
+  </section>
 </main>
 <script>
 (function () {
   var limit = 50;
   var offset = 0;
-  var rowsEl = document.getElementById("rows");
+  var current = null; // { userId, chatId } when transcript open
+
+  var convRowsEl = document.getElementById("conv-rows");
+  var errorRowsEl = document.getElementById("error-rows");
   var pageInfoEl = document.getElementById("page-info");
   var prevBtnEl = document.getElementById("prev-btn");
   var nextBtnEl = document.getElementById("next-btn");
-  var openDetailRow = null;
-  var openForRow = null;
-
-  function currentParams() {
-    var sp = new URLSearchParams();
-    sp.set("limit", limit);
-    sp.set("offset", offset);
-    var userId = document.getElementById("f-user").value.trim();
-    var chatId = document.getElementById("f-chat").value.trim();
-    var status = document.getElementById("f-status").value;
-    if (userId) sp.set("user_id", userId);
-    if (chatId) sp.set("chat_id", chatId);
-    if (status) sp.set("status", status);
-    return sp;
-  }
-
-  function fmtTime(iso) {
-    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
-  }
 
   function td(text) {
     var el = document.createElement("td");
@@ -1098,138 +1317,237 @@ function adminLogsPageHtml() {
     return el;
   }
 
-  function emptyMessage(text, className) {
-    rowsEl.innerHTML = "";
+  function fmtTime(sqliteUtc) {
+    try { return new Date(sqliteUtc.replace(" ", "T") + "Z").toLocaleString(); }
+    catch (e) { return sqliteUtc; }
+  }
+
+  function characterName(chatId) {
+    var i = chatId.indexOf(" (");
+    return i > 0 ? chatId.slice(0, i) : chatId;
+  }
+
+  function shortUser(userId) {
+    return userId.length > 18 ? userId.slice(0, 15) + "..." : userId;
+  }
+
+  function emptyMessage(tbody, cols, text, className) {
+    tbody.innerHTML = "";
     var row = document.createElement("tr");
     var cell = document.createElement("td");
-    cell.colSpan = 7;
+    cell.colSpan = cols;
     cell.className = className;
     cell.textContent = text;
     row.appendChild(cell);
-    rowsEl.appendChild(row);
+    tbody.appendChild(row);
   }
 
-  function load() {
-    openDetailRow = null;
-    openForRow = null;
-    emptyMessage("Loading...", "empty");
+  function listParams() {
+    var sp = new URLSearchParams();
+    sp.set("limit", limit);
+    sp.set("offset", offset);
+    var character = document.getElementById("f-character").value.trim();
+    var userId = document.getElementById("f-user").value.trim();
+    if (character) sp.set("character", character);
+    if (userId) sp.set("user_id", userId);
+    if (document.getElementById("f-errors").checked) sp.set("errors_only", "1");
+    return sp;
+  }
 
-    fetch("/api/admin/logs?" + currentParams().toString())
+  function loadConversations() {
+    emptyMessage(convRowsEl, 7, "Loading...", "empty");
+    fetch("/api/admin/conversations?" + listParams().toString())
       .then(function (r) { return r.json(); })
-      .then(renderRows)
+      .then(renderConversations)
       .catch(function (err) {
-        emptyMessage("Failed to load logs: " + err.message, "error");
+        emptyMessage(convRowsEl, 7, "Failed to load: " + err.message, "error");
       });
   }
 
-  function renderRows(data) {
-    rowsEl.innerHTML = "";
-
+  function renderConversations(data) {
+    convRowsEl.innerHTML = "";
     if (data.error) {
-      emptyMessage(data.error, "error");
+      emptyMessage(convRowsEl, 7, data.error, "error");
       pageInfoEl.textContent = "";
       prevBtnEl.disabled = offset === 0;
       nextBtnEl.disabled = true;
       return;
     }
-
-    var logs = data.logs || [];
-    if (logs.length === 0) {
-      emptyMessage("No logs found.", "empty");
+    var convs = data.conversations || [];
+    if (convs.length === 0) {
+      emptyMessage(convRowsEl, 7, "No conversations found.", "empty");
     }
-
     prevBtnEl.disabled = offset === 0;
-    nextBtnEl.disabled = logs.length < limit;
+    nextBtnEl.disabled = convs.length < limit;
 
-    logs.forEach(function (log) {
+    convs.forEach(function (c) {
       var row = document.createElement("tr");
-      row.className = "log-row";
-      row.appendChild(td(fmtTime(log.created_at)));
-      row.appendChild(td(log.user_id));
-      row.appendChild(td(log.chat_id));
-
-      var statusCell = td(log.status + " (" + log.status_code + ")");
-      statusCell.className = "status-" + log.status;
-      row.appendChild(statusCell);
-
-      row.appendChild(td(log.model));
-      row.appendChild(td(log.total_tokens != null ? log.total_tokens : "-"));
-
-      var previewCell = td(log.user_message);
-      previewCell.className = "preview";
-      row.appendChild(previewCell);
-
-      row.addEventListener("click", function () { toggleDetail(row, log.id); });
-      rowsEl.appendChild(row);
+      row.className = "conv-row";
+      row.appendChild(td(characterName(c.chat_id)));
+      row.appendChild(td(shortUser(c.user_id)));
+      row.appendChild(td(c.message_count));
+      var errCell = td(c.error_count > 0 ? c.error_count : "");
+      if (c.error_count > 0) errCell.className = "err-badge";
+      row.appendChild(errCell);
+      row.appendChild(td(c.total_tokens || 0));
+      row.appendChild(td(fmtTime(c.first_at)));
+      row.appendChild(td(fmtTime(c.last_at)));
+      row.addEventListener("click", function () { openTranscript(c.user_id, c.chat_id); });
+      convRowsEl.appendChild(row);
     });
-
-    pageInfoEl.textContent = "Showing " + logs.length + " (offset " + offset + ")";
+    pageInfoEl.textContent = "Showing " + convs.length + " (offset " + offset + ")";
   }
 
-  function toggleDetail(row, id) {
-    if (openDetailRow) {
-      var wasForThisRow = (openForRow === row);
-      openDetailRow.remove();
-      openDetailRow = null;
-      openForRow = null;
-      if (wasForThisRow) return;
-    }
-
-    var detailRow = document.createElement("tr");
-    detailRow.className = "detail-row";
-    var cell = document.createElement("td");
-    cell.colSpan = 7;
-    cell.textContent = "Loading...";
-    detailRow.appendChild(cell);
-    row.after(detailRow);
-    openDetailRow = detailRow;
-    openForRow = row;
-
-    fetch("/api/admin/logs/" + encodeURIComponent(id))
+  function loadErrors() {
+    emptyMessage(errorRowsEl, 5, "Loading...", "empty");
+    fetch("/api/admin/logs?limit=100")
       .then(function (r) { return r.json(); })
-      .then(function (log) {
-        cell.textContent = "";
-        appendDetailField(cell, "User message", log.user_message);
-        appendDetailField(cell, "Assistant message", log.assistant_message);
-        appendDetailField(cell, "Error", log.error);
-        appendDetailField(cell, "Request messages", prettyJson(log.request_messages_json));
-        appendDetailField(cell, "Response", prettyJson(log.response_json));
+      .then(function (data) {
+        errorRowsEl.innerHTML = "";
+        var rows = (data.logs || []).filter(function (l) { return l.status !== "completed"; }).slice(0, 10);
+        if (rows.length === 0) {
+          emptyMessage(errorRowsEl, 5, "No recent errors.", "empty");
+          return;
+        }
+        rows.forEach(function (log) {
+          var row = document.createElement("tr");
+          row.className = "log-row";
+          row.appendChild(td(fmtTime(log.created_at)));
+          row.appendChild(td(shortUser(log.user_id)));
+          row.appendChild(td(characterName(log.chat_id)));
+          var statusCell = td(log.status + " (" + log.status_code + ")");
+          statusCell.className = "status-" + log.status;
+          row.appendChild(statusCell);
+          var previewCell = td(log.user_message);
+          previewCell.className = "preview";
+          row.appendChild(previewCell);
+          row.addEventListener("click", function () { openTranscript(log.user_id, log.chat_id); });
+          errorRowsEl.appendChild(row);
+        });
       })
       .catch(function (err) {
-        cell.textContent = "Failed to load detail: " + err.message;
+        emptyMessage(errorRowsEl, 5, "Failed to load errors: " + err.message, "error");
       });
   }
 
-  function prettyJson(text) {
-    if (!text) return "";
-    try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
+  function showView(name) {
+    document.getElementById("view-list").style.display = name === "list" ? "" : "none";
+    document.getElementById("list-controls").style.display = name === "list" ? "contents" : "none";
+    document.getElementById("view-transcript").style.display = name === "transcript" ? "" : "none";
+    document.getElementById("transcript-controls").style.display = name === "transcript" ? "contents" : "none";
   }
 
-  function appendDetailField(container, label, value) {
-    if (!value) return;
-    var h = document.createElement("div");
-    h.className = "detail-label";
-    h.textContent = label;
-    var pre = document.createElement("pre");
-    pre.textContent = value;
-    container.appendChild(h);
-    container.appendChild(pre);
+  function openTranscript(userId, chatId) {
+    current = { userId: userId, chatId: chatId };
+    showView("transcript");
+    var metaEl = document.getElementById("t-meta");
+    var messagesEl = document.getElementById("t-messages");
+    metaEl.textContent = "Loading...";
+    messagesEl.innerHTML = "";
+
+    fetch("/api/admin/transcript?user_id=" + encodeURIComponent(userId) + "&chat_id=" + encodeURIComponent(chatId))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { metaEl.textContent = data.error; return; }
+        renderTranscript(data, metaEl, messagesEl);
+      })
+      .catch(function (err) {
+        metaEl.textContent = "Failed to load transcript: " + err.message;
+      });
+  }
+
+  function renderTranscript(data, metaEl, messagesEl) {
+    var msgs = data.messages || [];
+    var name = characterName(data.chat_id);
+    var tokens = 0;
+    msgs.forEach(function (m) { tokens += m.total_tokens || 0; });
+    metaEl.textContent = name + " x " + shortUser(data.user_id) + " - " +
+      msgs.length + " exchanges" +
+      (msgs.length ? ", " + fmtTime(msgs[0].created_at) + " to " + fmtTime(msgs[msgs.length - 1].created_at) : "") +
+      (tokens ? ", " + tokens + " tokens" : "");
+
+    var prevAt = null;
+    msgs.forEach(function (m) {
+      var at = new Date(m.created_at.replace(" ", "T") + "Z");
+      if (prevAt && at - prevAt > 30 * 60 * 1000) {
+        var divider = document.createElement("div");
+        divider.className = "gap-divider";
+        divider.textContent = gapText(at - prevAt);
+        messagesEl.appendChild(divider);
+      }
+      prevAt = at;
+
+      appendBubble(messagesEl, m.user_message, "user", false);
+      if (m.status === "completed" && m.assistant_message) {
+        appendBubble(messagesEl, m.assistant_message, "ai", false);
+      } else {
+        appendBubble(messagesEl, "[message failed]", "ai", true);
+      }
+
+      var meta = document.createElement("div");
+      meta.className = "ex-meta";
+      var metaText = fmtTime(m.created_at) + " | " + m.status + " (" + m.status_code + ") | " + m.model +
+        (m.total_tokens ? " | " + m.total_tokens + " tokens" : "");
+      meta.textContent = metaText;
+      if (m.error) {
+        var errSpan = document.createElement("span");
+        errSpan.className = "err-text";
+        errSpan.textContent = " | " + m.error;
+        meta.appendChild(errSpan);
+      }
+      messagesEl.appendChild(meta);
+    });
+  }
+
+  function gapText(ms) {
+    var mins = Math.round(ms / 60000);
+    if (mins < 60) return mins + " minutes later";
+    var hours = Math.round(mins / 60);
+    if (hours < 48) return hours + " hours later";
+    return Math.round(hours / 24) + " days later";
+  }
+
+  function appendBubble(container, text, side, failed) {
+    var row = document.createElement("div");
+    row.className = "bubble-row";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble " + side + (failed ? " failed" : "");
+    bubble.textContent = text;
+    row.appendChild(bubble);
+    container.appendChild(row);
   }
 
   document.getElementById("search-btn").addEventListener("click", function () {
     offset = 0;
-    load();
+    loadConversations();
   });
   document.getElementById("prev-btn").addEventListener("click", function () {
     offset = Math.max(0, offset - limit);
-    load();
+    loadConversations();
   });
   document.getElementById("next-btn").addEventListener("click", function () {
     offset = offset + limit;
-    load();
+    loadConversations();
+  });
+  document.getElementById("back-btn").addEventListener("click", function () {
+    current = null;
+    showView("list");
+  });
+  document.getElementById("export-btn").addEventListener("click", function () {
+    var sp = new URLSearchParams();
+    sp.set("days", document.getElementById("export-days").value);
+    var character = document.getElementById("f-character").value.trim();
+    if (character) sp.set("character", character);
+    window.location = "/api/admin/export?" + sp.toString();
+  });
+  document.getElementById("export-conv-btn").addEventListener("click", function () {
+    if (!current) return;
+    window.location = "/api/admin/export?user_id=" + encodeURIComponent(current.userId) +
+      "&chat_id=" + encodeURIComponent(current.chatId);
   });
 
-  load();
+  loadConversations();
+  loadErrors();
 })();
 </script>
 </body>
