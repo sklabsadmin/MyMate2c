@@ -22,6 +22,13 @@ class AppConfig {
     'oedipus',
   ];
 
+  /// Range (inclusive) for the randomized pause, in milliseconds, before
+  /// each chat bubble is revealed when a reply is split into multiple
+  /// bubbles (see ChatScreen._splitIntoBubbles). Must have
+  /// minBubbleDelayMs <= maxBubbleDelayMs.
+  static const int minBubbleDelayMs = 200;
+  static const int maxBubbleDelayMs = 1400;
+
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';
 

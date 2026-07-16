@@ -444,6 +444,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         .toList();
   }
 
+  /// Random delay before revealing the next bubble, within
+  /// AppConfig.minBubbleDelayMs..maxBubbleDelayMs (inclusive).
+  int _nextBubbleDelayMs() {
+    final range = AppConfig.maxBubbleDelayMs - AppConfig.minBubbleDelayMs;
+    return AppConfig.minBubbleDelayMs + _bubbleDelayRandom.nextInt(range + 1);
+  }
+
   void _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -494,8 +501,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       setState(() => _isTyping = true);
       Future.delayed(const Duration(milliseconds: 50), _scrollToBottom);
 
-      final delayMs = 200 + _bubbleDelayRandom.nextInt(1201); // 200-1400ms
-      await Future.delayed(Duration(milliseconds: delayMs));
+      await Future.delayed(Duration(milliseconds: _nextBubbleDelayMs()));
 
       if (!mounted) return;
       setState(() => _isTyping = false);
