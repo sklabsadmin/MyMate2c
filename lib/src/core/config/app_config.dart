@@ -26,8 +26,8 @@ class AppConfig {
   /// each chat bubble is revealed when a reply is split into multiple
   /// bubbles (see ChatScreen._splitIntoBubbles). Must have
   /// minBubbleDelayMs <= maxBubbleDelayMs.
-  static const int minBubbleDelayMs = 200;
-  static const int maxBubbleDelayMs = 1400;
+  static const int minBubbleDelayMs = 800;
+  static const int maxBubbleDelayMs = 3000;
 
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';
