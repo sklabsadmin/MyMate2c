@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -39,6 +40,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   OpenAIService? _aiService;
 
   String get _chatId => widget.scenario ?? 'default';
+
+  /// "Zeus (Olympian King)" -> "Zeus"; used in the typing indicator's
+  /// rotating status phrases.
+  String get _characterDisplayName {
+    final scenario = widget.scenario;
+    if (scenario == null || scenario.isEmpty) return 'He';
+    final parenIndex = scenario.indexOf(' (');
+    return parenIndex > 0 ? scenario.substring(0, parenIndex) : scenario;
+  }
 
   @override
   void initState() {
@@ -763,7 +773,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   itemCount: _messages.length + (_isTyping ? 1 : 0),
                   itemBuilder: (context, index) {
                     if (index == _messages.length) {
-                      return const _TypingBubble();
+                      return _TypingBubble(characterName: _characterDisplayName);
                     }
                     final msg = _messages[index];
                     return _ChatBubble(
@@ -942,7 +952,9 @@ class _ChatBubble extends StatelessWidget {
 /// makes the pacing between split-up bubbles actually visible instead of
 /// relying on an easy-to-miss caption elsewhere on screen.
 class _TypingBubble extends StatefulWidget {
-  const _TypingBubble();
+  final String characterName;
+
+  const _TypingBubble({required this.characterName});
 
   @override
   State<_TypingBubble> createState() => _TypingBubbleState();
@@ -951,6 +963,20 @@ class _TypingBubble extends StatefulWidget {
 class _TypingBubbleState extends State<_TypingBubble>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  Timer? _statusTimer;
+  int _statusIndex = -1; // -1 = dots only; first phrase after one interval
+
+  List<String> get _statusPhrases {
+    final name = widget.characterName;
+    return [
+      '$name is thinking…',
+      '$name is choosing his words…',
+      'still writing…',
+      'putting thoughts together…',
+      'almost there…',
+      '$name is taking his time with this one…',
+    ];
+  }
 
   @override
   void initState() {
@@ -959,10 +985,20 @@ class _TypingBubbleState extends State<_TypingBubble>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat();
+    _statusTimer = Timer.periodic(
+      const Duration(milliseconds: AppConfig.typingStatusIntervalMs),
+      (_) {
+        if (!mounted) return;
+        setState(() {
+          _statusIndex = (_statusIndex + 1) % _statusPhrases.length;
+        });
+      },
+    );
   }
 
   @override
   void dispose() {
+    _statusTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -983,32 +1019,62 @@ class _TypingBubbleState extends State<_TypingBubble>
             bottomRight: Radius.circular(20),
           ),
         ),
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, child) {
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(3, (i) {
-                final t = (_controller.value - (i * 0.2)) % 1.0;
-                final pulse = t < 0.5 ? t * 2 : (1 - t) * 2;
-                final opacity = (0.3 + 0.7 * pulse).clamp(0.0, 1.0);
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: Opacity(
-                    opacity: opacity,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(3, (i) {
+                    final t = (_controller.value - (i * 0.2)) % 1.0;
+                    final pulse = t < 0.5 ? t * 2 : (1 - t) * 2;
+                    final opacity = (0.3 + 0.7 * pulse).clamp(0.0, 1.0);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Opacity(
+                        opacity: opacity,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                );
+              },
+            ),
+            // Rotating status phrase for slow replies. AnimatedSwitcher
+            // cross-fades each phrase change, and AnimatedSize keeps the
+            // bubble from snapping when the text appears or grows.
+            AnimatedSize(
+              duration: const Duration(milliseconds: 300),
+              alignment: Alignment.topLeft,
+              child: _statusIndex < 0
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 500),
+                        child: Text(
+                          _statusPhrases[_statusIndex],
+                          key: ValueKey(_statusIndex),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                );
-              }),
-            );
-          },
+            ),
+          ],
         ),
       ),
     );

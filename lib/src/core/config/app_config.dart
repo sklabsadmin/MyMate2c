@@ -29,6 +29,13 @@ class AppConfig {
   static const int minBubbleDelayMs = 800;
   static const int maxBubbleDelayMs = 3000;
 
+  /// While waiting on a slow AI reply, the typing indicator cycles through
+  /// short status phrases ("Zeus is thinking…", "still writing…") so the
+  /// user sees visible progress. A new phrase fades in every interval; the
+  /// first one appears after one interval, so fast replies only ever show
+  /// the animated dots.
+  static const int typingStatusIntervalMs = 4000;
+
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';
 
