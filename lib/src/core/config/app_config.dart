@@ -26,8 +26,8 @@ class AppConfig {
   /// each chat bubble is revealed when a reply is split into multiple
   /// bubbles (see ChatScreen._splitIntoBubbles). Must have
   /// minBubbleDelayMs <= maxBubbleDelayMs.
-  static const int minBubbleDelayMs = 800;
-  static const int maxBubbleDelayMs = 3000;
+  static const int minBubbleDelayMs = 2000;
+  static const int maxBubbleDelayMs = 5000;
 
   /// While waiting on a slow AI reply, the typing indicator cycles through
   /// short status phrases ("Zeus is thinking…", "still writing…") so the
