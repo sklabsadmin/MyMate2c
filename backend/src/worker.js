@@ -778,6 +778,19 @@ function normalizeInworldMessages(messages) {
         .slice(-MAX_HISTORY);
 }
 
+function isTransientInworldStatus(status) {
+    // 524 = Cloudflare Gateway Timeout (Inworld's own API sits behind
+    // Cloudflare, and their backend occasionally doesn't respond in time).
+    // 408/429/502/503/504 are the other common transient upstream failure
+    // modes — worth one retry rather than surfacing a blip to the user.
+    return status === 524 || status === 408 || status === 429 ||
+        status === 502 || status === 503 || status === 504;
+}
+
+function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function callInworldChat(env, character, normalizedMessages) {
     const apiKey = env.INWORLD_API_KEY;
     if (!apiKey) {
@@ -791,28 +804,53 @@ async function callInworldChat(env, character, normalizedMessages) {
         stream: false,
     };
 
-    const response = await fetch("https://api.inworld.ai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Authorization": `Basic ${apiKey}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-    });
+    const maxAttempts = 2;
 
-    const data = await response.json().catch(() => ({}));
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const isLastAttempt = attempt === maxAttempts;
+        let response;
+        try {
+            response = await fetch("https://api.inworld.ai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Basic ${apiKey}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
+        } catch (networkError) {
+            if (!isLastAttempt) {
+                await sleepMs(500);
+                continue;
+            }
+            throw new AIError(502, `Inworld request failed: ${networkError.message}`);
+        }
 
-    if (!response.ok) {
-        const details = (data.error && data.error.message) || data.message || `Inworld request failed with status ${response.status}`;
-        throw new AIError(502, details);
+        if (!response.ok) {
+            if (isTransientInworldStatus(response.status) && !isLastAttempt) {
+                await sleepMs(500);
+                continue;
+            }
+            const data = await response.json().catch(() => ({}));
+            const details = (data.error && data.error.message) || data.message || `Inworld request failed with status ${response.status}`;
+            throw new AIError(502, details);
+        }
+
+        const data = await response.json().catch(() => ({}));
+        const reply = extractAssistantMessage(data);
+        if (typeof reply !== "string" || !reply.trim()) {
+            if (!isLastAttempt) {
+                await sleepMs(500);
+                continue;
+            }
+            throw new AIError(502, "Inworld returned an empty response");
+        }
+
+        return reply.trim();
     }
 
-    const reply = extractAssistantMessage(data);
-    if (typeof reply !== "string" || !reply.trim()) {
-        throw new AIError(502, "Inworld returned an empty response");
-    }
-
-    return reply.trim();
+    // Unreachable — the loop above always returns or throws.
+    throw new AIError(502, "Inworld request failed");
 }
 
 async function cleanupInworldReply(env, rawReply, characterName) {
