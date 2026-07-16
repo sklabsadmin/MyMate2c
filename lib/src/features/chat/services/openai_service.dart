@@ -121,7 +121,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         final data = response.data;
         final choices = data is Map<String, dynamic> ? data['choices'] : null;
         if (choices is! List || choices.isEmpty) {
-          return "I can't reach you properly right now. (${_responseErrorMessage(data)})";
+          return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(data));
         }
 
         final firstChoice = choices.first;
@@ -133,7 +133,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
             : null;
 
         if (responseText is! String || responseText.trim().isEmpty) {
-          return "I can't reach you properly right now. (${_responseErrorMessage(data)})";
+          return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(data));
         }
 
         // Clean up formatting
@@ -152,18 +152,35 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
 
         return responseText;
       } else if (response.statusCode == 429) {
-        return "I need a moment, darling. We've been talking so fast! (Rate Limit Exceeded)";
-      } else if (response.statusCode == 400 || response.statusCode == 401) {
-        return "Something feels off... (${_responseErrorMessage(response.data)})";
+        return "I need a moment, darling. We've been talking so fast!";
       } else {
-        return "I can't reach you properly right now. (${_responseErrorMessage(response.data)})";
+        return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(response.data));
       }
     } catch (e) {
       if (kDebugMode) {
         debugPrint("Chat connection error: $e");
       }
-      return "I can't reach the server right now. Please check your connection and try again.";
+      return _thinkingTroubleMessage();
     }
+  }
+
+  /// A friendly, in-character, vendor-agnostic message for any backend
+  /// failure — the actual technical detail (which provider, what status)
+  /// never reaches the chat UI; it only goes to the debug console (and,
+  /// server-side, the admin log) so this stays diagnosable without ever
+  /// showing a player a raw backend error.
+  String _thinkingTroubleMessage({String? debugDetail}) {
+    if (kDebugMode && debugDetail != null) {
+      debugPrint("Chat backend error (hidden from user): $debugDetail");
+    }
+    return "$_characterDisplayName is having trouble thinking right now. Please stand by...";
+  }
+
+  String get _characterDisplayName {
+    final scenario = _scenario;
+    if (scenario == null || scenario.isEmpty) return "Your companion";
+    final parenIndex = scenario.indexOf(' (');
+    return parenIndex > 0 ? scenario.substring(0, parenIndex) : scenario;
   }
 
   Future<String> startRoleplay(String scenario) async {

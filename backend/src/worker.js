@@ -210,6 +210,11 @@ export default {
             let responseData;
             let responseStatus;
             let responseOk;
+            // Set on failure to the real, detailed error (which vendor, what
+            // status) — used for the D1/admin log only. The client never
+            // sees vendor names or technical detail; responseData.error
+            // stays a generic, user-faceable message.
+            let technicalError = null;
 
             if (inworldCharacter) {
                 // Inworld generates the in-character reply, then OpenAI does a
@@ -222,7 +227,8 @@ export default {
                     responseStatus = 200;
                     responseOk = true;
                 } catch (e) {
-                    responseData = { error: e.message || "Inworld pipeline failed" };
+                    technicalError = e.message || "Inworld pipeline failed";
+                    responseData = { error: "AI response failed. Please try again." };
                     responseStatus = (e instanceof AIError) ? e.status : 502;
                     responseOk = false;
                 }
@@ -265,7 +271,7 @@ export default {
                 assistantMessage,
                 requestMessages: body.messages,
                 responseBody: responseData,
-                error: responseOk ? null : extractErrorMessage(responseData),
+                error: responseOk ? null : (technicalError || extractErrorMessage(responseData)),
                 clientTimestamp: timestamp,
             });
 
