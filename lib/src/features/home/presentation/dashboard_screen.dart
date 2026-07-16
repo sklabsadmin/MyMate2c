@@ -290,10 +290,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                    Expanded(
                      child: GridView.builder(
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
+                          crossAxisCount: 4,
                           childAspectRatio: 0.75,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
                         ),
                         itemCount: allCharacters.length + 1, // +1 for "Create Custom"
                         itemBuilder: (context, index) {
@@ -353,17 +353,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: theme.colorScheme.surface.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: theme.primaryColor.withOpacity(0.3)),
           image: DecorationImage(
-             image: AssetImage(character['image']), 
+             image: AssetImage(character['image']),
              fit: BoxFit.cover,
              // Removed opacity to make image clear
           ),
         ),
         child: Container(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(14),
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
@@ -374,7 +374,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               ],
             ),
           ),
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(6),
           child: Stack(
             children: [
               Align(
@@ -385,20 +385,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     Text(
                       character['name'],
-                      style: theme.textTheme.titleMedium,
+                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       character['vibe'],
-                      style: theme.textTheme.bodyMedium?.copyWith(
+                      style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.secondary,
                         fontWeight: FontWeight.bold,
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      character['desc'],
-                      style: theme.textTheme.bodyMedium?.copyWith(fontSize: 10, color: Colors.white70),
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
@@ -408,16 +405,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 Align(
                   alignment: Alignment.topRight,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.pink.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Text(
                       'CUSTOM',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 10,
+                        fontSize: 8,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -444,7 +441,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: Colors.white.withOpacity(0.2), style: BorderStyle.solid),
         ),
         child: Stack(
@@ -454,32 +451,33 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: theme.primaryColor.withOpacity(0.2),
                     ),
-                    child: Icon(Icons.add, color: theme.primaryColor, size: 32),
+                    child: Icon(Icons.add, color: theme.primaryColor, size: 20),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 6),
                   Text(
                     'Create Custom',
-                    style: theme.textTheme.titleMedium,
+                    style: theme.textTheme.bodySmall,
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ),
             ),
             if (!isPremium)
               Positioned(
-                top: 12,
-                right: 12,
+                top: 6,
+                right: 6,
                 child: Container(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(4),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.lock, color: Colors.amber, size: 16),
+                  child: const Icon(Icons.lock, color: Colors.amber, size: 12),
                 ),
               ),
           ],
