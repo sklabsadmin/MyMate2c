@@ -288,22 +288,30 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                    
                    // Grid of Boyfriends
                    Expanded(
-                     child: GridView.builder(
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          childAspectRatio: 0.75,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                        ),
-                        itemCount: allCharacters.length + 1, // +1 for "Create Custom"
-                        itemBuilder: (context, index) {
-                          if (index == allCharacters.length) {
-                            return _buildCreateNewCard(theme);
-                          }
-                          final character = allCharacters[index];
-                          return _buildCharacterCard(character, theme);
-                        },
-                      ),
+                     child: LayoutBuilder(
+                       builder: (context, constraints) {
+                         // Mobile screens keep the original large cards;
+                         // wider (desktop/PC) viewports get more, smaller
+                         // cards instead of stretching each one huge.
+                         final isWide = constraints.maxWidth > 600;
+                         return GridView.builder(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: isWide ? 4 : 2,
+                              childAspectRatio: 0.75,
+                              crossAxisSpacing: isWide ? 12 : 16,
+                              mainAxisSpacing: isWide ? 12 : 16,
+                            ),
+                            itemCount: allCharacters.length + 1, // +1 for "Create Custom"
+                            itemBuilder: (context, index) {
+                              if (index == allCharacters.length) {
+                                return _buildCreateNewCard(theme, compact: isWide);
+                              }
+                              final character = allCharacters[index];
+                              return _buildCharacterCard(character, theme, compact: isWide);
+                            },
+                          );
+                       },
+                     ),
                    ),
                  ],
                ),
@@ -314,7 +322,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme) {
+  Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme, {required bool compact}) {
     final isCustom = character['isCustom'] == true;
     
     return GestureDetector(
@@ -353,7 +361,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: theme.colorScheme.surface.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(compact ? 14 : 20),
           border: Border.all(color: theme.primaryColor.withOpacity(0.3)),
           image: DecorationImage(
              image: AssetImage(character['image']),
@@ -363,7 +371,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
         child: Container(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(compact ? 14 : 20),
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
@@ -374,7 +382,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               ],
             ),
           ),
-          padding: const EdgeInsets.all(6),
+          padding: EdgeInsets.all(compact ? 6 : 12),
           child: Stack(
             children: [
               Align(
@@ -385,19 +393,30 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     Text(
                       character['name'],
-                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold),
+                      style: compact
+                          ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold)
+                          : theme.textTheme.titleMedium,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       character['vibe'],
-                      style: theme.textTheme.bodySmall?.copyWith(
+                      style: (compact ? theme.textTheme.bodySmall : theme.textTheme.bodyMedium)?.copyWith(
                         color: theme.colorScheme.secondary,
                         fontWeight: FontWeight.bold,
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (!compact) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        character['desc'],
+                        style: theme.textTheme.bodyMedium?.copyWith(fontSize: 10, color: Colors.white70),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -405,16 +424,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 Align(
                   alignment: Alignment.topRight,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8, vertical: compact ? 2 : 4),
                     decoration: BoxDecoration(
                       color: Colors.pink.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(compact ? 10 : 12),
                     ),
-                    child: const Text(
+                    child: Text(
                       'CUSTOM',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 8,
+                        fontSize: compact ? 8 : 10,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -427,9 +446,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildCreateNewCard(ThemeData theme) {
+  Widget _buildCreateNewCard(ThemeData theme, {required bool compact}) {
     final isPremium = ref.read(userSubscriptionProvider);
-    
+
     return GestureDetector(
       onTap: () {
         if (!isPremium) {
@@ -441,7 +460,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(compact ? 14 : 20),
           border: Border.all(color: Colors.white.withOpacity(0.2), style: BorderStyle.solid),
         ),
         child: Stack(
@@ -451,17 +470,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: EdgeInsets.all(compact ? 8 : 16),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: theme.primaryColor.withOpacity(0.2),
                     ),
-                    child: Icon(Icons.add, color: theme.primaryColor, size: 20),
+                    child: Icon(Icons.add, color: theme.primaryColor, size: compact ? 20 : 32),
                   ),
-                  const SizedBox(height: 6),
+                  SizedBox(height: compact ? 6 : 12),
                   Text(
                     'Create Custom',
-                    style: theme.textTheme.bodySmall,
+                    style: compact ? theme.textTheme.bodySmall : theme.textTheme.titleMedium,
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -469,15 +488,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ),
             if (!isPremium)
               Positioned(
-                top: 6,
-                right: 6,
+                top: compact ? 6 : 12,
+                right: compact ? 6 : 12,
                 child: Container(
-                  padding: const EdgeInsets.all(4),
+                  padding: EdgeInsets.all(compact ? 4 : 6),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.lock, color: Colors.amber, size: 12),
+                  child: Icon(Icons.lock, color: Colors.amber, size: compact ? 12 : 16),
                 ),
               ),
           ],
