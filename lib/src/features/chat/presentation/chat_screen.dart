@@ -964,7 +964,18 @@ class _TypingBubbleState extends State<_TypingBubble>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   Timer? _statusTimer;
+  final Random _random = Random();
   int _statusIndex = -1; // -1 = dots only; first phrase after one interval
+
+  /// A random phrase index, never the one currently shown.
+  int _nextStatusIndex() {
+    final count = _statusPhrases.length;
+    int next;
+    do {
+      next = _random.nextInt(count);
+    } while (next == _statusIndex && count > 1);
+    return next;
+  }
 
   List<String> get _statusPhrases {
     final name = widget.characterName;
@@ -999,7 +1010,7 @@ class _TypingBubbleState extends State<_TypingBubble>
       (_) {
         if (!mounted) return;
         setState(() {
-          _statusIndex = (_statusIndex + 1) % _statusPhrases.length;
+          _statusIndex = _nextStatusIndex();
         });
       },
     );
