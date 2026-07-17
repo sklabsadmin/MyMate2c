@@ -22,6 +22,11 @@ class AppConfig {
     'oedipus',
   ];
 
+  /// Whether the dashboard offers user-created custom characters: the
+  /// "Create Custom" card and any already-created ones. Set to TRUE to
+  /// bring the feature back.
+  static const bool enableCustomCharacters = false;
+
   /// Range (inclusive) for the randomized pause, in milliseconds, before
   /// each chat bubble is revealed when a reply is split into multiple
   /// bubbles (see ChatScreen._splitIntoBubbles). Must have

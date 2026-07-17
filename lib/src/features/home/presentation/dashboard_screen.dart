@@ -173,7 +173,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final customChars = ref.watch(customCharactersProvider);
+    final customChars = AppConfig.enableCustomCharacters
+        ? ref.watch(customCharactersProvider)
+        : const <Map<String, dynamic>>[];
     final allCharacters = [..._visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
@@ -301,7 +303,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               crossAxisSpacing: isWide ? 12 : 16,
                               mainAxisSpacing: isWide ? 12 : 16,
                             ),
-                            itemCount: allCharacters.length + 1, // +1 for "Create Custom"
+                            // +1 for the "Create Custom" card when enabled
+                            itemCount: allCharacters.length +
+                                (AppConfig.enableCustomCharacters ? 1 : 0),
                             itemBuilder: (context, index) {
                               if (index == allCharacters.length) {
                                 return _buildCreateNewCard(theme, compact: isWide);
