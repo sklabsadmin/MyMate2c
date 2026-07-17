@@ -969,12 +969,21 @@ class _TypingBubbleState extends State<_TypingBubble>
   List<String> get _statusPhrases {
     final name = widget.characterName;
     return [
-      '$name is thinking…',
-      '$name is choosing his words…',
-      'still writing…',
-      'putting thoughts together…',
-      'almost there…',
-      '$name is taking his time with this one…',
+      '$name is considering your question…',
+      '$name is reflecting on what you said…',
+      '$name is taking your words to heart…',
+      '$name is tracing an old memory…',
+      '$name is looking beyond the obvious…',
+      '$name is exploring the meaning behind your words…',
+      '$name is following the thread through the labyrinth…',
+      '$name is listening for the whisper of the Muses…',
+      '$name is seeking wisdom worthy of your question…',
+      '$name is searching for truth beneath your words…',
+      '$name is walking the halls of memory…',
+      '$name is considering what fate has woven…',
+      '$name is taking the time your question deserves…',
+      '$name is placing the final words…',
+      '$name is returning with an answer…',
     ];
   }
 
