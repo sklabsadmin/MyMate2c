@@ -1157,6 +1157,14 @@ async function buildExportText(env, params) {
         if (!userAliases.has(id)) userAliases.set(id, `User-${userAliases.size + 1}`);
         return userAliases.get(id);
     };
+    // created_at may be an ISO string (what persistConversationLog writes)
+    // or SQLite's "YYYY-MM-DD HH:MM:SS" (the column default) — both UTC.
+    const parseUtc = (s) => {
+        let iso = String(s);
+        if (!iso.includes("T")) iso = iso.replace(" ", "T");
+        if (!/(Z|[+-]\d{2}:?\d{2})$/.test(iso)) iso += "Z";
+        return new Date(iso);
+    };
     const characterName = (chat) => {
         const parenIndex = chat.indexOf(" (");
         return parenIndex > 0 ? chat.slice(0, parenIndex) : chat;
@@ -1185,8 +1193,8 @@ async function buildExportText(env, params) {
 
     for (const rows of buckets.values()) {
         convIndex += 1;
-        const first = new Date(rows[0].created_at + "Z");
-        const last = new Date(rows[rows.length - 1].created_at + "Z");
+        const first = parseUtc(rows[0].created_at);
+        const last = parseUtc(rows[rows.length - 1].created_at);
         const who = alias(rows[0].user_id);
         const name = characterName(rows[0].chat_id);
         if (convIndex > 1) lines.push("", "");
@@ -1196,7 +1204,7 @@ async function buildExportText(env, params) {
         );
         prevAt = null;
         for (const row of rows) {
-            const at = new Date(row.created_at + "Z");
+            const at = parseUtc(row.created_at);
             if (prevAt && at - prevAt > 30 * 60 * 1000) {
                 lines.push("", `· ${fmtGap(at - prevAt)} ·`, "");
             }
@@ -1321,9 +1329,18 @@ function adminLogsPageHtml() {
     return el;
   }
 
-  function fmtTime(sqliteUtc) {
-    try { return new Date(sqliteUtc.replace(" ", "T") + "Z").toLocaleString(); }
-    catch (e) { return sqliteUtc; }
+  function parseUtc(s) {
+    var iso = String(s);
+    if (iso.indexOf("T") === -1) iso = iso.replace(" ", "T");
+    if (!/(Z|[+-]\\d{2}:?\\d{2})$/.test(iso)) iso += "Z";
+    return new Date(iso);
+  }
+
+  function fmtTime(utc) {
+    try {
+      var d = parseUtc(utc);
+      return isNaN(d.getTime()) ? String(utc) : d.toLocaleString();
+    } catch (e) { return String(utc); }
   }
 
   function characterName(chatId) {
@@ -1472,7 +1489,7 @@ function adminLogsPageHtml() {
 
     var prevAt = null;
     msgs.forEach(function (m) {
-      var at = new Date(m.created_at.replace(" ", "T") + "Z");
+      var at = parseUtc(m.created_at);
       if (prevAt && at - prevAt > 30 * 60 * 1000) {
         var divider = document.createElement("div");
         divider.className = "gap-divider";
