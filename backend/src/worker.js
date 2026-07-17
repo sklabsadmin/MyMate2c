@@ -1028,6 +1028,9 @@ async function listConversationLogs(env, params) {
     if (userId) { filters.push("user_id = ?"); binds.push(userId); }
     if (chatId) { filters.push("chat_id = ?"); binds.push(chatId); }
     if (status) { filters.push("status = ?"); binds.push(status); }
+    // Any non-success outcome, regardless of which failure status it is —
+    // searches the whole table, not just recent rows.
+    if (params.get("failures_only") === "1") { filters.push("status != 'completed'"); }
     const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 
     const { results } = await env.CHAT_LOGS_DB.prepare(`
@@ -1262,6 +1265,7 @@ function adminLogsPageHtml() {
     <label class="chk"><input type="checkbox" id="f-errors"> errors only</label>
     <button id="search-btn">Search</button>
     <select id="export-days">
+      <option value="1">last 24 hours</option>
       <option value="7">last 7 days</option>
       <option value="30" selected>last 30 days</option>
       <option value="90">last 90 days</option>
@@ -1400,11 +1404,11 @@ function adminLogsPageHtml() {
 
   function loadErrors() {
     emptyMessage(errorRowsEl, 5, "Loading...", "empty");
-    fetch("/api/admin/logs?limit=100")
+    fetch("/api/admin/logs?limit=10&failures_only=1")
       .then(function (r) { return r.json(); })
       .then(function (data) {
         errorRowsEl.innerHTML = "";
-        var rows = (data.logs || []).filter(function (l) { return l.status !== "completed"; }).slice(0, 10);
+        var rows = data.logs || [];
         if (rows.length === 0) {
           emptyMessage(errorRowsEl, 5, "No recent errors.", "empty");
           return;
