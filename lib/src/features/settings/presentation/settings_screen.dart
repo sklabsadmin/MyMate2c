@@ -60,14 +60,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _openOtherApps() async {
-    if (kIsWeb || defaultTargetPlatform == TargetPlatform.iOS) {
-      _launchUrl('https://apps.apple.com/in/developer/we-agency/id1830663308');
-    } else if (defaultTargetPlatform == TargetPlatform.android) {
-      _launchUrl('https://play.google.com/store/apps/developer?id=We+Agency');
-    }
-  }
-
   Future<void> _connectInstagram() async {
     final returnTo = kIsWeb
         ? Uri.base.toString()
@@ -149,16 +141,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               title: 'Contact Support',
               subtitle: 'We are here to help',
               onTap: _sendEmail,
-            ),
-
-            const SizedBox(height: 30),
-            _buildSectionHeader('MORE'),
-            _buildSettingsTile(
-              context,
-              icon: Icons.apps,
-              title: 'Our Other Apps',
-              subtitle: 'Check out what else we\'re building',
-              onTap: _openOtherApps,
             ),
 
             const SizedBox(height: 30),
