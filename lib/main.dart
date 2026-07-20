@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
-import 'src/core/services/revenue_cat_service.dart';
+// import 'src/core/services/revenue_cat_service.dart'; // RevenueCat disabled
 import 'src/core/services/notification_service.dart';
 
 Future<void> main() async {
@@ -39,9 +39,10 @@ Future<void> main() async {
       print("❌ CRITICAL: APP_SECRET is MISSING! HMAC signatures will fail.");
     }
 
-    if (!AppConfig.isFreeTier) {
-      await RevenueCatService().init();
-    }
+    // RevenueCat disabled - not monetizing currently. Uncomment to re-enable.
+    // if (!AppConfig.isFreeTier) {
+    //   await RevenueCatService().init();
+    // }
 
     // Initialize Local Notifications
     await NotificationService().init();

@@ -7,7 +7,7 @@ import '../models/chat_message.dart';
 import 'package:state_notifier/state_notifier.dart';
 
 import '../config/app_config.dart';
-import 'revenue_cat_service.dart';
+// import 'revenue_cat_service.dart'; // RevenueCat disabled - not monetizing currently
 
 final storageServiceProvider = Provider<StorageService>((ref) {
   return StorageService();
@@ -229,16 +229,16 @@ class UserSubscriptionNotifier extends Notifier<bool> {
     final localStatus = prefs.getBool(_kIsPremiumKey) ?? false;
     state = localStatus;
     
-    // Sync with RevenueCat
-    try {
-      final isRealActive = await RevenueCatService().checkSubscriptionStatus();
-      if (localStatus != isRealActive) {
-        state = isRealActive;
-        await prefs.setBool(_kIsPremiumKey, isRealActive);
-      }
-    } catch (e) {
-      // Fallback to local status if offline/error
-    }
+    // Sync with RevenueCat - DISABLED (not monetizing currently).
+    // try {
+    //   final isRealActive = await RevenueCatService().checkSubscriptionStatus();
+    //   if (localStatus != isRealActive) {
+    //     state = isRealActive;
+    //     await prefs.setBool(_kIsPremiumKey, isRealActive);
+    //   }
+    // } catch (e) {
+    //   // Fallback to local status if offline/error
+    // }
   }
 
   Future<void> setPremium(bool isPremium) async {

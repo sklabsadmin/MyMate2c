@@ -1,3 +1,7 @@
+// RevenueCat integration - DISABLED (not monetizing currently).
+// To re-enable: uncomment `purchases_flutter` in pubspec.yaml and uncomment
+// the original implementation below, then remove the stub class beneath it.
+/*
 import 'package:flutter/services.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:flutter/foundation.dart';
@@ -75,7 +79,7 @@ class RevenueCatService {
       await Purchases.configure(configuration);
       _isInitialized = true;
       debugPrint('[RevenueCat] Service Initialized');
-      
+
       // Log initial customer info
       try {
         CustomerInfo customerInfo = await Purchases.getCustomerInfo();
@@ -119,7 +123,7 @@ Future<bool> purchasePackage(Package package) async {
     final PurchaseResult purchaseResult = await Purchases.purchasePackage(package);
     final CustomerInfo customerInfo = purchaseResult.customerInfo;
     debugPrint('[RevenueCat] Purchase completed. Active entitlements: ${customerInfo.entitlements.active.keys}');
-    
+
     final isPro = customerInfo.entitlements.all[_entitlementId]?.isActive ?? false;
     if (isPro) {
       debugPrint('[RevenueCat] User is now PREMIUM.');
@@ -146,7 +150,7 @@ Future<bool> purchasePackage(Package package) async {
       debugPrint('[RevenueCat] Restoring purchases...');
       CustomerInfo customerInfo = await Purchases.restorePurchases();
       debugPrint('[RevenueCat] Restore completed. Active entitlements: ${customerInfo.entitlements.active.keys}');
-      
+
       final isPro = customerInfo.entitlements.all[_entitlementId]?.isActive ?? false;
       return isPro;
     } on PlatformException catch (e) {
@@ -154,7 +158,7 @@ Future<bool> purchasePackage(Package package) async {
       return false;
     }
   }
-  
+
   Future<bool> checkSubscriptionStatus() async {
       if (_revenueCatDisabled) {
       debugPrint('[RevenueCat] checkSubscriptionStatus() skipped because DISABLE_REVENUECAT=true');
@@ -171,4 +175,27 @@ Future<bool> purchasePackage(Package package) async {
         return false;
       }
   }
+}
+*/
+
+/// Stub replacement while RevenueCat is disabled. Keeps the same public API
+/// so callers (main.dart, storage_service.dart) don't need changes.
+class RevenueCatService {
+  static final RevenueCatService _instance = RevenueCatService._internal();
+
+  factory RevenueCatService() {
+    return _instance;
+  }
+
+  RevenueCatService._internal();
+
+  Future<void> init() async {}
+
+  Future<dynamic> getOfferings() async => null;
+
+  Future<bool> purchasePackage(dynamic package) async => false;
+
+  Future<bool> restorePurchases() async => false;
+
+  Future<bool> checkSubscriptionStatus() async => false;
 }

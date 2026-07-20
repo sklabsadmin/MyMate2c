@@ -1,3 +1,9 @@
+// Paywall UI - DISABLED (not monetizing currently, RevenueCat removed).
+// To re-enable: uncomment `purchases_flutter` in pubspec.yaml, restore the
+// RevenueCat implementation in revenue_cat_service.dart, then uncomment the
+// original screen below and remove the stub class beneath it.
+import 'package:flutter/material.dart';
+/*
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -34,7 +40,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
 
     try {
       Offerings? offerings = await _revenueCat.getOfferings();
-      
+
       // FALLBACK LOGIC: If current is null, try to find any available offering
       Offering? selectedOffering = offerings?.current;
       if (selectedOffering == null && offerings?.all.isNotEmpty == true) {
@@ -46,14 +52,14 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
 
       if (selectedOffering != null && selectedOffering.availablePackages.isNotEmpty) {
           final packages = List<Package>.from(selectedOffering.availablePackages);
-          
+
           // Sort packages if needed
           packages.sort((a, b) {
              if (a.identifier.toLowerCase().contains('weekly')) return -1;
              if (b.identifier.toLowerCase().contains('weekly')) return 1;
              if (a.identifier.toLowerCase().contains('monthly')) return -1;
              if (b.identifier.toLowerCase().contains('monthly')) return 1;
-             return 0; 
+             return 0;
           });
 
           if (mounted) {
@@ -110,19 +116,19 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       }
     }
   }
-  
+
   Future<void> _restorePurchases() async {
      setState(() {
       _purchasePending = true;
     });
-    
+
     final success = await _revenueCat.restorePurchases();
-    
+
     if (mounted) {
        setState(() {
         _purchasePending = false;
       });
-      
+
       if (success) {
          ScaffoldMessenger.of(context).showSnackBar(
              const SnackBar(content: Text('Purchases restored successfully.')),
@@ -140,7 +146,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       backgroundColor: Colors.black,
@@ -170,7 +176,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
               ),
             ),
           ),
-          
+
           // Content
           SafeArea(
             child: SingleChildScrollView(
@@ -206,13 +212,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  
+
                   const SizedBox(height: 30),
                   _buildBenefitRow("Unlimited Messages & Roleplay"),
                   _buildBenefitRow("Access All Character Personalities"),
                   _buildBenefitRow("Faster & Smarter AI Responses"),
                   _buildBenefitRow("No Ads, Pure Romance"),
-                  
+
                   const SizedBox(height: 40),
 
                   if (_loading)
@@ -244,7 +250,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       String customDesc = "";
                       String badge = "";
                       bool isPromoted = false;
-                      
+
                       final id = package.identifier.toLowerCase();
 
                       if (id.contains('weekly')) {
@@ -262,8 +268,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 16.0),
                         child: _buildProductCard(
-                          theme, 
-                          package, 
+                          theme,
+                          package,
                           customDesc: customDesc,
                           badge: badge,
                           isHighlight: isPromoted,
@@ -293,7 +299,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       ),
     );
   }
-  
+
   Widget _buildBenefitRow(String text) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -308,8 +314,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   }
 
   Widget _buildProductCard(
-    ThemeData theme, 
-    Package package, 
+    ThemeData theme,
+    Package package,
     {String customDesc = "", String badge = "", bool isHighlight = false}
   ) {
       final product = package.storeProduct;
@@ -340,8 +346,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                     Text(
                                       product.title.replaceAll(RegExp(r'\(.*\)'), '').trim(), // Remove (App Name) from title
                                       style: GoogleFonts.playfairDisplay(
-                                        fontWeight: FontWeight.bold, 
-                                        color: Colors.white, 
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
                                         fontSize: 18
                                       )
                                     ),
@@ -349,7 +355,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                     Text(
                                       customDesc.isNotEmpty ? customDesc : product.description,
                                       style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 13),
-                                      maxLines: 2, 
+                                      maxLines: 2,
                                       overflow: TextOverflow.ellipsis
                                     ),
                                 ],
@@ -360,10 +366,10 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                              Text(
-                               product.priceString, 
+                               product.priceString,
                                style: GoogleFonts.lato(
-                                 fontSize: 20, 
-                                 color: Colors.white, 
+                                 fontSize: 20,
+                                 color: Colors.white,
                                  fontWeight: FontWeight.bold
                                )
                              ),
@@ -403,4 +409,17 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       );
   }
 }
+*/
 
+/// Stub replacement while the paywall is disabled. Not routed to currently
+/// (see app.dart), kept only so the class name still resolves if referenced.
+class PaywallScreen extends StatelessWidget {
+  const PaywallScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(child: Text('Unavailable')),
+    );
+  }
+}
