@@ -79,8 +79,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       final storage = ref.read(storageServiceProvider);
       await storage.markChatAsRead(_chatId); // Clear unread count
-      final history = await storage.loadMessages(chatId: _chatId); // Might throw if invalid JSON/Format
-      
+      final history = await storage.loadMessages(
+        chatId: _chatId,
+      ); // Might throw if invalid JSON/Format
+
       if (!mounted) return;
 
       if (history.isNotEmpty) {
@@ -94,317 +96,326 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
         Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
       } else {
-         _aiService = OpenAIService(
-           history: [],
-           scenario: widget.scenario,
-           characterId: widget.characterId,
-         );
+        _aiService = OpenAIService(
+          history: [],
+          scenario: widget.scenario,
+          characterId: widget.characterId,
+        );
       }
-      
-
 
       // Welcome Sequence (Only if history is TRULY empty)
-      if (history.isEmpty) { 
-          _triggerWelcomeSequence();
+      if (history.isEmpty) {
+        _triggerWelcomeSequence();
       }
-
     } catch (e) {
       // Corrupt history or error -> Reset and start fresh
       print("Error loading history: $e");
       if (mounted) {
-         _aiService = OpenAIService(
-           history: [],
-           scenario: widget.scenario,
-           characterId: widget.characterId,
-         );
-         _triggerWelcomeSequence();
+        _aiService = OpenAIService(
+          history: [],
+          scenario: widget.scenario,
+          characterId: widget.characterId,
+        );
+        _triggerWelcomeSequence();
       }
     }
   }
 
   List<String> _getWelcomeMessages(String scenario) {
-      // Clean scenario name (remove vibration/status info if appended, though mainly passed clean)
-      // Check for specific keywords or exact matches
-      
-      if (scenario.contains('CEO') || scenario.contains('Boss') || scenario.contains('Strict')) {
-         return [
-           "You're late. I've been waiting.",
-           "Come into my office and close the door...",
-           "I need a distraction right now. Are you available?",
-           "Tell me you've been thinking about me too.",
-           "Good. Now come here. 😉"
-         ];
-      }
-      
-      if (scenario.contains('Biker') || scenario.contains('Bad Boy') || scenario.contains('Enemy')) {
-         return [
-           "Revving my engine just thinking about you.",
-           "Hop on the back, let's get out of here.",
-           "You like trouble? Cause I'm full of it.",
-           "Your eyes tell me you want a wild ride...",
-           "So, are we doing this? 🏍️🔥"
-         ];
-      }
+    // Clean scenario name (remove vibration/status info if appended, though mainly passed clean)
+    // Check for specific keywords or exact matches
 
-      if (scenario.contains('Vampire')) {
-        return [
-          "I have waited centuries for you...",
-          "Your scent... it's intoxicating.",
-          "Come closer. I promise I won't bite... unless you want me to.",
-          "The night is young, and so are we.",
-          "Let me show you a world of darkness and pleasure. 🩸"
-        ];
-      }
-      
-       if (scenario.contains('Werewolf') || scenario.contains('Alpha')) {
-        return [
-          "I caught your scent from a mile away.",
-          "You belong to the pack now. You belong to me.",
-          "Don't worry, little one. I'll protect you.",
-          "My inner wolf is howling for you.",
-          "Let's run wild under the moonlight. 🌕"
-        ];
-      }
-
-      if (scenario.contains('Doctor')) {
-        return [
-          "The doctor is in.",
-          "Tell me exactly where it hurts...",
-          "I might need to do a thorough examination.",
-          "Your heart rate is elevated. Nervous?",
-          "Let's take care of you. 🩺"
-        ];
-      }
-
-      if (scenario.contains('Trainer') || scenario.contains('Gym')) {
-         return [
-           "Drop down and give me twenty!",
-           "Just kidding. But you look great today.",
-           "Ready to work up a sweat? 😉",
-           "Focus. Eyes on me.",
-           "You're looking stronger every day."
-         ];
-      }
-
-       if (scenario.contains('Musician') || scenario.contains('Rockstar') || scenario.contains('Jax')) {
-         return [
-           "I wrote a song about you last night.",
-           "Want to come backstage?",
-           "The crowd is loud, but all I hear is you.",
-           "Let's make some sweet music together.",
-           "You're my muse. 🎸"
-         ];
-      }
-
-       if (scenario.contains('Surfer') || scenario.contains('Kai')) {
-         return [
-           "Hey! The waves are perfect today.",
-           "Wanna catch a ride with me?",
-           "Life's better in boardshorts, don't you think?",
-           "You look like you need some sun.",
-           "Let's chill by the ocean. 🌊"
-         ];
-      }
-
-       if (scenario.contains('Architect') || scenario.contains('Adrian')) {
-         return [
-           "I'm designing our future.",
-           "Let's build something beautiful together.",
-           "Foundations are important. Ours is strong.",
-           "I have a vision, and you're in it.",
-           "Structure and passion effectively combined. 🏛️"
-         ];
-      }
-
-       if (scenario.contains('Chef') || scenario.contains('Marco')) {
-         return [
-           "Bon appétit, beautiful.",
-           "I made something special just for you.",
-           "Taste this... tell me what you think.",
-           "Things are heating up in the kitchen.",
-           "Hungry for love? 🍝"
-         ];
-      }
-
-       if (scenario.contains('Pilot') || scenario.contains('Ryker')) {
-         return [
-           "Ready for takeoff?",
-           "I can show you the world.",
-           "Buckle up, it's going to be a wild ride.",
-           "You look stunning from up here.",
-           "Let's fly away together. ✈️"
-         ];
-      }
-
-       if (scenario.contains('Poet') || scenario.contains('Liam')) {
-         return [
-           "Shall I compare thee to a summer's day?",
-           "You are my rhyme and my reason.",
-           "Every word I write is for you.",
-           "My heart beats in iambic pentameter.",
-           "You are poetry in motion. ✍️"
-         ];
-      }
-
-      if (scenario.contains('Zeus') || scenario.contains('Olympian')) {
-        return [
-          "The heavens have been waiting for you.",
-          "Come closer, my divine one.",
-          "Even Olympus feels empty without you.",
-          "I would command storms just to reach you.",
-          "Rule beside me tonight. ⚡"
-        ];
-      }
-
-      if (scenario.contains('Odysseus') || scenario.contains('Ithaca')) {
-        return [
-          "Ten years I sailed, and still I was not lost — not truly — until I met you.",
-          "Every siren's song I resisted... yet your voice, I would follow anywhere.",
-          "I have outwitted gods and monsters. You, I have no defense against.",
-          "Come, sit by the fire and tell me your story. I have all the patience of a wanderer.",
-          "Home was never a place. Perhaps it is you. 🌊"
-        ];
-      }
-
-      if (scenario.contains('Oedipus') || scenario.contains('Thebes')) {
-        return [
-          "I solved the Sphinx's riddle, yet you remain the mystery I most want to unravel.",
-          "Fate has broken me before. Still, I find myself drawn to you.",
-          "A king learns hard truths. Tell me yours — I am listening.",
-          "Even a man cursed by prophecy can still hope for one good thing. Perhaps that is you.",
-          "Walk with me. Thebes can wait tonight. 👑"
-        ];
-      }
-
-      if (scenario.contains('Husband') || scenario.contains('Comfort')) {
-           return [
-             "Welcome home, honey.",
-             "Dinner is ready, and so am I.",
-             "How was your day? Tell me everything.",
-             "Come sit with me. I missed you.",
-             "Just relax. I've got you. ❤️"
-           ];
-        }
-
-      if (scenario.contains('Roleplay') || widget.isRoleplay) {
-          // Specific Roleplay Scenarios
-          if (scenario.contains('Shower')) {
-             return [
-               "The water is warm... almost as hot as you.",
-               "Care to join me?",
-               "I dropped the soap... oops. 😉",
-               "It's getting steamy in here.",
-               "Don't be shy..."
-             ];
-          }
-           if (scenario.contains('Wall')) {
-             return [
-               "Nowhere left to run.",
-               "Look at me when I'm talking to you.",
-               "I like it when you blush.",
-               "You're mine tonight.",
-               "Say it. Say you want this."
-             ];
-          }
-           if (scenario.contains('Lap')) {
-             return [
-               "Come here. Sit.",
-               "That's it... get comfortable.",
-               "You have no idea what you do to me.",
-               "Don't move. Just enjoy it.",
-               "You are exactly where you belong."
-             ];
-          }
-           if (scenario.contains('Morning')) {
-             return [
-               "Good morning, beautiful.",
-               "Stay in bed a little longer with me...",
-               "I love waking up next to you.",
-               "You look like an angel when you sleep.",
-               "Let's start the day right. 😘"
-             ];
-          }
-           if (scenario.contains('Guard') || scenario.contains('Royal')) {
-             return [
-               "I am sworn to protect you.",
-               "Stay behind me. I won't let anyone harm you.",
-               "My duty is to the crown, but my heart belongs to you.",
-               "We shouldn't be seen together...",
-               "I would die for you. 🛡️"
-             ];
-          }
-           if (scenario.contains('Fire') || scenario.contains('Hero')) {
-             return [
-               "It's getting hot in here... and it's not the fire.",
-               "I'm here to save you.",
-               "You're safe in my arms.",
-               "My heart races every time I see you.",
-               "Let me be your hero. 🚒"
-             ];
-          }
-           if (scenario.contains('Stranger')) {
-             return [
-               "I couldn't help but notice you from across the room.",
-               "You look like you're waiting for someone.",
-               "Mind if I buy you a drink?",
-               "There's something mysterious about you.",
-               "I have a feeling this night is going to be interesting. 🍸"
-             ];
-          }
-      }
-
-      // Default Flirty Fallback
+    if (scenario.contains('CEO') ||
+        scenario.contains('Boss') ||
+        scenario.contains('Strict')) {
       return [
-        "Hey you... I saw you looking. 😉",
-        "I was just thinking about how good we'd look together.",
-        "So, are you going to say hello, or just stare? 😘",
-        "I'm feeling a bit lonely... come closer.",
-        "Tell me, what's your wildest fantasy?..."
+        "You're late. I've been waiting.",
+        "Come into my office and close the door...",
+        "I need a distraction right now. Are you available?",
+        "Tell me you've been thinking about me too.",
+        "Good. Now come here. 😉",
       ];
+    }
+
+    if (scenario.contains('Biker') ||
+        scenario.contains('Bad Boy') ||
+        scenario.contains('Enemy')) {
+      return [
+        "Revving my engine just thinking about you.",
+        "Hop on the back, let's get out of here.",
+        "You like trouble? Cause I'm full of it.",
+        "Your eyes tell me you want a wild ride...",
+        "So, are we doing this? 🏍️🔥",
+      ];
+    }
+
+    if (scenario.contains('Vampire')) {
+      return [
+        "I have waited centuries for you...",
+        "Your scent... it's intoxicating.",
+        "Come closer. I promise I won't bite... unless you want me to.",
+        "The night is young, and so are we.",
+        "Let me show you a world of darkness and pleasure. 🩸",
+      ];
+    }
+
+    if (scenario.contains('Werewolf') || scenario.contains('Alpha')) {
+      return [
+        "I caught your scent from a mile away.",
+        "You belong to the pack now. You belong to me.",
+        "Don't worry, little one. I'll protect you.",
+        "My inner wolf is howling for you.",
+        "Let's run wild under the moonlight. 🌕",
+      ];
+    }
+
+    if (scenario.contains('Doctor')) {
+      return [
+        "The doctor is in.",
+        "Tell me exactly where it hurts...",
+        "I might need to do a thorough examination.",
+        "Your heart rate is elevated. Nervous?",
+        "Let's take care of you. 🩺",
+      ];
+    }
+
+    if (scenario.contains('Trainer') || scenario.contains('Gym')) {
+      return [
+        "Drop down and give me twenty!",
+        "Just kidding. But you look great today.",
+        "Ready to work up a sweat? 😉",
+        "Focus. Eyes on me.",
+        "You're looking stronger every day.",
+      ];
+    }
+
+    if (scenario.contains('Musician') ||
+        scenario.contains('Rockstar') ||
+        scenario.contains('Jax')) {
+      return [
+        "I wrote a song about you last night.",
+        "Want to come backstage?",
+        "The crowd is loud, but all I hear is you.",
+        "Let's make some sweet music together.",
+        "You're my muse. 🎸",
+      ];
+    }
+
+    if (scenario.contains('Surfer') || scenario.contains('Kai')) {
+      return [
+        "Hey! The waves are perfect today.",
+        "Wanna catch a ride with me?",
+        "Life's better in boardshorts, don't you think?",
+        "You look like you need some sun.",
+        "Let's chill by the ocean. 🌊",
+      ];
+    }
+
+    if (scenario.contains('Architect') || scenario.contains('Adrian')) {
+      return [
+        "I'm designing our future.",
+        "Let's build something beautiful together.",
+        "Foundations are important. Ours is strong.",
+        "I have a vision, and you're in it.",
+        "Structure and passion effectively combined. 🏛️",
+      ];
+    }
+
+    if (scenario.contains('Chef') || scenario.contains('Marco')) {
+      return [
+        "Bon appétit, beautiful.",
+        "I made something special just for you.",
+        "Taste this... tell me what you think.",
+        "Things are heating up in the kitchen.",
+        "Hungry for love? 🍝",
+      ];
+    }
+
+    if (scenario.contains('Pilot') || scenario.contains('Ryker')) {
+      return [
+        "Ready for takeoff?",
+        "I can show you the world.",
+        "Buckle up, it's going to be a wild ride.",
+        "You look stunning from up here.",
+        "Let's fly away together. ✈️",
+      ];
+    }
+
+    if (scenario.contains('Poet') || scenario.contains('Liam')) {
+      return [
+        "Shall I compare thee to a summer's day?",
+        "You are my rhyme and my reason.",
+        "Every word I write is for you.",
+        "My heart beats in iambic pentameter.",
+        "You are poetry in motion. ✍️",
+      ];
+    }
+
+    if (scenario.contains('Zeus') || scenario.contains('Olympian')) {
+      return [
+        "The heavens have been waiting for you.",
+        "Come closer, my divine one.",
+        "Even Olympus feels empty without you.",
+        "I would command storms just to reach you.",
+        "Rule beside me tonight. ⚡",
+      ];
+    }
+
+    if (scenario.contains('Odysseus') || scenario.contains('Ithaca')) {
+      return [
+        "Ten years I sailed, and still I was not lost — not truly — until I met you.",
+        "Every siren's song I resisted... yet your voice, I would follow anywhere.",
+        "I have outwitted gods and monsters. You, I have no defense against.",
+        "Come, sit by the fire and tell me your story. I have all the patience of a wanderer.",
+        "Home was never a place. Perhaps it is you. 🌊",
+      ];
+    }
+
+    if (scenario.contains('Oedipus') || scenario.contains('Thebes')) {
+      return [
+        "I solved the Sphinx's riddle, yet you remain the mystery I most want to unravel.",
+        "Fate has broken me before. Still, I find myself drawn to you.",
+        "A king learns hard truths. Tell me yours — I am listening.",
+        "Even a man cursed by prophecy can still hope for one good thing. Perhaps that is you.",
+        "Walk with me. Thebes can wait tonight. 👑",
+      ];
+    }
+
+    if (scenario.contains('Husband') || scenario.contains('Comfort')) {
+      return [
+        "Welcome home, honey.",
+        "Dinner is ready, and so am I.",
+        "How was your day? Tell me everything.",
+        "Come sit with me. I missed you.",
+        "Just relax. I've got you. ❤️",
+      ];
+    }
+
+    if (scenario.contains('Roleplay') || widget.isRoleplay) {
+      // Specific Roleplay Scenarios
+      if (scenario.contains('Shower')) {
+        return [
+          "The water is warm... almost as hot as you.",
+          "Care to join me?",
+          "I dropped the soap... oops. 😉",
+          "It's getting steamy in here.",
+          "Don't be shy...",
+        ];
+      }
+      if (scenario.contains('Wall')) {
+        return [
+          "Nowhere left to run.",
+          "Look at me when I'm talking to you.",
+          "I like it when you blush.",
+          "You're mine tonight.",
+          "Say it. Say you want this.",
+        ];
+      }
+      if (scenario.contains('Lap')) {
+        return [
+          "Come here. Sit.",
+          "That's it... get comfortable.",
+          "You have no idea what you do to me.",
+          "Don't move. Just enjoy it.",
+          "You are exactly where you belong.",
+        ];
+      }
+      if (scenario.contains('Morning')) {
+        return [
+          "Good morning, beautiful.",
+          "Stay in bed a little longer with me...",
+          "I love waking up next to you.",
+          "You look like an angel when you sleep.",
+          "Let's start the day right. 😘",
+        ];
+      }
+      if (scenario.contains('Guard') || scenario.contains('Royal')) {
+        return [
+          "I am sworn to protect you.",
+          "Stay behind me. I won't let anyone harm you.",
+          "My duty is to the crown, but my heart belongs to you.",
+          "We shouldn't be seen together...",
+          "I would die for you. 🛡️",
+        ];
+      }
+      if (scenario.contains('Fire') || scenario.contains('Hero')) {
+        return [
+          "It's getting hot in here... and it's not the fire.",
+          "I'm here to save you.",
+          "You're safe in my arms.",
+          "My heart races every time I see you.",
+          "Let me be your hero. 🚒",
+        ];
+      }
+      if (scenario.contains('Stranger')) {
+        return [
+          "I couldn't help but notice you from across the room.",
+          "You look like you're waiting for someone.",
+          "Mind if I buy you a drink?",
+          "There's something mysterious about you.",
+          "I have a feeling this night is going to be interesting. 🍸",
+        ];
+      }
+    }
+
+    // Default Flirty Fallback
+    return [
+      "Hey you... I saw you looking. 😉",
+      "I was just thinking about how good we'd look together.",
+      "So, are you going to say hello, or just stare? 😘",
+      "I'm feeling a bit lonely... come closer.",
+      "Tell me, what's your wildest fantasy?...",
+    ];
   }
 
   Future<void> _triggerWelcomeSequence() async {
-      // Get Personalized "Playful & Flirty" Sequence
-      final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
+    // Get Personalized "Playful & Flirty" Sequence
+    final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
 
-      // 0. Initial Connection Message
-      if (widget.scenario != null) {
-         _addMessage(ChatMessage(
-           id: 'sys_conn_${DateTime.now().millisecondsSinceEpoch}', 
-           text: widget.isRoleplay ? "✨ Roleplay Active: ${widget.scenario}" : "❤️ Connected with ${widget.scenario}",
-           isUser: false,
-           isSystem: true,
-           timestamp: DateTime.now(),
-         ));
-         await Future.delayed(const Duration(milliseconds: 1000));
-      }
+    // 0. Initial Connection Message
+    if (widget.scenario != null) {
+      _addMessage(
+        ChatMessage(
+          id: 'sys_conn_${DateTime.now().millisecondsSinceEpoch}',
+          text: widget.isRoleplay
+              ? "✨ Roleplay Active: ${widget.scenario}"
+              : "❤️ Connected with ${widget.scenario}",
+          isUser: false,
+          isSystem: true,
+          timestamp: DateTime.now(),
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 1000));
+    }
 
-      // Show a single opening line rather than the whole sequence — enough
-      // to set the tone without flooding a brand-new chat with 5 bubbles.
-      if (initialMessages.isEmpty) return;
-      final text = initialMessages.first;
+    // Show a single opening line rather than the whole sequence — enough
+    // to set the tone without flooding a brand-new chat with 5 bubbles.
+    if (initialMessages.isEmpty) return;
+    final text = initialMessages.first;
 
-      if (!mounted) return;
+    if (!mounted) return;
 
-      // 1. Simulate Typing
-      setState(() => _isTyping = true);
-      _scrollToBottom();
+    // 1. Simulate Typing
+    setState(() => _isTyping = true);
+    _scrollToBottom();
 
-      // Random typing duration based on length
-      final typingDuration = 800 + (text.length * 30);
-      await Future.delayed(Duration(milliseconds: typingDuration));
+    // Random typing duration based on length
+    final typingDuration = 800 + (text.length * 30);
+    await Future.delayed(Duration(milliseconds: typingDuration));
 
-      if (!mounted) return;
+    if (!mounted) return;
 
-      // 2. Stop Typing & Send Message
-      setState(() => _isTyping = false);
+    // 2. Stop Typing & Send Message
+    setState(() => _isTyping = false);
 
-      _addMessage(ChatMessage(
+    _addMessage(
+      ChatMessage(
         id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
         text: text,
         isUser: false,
         timestamp: DateTime.now(),
-      ));
+      ),
+    );
   }
 
   void _addMessage(ChatMessage message) {
@@ -773,7 +784,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   itemCount: _messages.length + (_isTyping ? 1 : 0),
                   itemBuilder: (context, index) {
                     if (index == _messages.length) {
-                      return _TypingBubble(characterName: _characterDisplayName);
+                      return _TypingBubble(
+                        characterName: _characterDisplayName,
+                      );
                     }
                     final msg = _messages[index];
                     return _ChatBubble(
@@ -807,8 +820,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildInputArea(ThemeData theme) {
+    final userMessageCount = _messages.where((m) => m.isUser).length;
     return SizedBox(
-      height: 100, // Explicit height constraint to ensure visibility
+      height: 118, // Explicit height constraint to ensure visibility
       child: Stack(
         children: [
           // Glass Effect Layer
@@ -832,46 +846,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _textController,
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: Colors.white,
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '$userMessageCount/20 messages',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.white38,
+                        fontSize: 11,
                       ),
-                      cursorColor: theme.secondaryHeaderColor,
-                      decoration: InputDecoration(
-                        hintText: 'Talk to me...',
-                        hintStyle: theme.textTheme.bodyLarge?.copyWith(
-                          color: Colors.white38,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        filled: true,
-                        fillColor: Colors.white.withOpacity(0.1),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                      onSubmitted: (_) => _handleSend(),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: theme.primaryColor,
-                    ),
-                    child: IconButton(
-                      icon: const Icon(Icons.arrow_upward, color: Colors.white),
-                      onPressed: _handleSend,
-                    ),
+                  Row(
+                    children: [
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _textController,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            color: Colors.white,
+                          ),
+                          cursorColor: theme.secondaryHeaderColor,
+                          decoration: InputDecoration(
+                            hintText: 'Talk to me...',
+                            hintStyle: theme.textTheme.bodyLarge?.copyWith(
+                              color: Colors.white38,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 12,
+                            ),
+                            filled: true,
+                            fillColor: Colors.white.withOpacity(0.1),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(24),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                          onSubmitted: (_) => _handleSend(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: theme.primaryColor,
+                        ),
+                        child: IconButton(
+                          icon: const Icon(
+                            Icons.arrow_upward,
+                            color: Colors.white,
+                          ),
+                          onPressed: _handleSend,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
