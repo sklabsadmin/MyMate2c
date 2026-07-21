@@ -60,13 +60,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _connectInstagram() async {
-    final returnTo = kIsWeb
-        ? Uri.base.toString()
-        : 'mymate://settings?instagram=connected';
-    final authUrl = AppConfig.instagramAuthUrl(returnTo);
-    if (authUrl.isEmpty) return;
-    await _launchUrl(authUrl);
+  void _showInstagramComingSoon() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Instagram login is coming soon.')),
+    );
   }
 
   Future<void> _connectGoogle() async {
@@ -126,6 +123,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 subtitle: 'Optional: keep your companion history with you',
                 iconColor: Colors.pinkAccent,
                 onTap: _connectGoogle,
+              ),
+              _buildSettingsTile(
+                context,
+                icon: Icons.camera_alt_outlined,
+                title: 'Continue with Instagram',
+                subtitle: 'Coming soon',
+                iconColor: Colors.pinkAccent,
+                onTap: _showInstagramComingSoon,
               ),
               _buildBenefitsCard([
                 'Restore your chats when you come back',
