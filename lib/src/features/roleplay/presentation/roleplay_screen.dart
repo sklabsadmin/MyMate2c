@@ -100,7 +100,7 @@ class _RoleplayScreenState extends ConsumerState<RoleplayScreen> {
       },
       {
         'title': 'Famous Musician',
-        'desc': 'He writes songs about you. Backstage romance.',
+        'desc': 'He writes songs about you. Front row seat to his world.',
         'image': 'assets/images/avatar_rockstar_real.png',
         'color': Colors.pinkAccent,
       },

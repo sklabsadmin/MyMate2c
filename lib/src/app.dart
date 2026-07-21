@@ -105,7 +105,7 @@ class _AIAppState extends ConsumerState<AIApp> {
         body = "I was just checking you out... come back? 😉";
       } else if (vibe == 'Dominant') {
         body = "I didn't say you could leave. return. Now.";
-      } else if (vibe == 'Romantic') {
+      } else if (vibe == 'Friendly') {
         body = "I miss your touch already... 💕";
       }
 

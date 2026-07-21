@@ -95,13 +95,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                     child: Column(
                       children: [
                         Icon(
-                          Icons.favorite,
+                          Icons.theater_comedy,
                           size: 60,
                           color: theme.primaryColor,
                         ),
                         const SizedBox(height: 32),
                         Text(
-                          'Your Secret\nLover',
+                          'Your Mythic\nCompanion',
                           textAlign: TextAlign.center,
                           style: GoogleFonts.playfairDisplay(
                             fontSize: 42,
@@ -118,7 +118,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          'Experience deep intimacy, sensual conversations, and a connection that understands your every desire.',
+                          'Experience deep intimacy and a connection that understands you with the wisdom of the ages.',
                           textAlign: TextAlign.center,
                           style: GoogleFonts.lato(
                             fontSize: 16,
@@ -151,7 +151,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                             child: _isLoading
                                 ? const CircularProgressIndicator(color: Colors.white)
                                 : Text(
-                                    'Start the Romance',
+                                    'Begin the Journey',
                                     style: GoogleFonts.cinzel(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 18,
