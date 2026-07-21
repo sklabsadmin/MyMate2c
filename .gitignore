@@ -71,3 +71,4 @@ android/app/key.properties
 .wrangler
 .dev.vars*
 !.dev.vars.example
+.claude/

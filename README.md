@@ -117,6 +117,19 @@ The same data is available as JSON at `GET /api/admin/logs` (list, supports `?us
 
 Conversation logs contain full user/assistant message text — treat `ADMIN_TOKEN` as sensitive and be mindful of privacy/retention obligations for what's stored.
 
+### Inworld-powered characters
+Two characters — Odysseus and Oedipus (imported from the SKLabChat project) — run on a different pipeline than the rest of the roster: Inworld generates the in-character reply, then a second OpenAI call "cleans it up" (SMS-bubble formatting, meta-commentary removal). Every other character is unaffected and still goes straight to OpenAI as before.
+
+Which characters use which engine is decided **server-side only**, in `INWORLD_CHARACTERS` in `backend/src/worker.js` — the client just sends a `characterId`; it can't choose its own pipeline.
+
+To enable it, set one more secret:
+```bash
+npx wrangler secret put INWORLD_API_KEY
+```
+`INWORLD_MODEL` is optional (defaults to `"auto"`). Without `INWORLD_API_KEY` set, requests to Odysseus/Oedipus fail cleanly with a 503 rather than falling back to the regular pipeline — logged the same way as everything else, with `model` set to `inworld:<id>+gpt-4o-mini-cleanup` so it's easy to filter in `/admin/logs`.
+
+The character portraits (`avatar_odysseus_placeholder.png`, `avatar_oedipus_placeholder.png`) are placeholder art carried over from SKLabChat's own placeholders — they need real portraits before this ships, to match the rest of the photorealistic roster.
+
 ---
 
 ## 💰 Monetization (RevenueCat)

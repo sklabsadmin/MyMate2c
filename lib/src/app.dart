@@ -182,11 +182,14 @@ class _AIAppState extends ConsumerState<AIApp> {
                             state.uri.queryParameters['characterImage'];
                         final isRoleplay =
                             state.uri.queryParameters['isRoleplay'] == 'true';
+                        final characterId =
+                            state.uri.queryParameters['characterId'];
 
                         return ChatScreen(
                           scenario: scenario,
                           characterImage: characterImage,
                           isRoleplay: isRoleplay,
+                          characterId: characterId,
                         );
                       },
                     ),

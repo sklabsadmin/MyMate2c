@@ -18,7 +18,28 @@ class AppConfig {
     'badboy',
     'poet',
     'surfer',
+    'odysseus',
+    'oedipus',
   ];
+
+  /// Whether the dashboard offers user-created custom characters: the
+  /// "Create Custom" card and any already-created ones. Set to TRUE to
+  /// bring the feature back.
+  static const bool enableCustomCharacters = false;
+
+  /// Range (inclusive) for the randomized pause, in milliseconds, before
+  /// each chat bubble is revealed when a reply is split into multiple
+  /// bubbles (see ChatScreen._splitIntoBubbles). Must have
+  /// minBubbleDelayMs <= maxBubbleDelayMs.
+  static const int minBubbleDelayMs = 2000;
+  static const int maxBubbleDelayMs = 5000;
+
+  /// While waiting on a slow AI reply, the typing indicator cycles through
+  /// short status phrases ("Zeus is thinking…", "still writing…") so the
+  /// user sees visible progress. A new phrase fades in every interval; the
+  /// first one appears after one interval, so fast replies only ever show
+  /// the animated dots.
+  static const int typingStatusIntervalMs = 4000;
 
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';

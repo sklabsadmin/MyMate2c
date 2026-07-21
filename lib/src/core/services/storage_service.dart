@@ -124,6 +124,7 @@ class StorageService {
     required String lastMessage,
     required DateTime timestamp,
     String? vibe,
+    String? characterId,
     bool incrementUnread = false,
   }) async {
     final prefs = await SharedPreferences.getInstance();
@@ -157,6 +158,7 @@ class StorageService {
       'timestamp': timestamp.toIso8601String(),
       'vibe': vibe ?? 'Gentle',
       'unreadCount': currentUnread,
+      'characterId': characterId,
     });
     
     // Save back

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,12 +15,14 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String? scenario;
   final String? characterImage;
   final bool isRoleplay; // Distinction flag
+  final String? characterId;
 
   const ChatScreen({
     super.key,
     this.scenario,
     this.characterImage,
     this.isRoleplay = false, // Default to false (Character mode)
+    this.characterId,
   });
 
   @override
@@ -29,12 +33,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  final Random _bubbleDelayRandom = Random();
   bool _isTyping = false;
   String _currentVibe = "Gentle";
   String _currentLanguage = "en";
   OpenAIService? _aiService;
 
   String get _chatId => widget.scenario ?? 'default';
+
+  /// "Zeus (Olympian King)" -> "Zeus"; used in the typing indicator's
+  /// rotating status phrases.
+  String get _characterDisplayName {
+    final scenario = widget.scenario;
+    if (scenario == null || scenario.isEmpty) return 'He';
+    final parenIndex = scenario.indexOf(' (');
+    return parenIndex > 0 ? scenario.substring(0, parenIndex) : scenario;
+  }
 
   @override
   void initState() {
@@ -73,10 +87,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() {
           _messages.addAll(history);
         });
-        _aiService = OpenAIService(history: history, scenario: widget.scenario);
+        _aiService = OpenAIService(
+          history: history,
+          scenario: widget.scenario,
+          characterId: widget.characterId,
+        );
         Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
       } else {
-         _aiService = OpenAIService(history: [], scenario: widget.scenario);
+         _aiService = OpenAIService(
+           history: [],
+           scenario: widget.scenario,
+           characterId: widget.characterId,
+         );
       }
       
 
@@ -90,7 +112,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // Corrupt history or error -> Reset and start fresh
       print("Error loading history: $e");
       if (mounted) {
-         _aiService = OpenAIService(history: [], scenario: widget.scenario);
+         _aiService = OpenAIService(
+           history: [],
+           scenario: widget.scenario,
+           characterId: widget.characterId,
+         );
          _triggerWelcomeSequence();
       }
     }
@@ -229,7 +255,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "Rule beside me tonight. ⚡"
         ];
       }
-      
+
+      if (scenario.contains('Odysseus') || scenario.contains('Ithaca')) {
+        return [
+          "Ten years I sailed, and still I was not lost — not truly — until I met you.",
+          "Every siren's song I resisted... yet your voice, I would follow anywhere.",
+          "I have outwitted gods and monsters. You, I have no defense against.",
+          "Come, sit by the fire and tell me your story. I have all the patience of a wanderer.",
+          "Home was never a place. Perhaps it is you. 🌊"
+        ];
+      }
+
+      if (scenario.contains('Oedipus') || scenario.contains('Thebes')) {
+        return [
+          "I solved the Sphinx's riddle, yet you remain the mystery I most want to unravel.",
+          "Fate has broken me before. Still, I find myself drawn to you.",
+          "A king learns hard truths. Tell me yours — I am listening.",
+          "Even a man cursed by prophecy can still hope for one good thing. Perhaps that is you.",
+          "Walk with me. Thebes can wait tonight. 👑"
+        ];
+      }
+
       if (scenario.contains('Husband') || scenario.contains('Comfort')) {
            return [
              "Welcome home, honey.",
@@ -333,32 +379,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
          await Future.delayed(const Duration(milliseconds: 1000));
       }
 
-      for (final text in initialMessages) {
-         if (!mounted) return;
-         
-         // 1. Simulate Typing
-         setState(() => _isTyping = true);
-         _scrollToBottom();
-         
-         // Random typing duration based on length
-         final typingDuration = 800 + (text.length * 30);
-         await Future.delayed(Duration(milliseconds: typingDuration));
+      // Show a single opening line rather than the whole sequence — enough
+      // to set the tone without flooding a brand-new chat with 5 bubbles.
+      if (initialMessages.isEmpty) return;
+      final text = initialMessages.first;
 
-         if (!mounted) return;
+      if (!mounted) return;
 
-         // 2. Stop Typing & Send Message
-         setState(() => _isTyping = false);
-         
-         _addMessage(ChatMessage(
-           id: 'welcome_${DateTime.now().millisecondsSinceEpoch}', 
-           text: text,
-           isUser: false,
-           timestamp: DateTime.now(),
-         ));
+      // 1. Simulate Typing
+      setState(() => _isTyping = true);
+      _scrollToBottom();
 
-         // 3. Pause before next message (reading time)
-         await Future.delayed(const Duration(milliseconds: 2000));
-      }
+      // Random typing duration based on length
+      final typingDuration = 800 + (text.length * 30);
+      await Future.delayed(Duration(milliseconds: typingDuration));
+
+      if (!mounted) return;
+
+      // 2. Stop Typing & Send Message
+      setState(() => _isTyping = false);
+
+      _addMessage(ChatMessage(
+        id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
+        text: text,
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
   }
 
   void _addMessage(ChatMessage message) {
@@ -379,6 +425,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         lastMessage: message.text,
         timestamp: message.timestamp,
         vibe: _currentVibe,
+        characterId: widget.characterId,
       );
     }
 
@@ -393,6 +440,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         curve: Curves.easeOut,
       );
     }
+  }
+
+  /// Splits a reply on blank lines into separate chat-bubble-sized chunks
+  /// (the Inworld cleanup pass formats replies this way; plain OpenAI
+  /// replies are usually one paragraph already and just come back as a
+  /// single chunk).
+  List<String> _splitIntoBubbles(String text) {
+    return text
+        .split(RegExp(r'\n\s*\n'))
+        .map((chunk) => chunk.trim())
+        .where((chunk) => chunk.isNotEmpty)
+        .toList();
+  }
+
+  /// Random delay before revealing the next bubble, within
+  /// AppConfig.minBubbleDelayMs..maxBubbleDelayMs (inclusive).
+  int _nextBubbleDelayMs() {
+    final range = AppConfig.maxBubbleDelayMs - AppConfig.minBubbleDelayMs;
+    return AppConfig.minBubbleDelayMs + _bubbleDelayRandom.nextInt(range + 1);
   }
 
   void _handleSend() async {
@@ -430,16 +496,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final responseText = await _aiService!.sendMessage(text);
 
     if (!mounted) return;
-    setState(() => _isTyping = false);
 
-    _addMessage(
-      ChatMessage(
-        id: DateTime.now().toString(),
-        text: responseText,
-        isUser: false,
-        timestamp: DateTime.now(),
-      ),
-    );
+    // Complex Characters' cleanup pass formats replies as blank-line
+    // separated paragraphs — show each as its own bubble, paced out like a
+    // real conversation rather than dumping the whole reply at once.
+    final bubbles = _splitIntoBubbles(responseText);
+    if (bubbles.isEmpty) {
+      setState(() => _isTyping = false);
+      return;
+    }
+
+    for (var i = 0; i < bubbles.length; i++) {
+      if (!mounted) return;
+      setState(() => _isTyping = true);
+      Future.delayed(const Duration(milliseconds: 50), _scrollToBottom);
+
+      await Future.delayed(Duration(milliseconds: _nextBubbleDelayMs()));
+
+      if (!mounted) return;
+      setState(() => _isTyping = false);
+
+      _addMessage(
+        ChatMessage(
+          id: '${DateTime.now().millisecondsSinceEpoch}_$i',
+          text: bubbles[i],
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      );
+    }
   }
 
   void _showVibeSelector() {
@@ -685,8 +770,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     top: 130,
                     bottom: 8,
                   ),
-                  itemCount: _messages.length,
+                  itemCount: _messages.length + (_isTyping ? 1 : 0),
                   itemBuilder: (context, index) {
+                    if (index == _messages.length) {
+                      return _TypingBubble(characterName: _characterDisplayName);
+                    }
                     final msg = _messages[index];
                     return _ChatBubble(
                       message: msg,
@@ -708,22 +796,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       _buildStarterChip(theme, "Roleplay: First Date 🍷"),
                       _buildStarterChip(theme, "I had a bad day 😔"),
                     ],
-                  ),
-                ),
-
-              if (_isTyping)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 24, bottom: 8),
-                    child: Text(
-                      'typing...',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontStyle: FontStyle.italic,
-                        color: Colors.white60,
-                        fontSize: 12,
-                      ),
-                    ),
                   ),
                 ),
               _buildInputArea(theme),
@@ -869,6 +941,160 @@ class _ChatBubble extends StatelessWidget {
               height: 1.3,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A left-aligned bubble with three pulsing dots, styled like an incoming
+/// message bubble so it appears exactly where the next reply will land —
+/// makes the pacing between split-up bubbles actually visible instead of
+/// relying on an easy-to-miss caption elsewhere on screen.
+class _TypingBubble extends StatefulWidget {
+  final String characterName;
+
+  const _TypingBubble({required this.characterName});
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _statusTimer;
+  final Random _random = Random();
+  int _statusIndex = -1; // -1 = dots only; first phrase after one interval
+
+  /// A random phrase index, never the one currently shown.
+  int _nextStatusIndex() {
+    final count = _statusPhrases.length;
+    int next;
+    do {
+      next = _random.nextInt(count);
+    } while (next == _statusIndex && count > 1);
+    return next;
+  }
+
+  List<String> get _statusPhrases {
+    final name = widget.characterName;
+    return [
+      '$name is considering your question…',
+      '$name is reflecting on what you said…',
+      '$name is taking your words to heart…',
+      '$name is tracing an old memory…',
+      '$name is looking beyond the obvious…',
+      '$name is exploring the meaning behind your words…',
+      '$name is following the thread through the labyrinth…',
+      '$name is listening for the whisper of the Muses…',
+      '$name is seeking wisdom worthy of your question…',
+      '$name is searching for truth beneath your words…',
+      '$name is walking the halls of memory…',
+      '$name is considering what fate has woven…',
+      '$name is taking the time your question deserves…',
+      '$name is placing the final words…',
+      '$name is returning with an answer…',
+    ];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+    _statusTimer = Timer.periodic(
+      const Duration(milliseconds: AppConfig.typingStatusIntervalMs),
+      (_) {
+        if (!mounted) return;
+        setState(() {
+          _statusIndex = _nextStatusIndex();
+        });
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _statusTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.1),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20),
+            topRight: Radius.circular(20),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(20),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(3, (i) {
+                    final t = (_controller.value - (i * 0.2)) % 1.0;
+                    final pulse = t < 0.5 ? t * 2 : (1 - t) * 2;
+                    final opacity = (0.3 + 0.7 * pulse).clamp(0.0, 1.0);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Opacity(
+                        opacity: opacity,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                );
+              },
+            ),
+            // Rotating status phrase for slow replies. AnimatedSwitcher
+            // cross-fades each phrase change, and AnimatedSize keeps the
+            // bubble from snapping when the text appears or grows.
+            AnimatedSize(
+              duration: const Duration(milliseconds: 300),
+              alignment: Alignment.topLeft,
+              child: _statusIndex < 0
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 500),
+                        child: Text(
+                          _statusPhrases[_statusIndex],
+                          key: ValueKey(_statusIndex),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+          ],
         ),
       ),
     );

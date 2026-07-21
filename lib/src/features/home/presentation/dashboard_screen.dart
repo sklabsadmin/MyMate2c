@@ -124,8 +124,31 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'name': 'Kai',
       'vibe': 'Surfer',
       'desc': 'Sun, salt, and endless chill vibes.',
-      'image': 'assets/images/avatar_badboy_real.png', 
+      'image': 'assets/images/avatar_badboy_real.png',
       'color': Colors.cyanAccent,
+    },
+    // Imported from SKLabChat — these two run on the Inworld pipeline
+    // instead of the direct-OpenAI one every character above uses. The
+    // worker decides the engine from 'id'; this 'engine' field is just
+    // local documentation of that choice, not something sent to the
+    // backend. Placeholder art — needs real portraits before shipping.
+    {
+      'id': 'odysseus',
+      'name': 'Odysseus',
+      'vibe': 'King of Ithaca',
+      'desc': 'A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.',
+      'image': 'assets/images/avatar_odysseus_real.png',
+      'color': const Color(0xFF9D4F2F),
+      'engine': 'inworld',
+    },
+    {
+      'id': 'oedipus',
+      'name': 'Oedipus',
+      'vibe': 'King of Thebes',
+      'desc': 'A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.',
+      'image': 'assets/images/avatar_oedipus_real.png',
+      'color': const Color(0xFF7D3F25),
+      'engine': 'inworld',
     },
   ];
 
@@ -150,7 +173,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final customChars = ref.watch(customCharactersProvider);
+    final customChars = AppConfig.enableCustomCharacters
+        ? ref.watch(customCharactersProvider)
+        : const <Map<String, dynamic>>[];
     final allCharacters = [..._visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
@@ -265,22 +290,32 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                    
                    // Grid of Boyfriends
                    Expanded(
-                     child: GridView.builder(
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          childAspectRatio: 0.75,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                        ),
-                        itemCount: allCharacters.length + 1, // +1 for "Create Custom"
-                        itemBuilder: (context, index) {
-                          if (index == allCharacters.length) {
-                            return _buildCreateNewCard(theme);
-                          }
-                          final character = allCharacters[index];
-                          return _buildCharacterCard(character, theme);
-                        },
-                      ),
+                     child: LayoutBuilder(
+                       builder: (context, constraints) {
+                         // Mobile screens keep the original large cards;
+                         // wider (desktop/PC) viewports get more, smaller
+                         // cards instead of stretching each one huge.
+                         final isWide = constraints.maxWidth > 600;
+                         return GridView.builder(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: isWide ? 4 : 2,
+                              childAspectRatio: 0.75,
+                              crossAxisSpacing: isWide ? 12 : 16,
+                              mainAxisSpacing: isWide ? 12 : 16,
+                            ),
+                            // +1 for the "Create Custom" card when enabled
+                            itemCount: allCharacters.length +
+                                (AppConfig.enableCustomCharacters ? 1 : 0),
+                            itemBuilder: (context, index) {
+                              if (index == allCharacters.length) {
+                                return _buildCreateNewCard(theme, compact: isWide);
+                              }
+                              final character = allCharacters[index];
+                              return _buildCharacterCard(character, theme, compact: isWide);
+                            },
+                          );
+                       },
+                     ),
                    ),
                  ],
                ),
@@ -291,13 +326,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme) {
+  Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme, {required bool compact}) {
     final isCustom = character['isCustom'] == true;
     
     return GestureDetector(
       onTap: () {
         // Navigate to Chat
-        context.push('/chat/session?scenario=${Uri.encodeComponent(character['name'] + " (" + character['vibe'] + ")")}&characterImage=${Uri.encodeComponent(character['image'])}&isRoleplay=false'); 
+        final characterId = character['id'] as String?;
+        final characterIdParam = (characterId != null && characterId.isNotEmpty)
+            ? '&characterId=${Uri.encodeComponent(characterId)}'
+            : '';
+        context.push('/chat/session?scenario=${Uri.encodeComponent(character['name'] + " (" + character['vibe'] + ")")}&characterImage=${Uri.encodeComponent(character['image'])}&isRoleplay=false$characterIdParam');
       },
       onLongPress: isCustom ? () {
         // Show delete dialog for custom characters
@@ -326,17 +365,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: theme.colorScheme.surface.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(compact ? 14 : 20),
           border: Border.all(color: theme.primaryColor.withOpacity(0.3)),
           image: DecorationImage(
-             image: AssetImage(character['image']), 
+             image: AssetImage(character['image']),
              fit: BoxFit.cover,
              // Removed opacity to make image clear
           ),
         ),
         child: Container(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(compact ? 14 : 20),
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
@@ -347,7 +386,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               ],
             ),
           ),
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(compact ? 6 : 12),
           child: Stack(
             children: [
               Align(
@@ -358,22 +397,30 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     Text(
                       character['name'],
-                      style: theme.textTheme.titleMedium,
+                      style: compact
+                          ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold)
+                          : theme.textTheme.titleMedium,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       character['vibe'],
-                      style: theme.textTheme.bodyMedium?.copyWith(
+                      style: (compact ? theme.textTheme.bodySmall : theme.textTheme.bodyMedium)?.copyWith(
                         color: theme.colorScheme.secondary,
                         fontWeight: FontWeight.bold,
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      character['desc'],
-                      style: theme.textTheme.bodyMedium?.copyWith(fontSize: 10, color: Colors.white70),
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (!compact) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        character['desc'],
+                        style: theme.textTheme.bodyMedium?.copyWith(fontSize: 10, color: Colors.white70),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -381,16 +428,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 Align(
                   alignment: Alignment.topRight,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8, vertical: compact ? 2 : 4),
                     decoration: BoxDecoration(
                       color: Colors.pink.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(compact ? 10 : 12),
                     ),
-                    child: const Text(
+                    child: Text(
                       'CUSTOM',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 10,
+                        fontSize: compact ? 8 : 10,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -403,9 +450,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildCreateNewCard(ThemeData theme) {
+  Widget _buildCreateNewCard(ThemeData theme, {required bool compact}) {
     final isPremium = ref.read(userSubscriptionProvider);
-    
+
     return GestureDetector(
       onTap: () {
         if (!isPremium) {
@@ -417,7 +464,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(compact ? 14 : 20),
           border: Border.all(color: Colors.white.withOpacity(0.2), style: BorderStyle.solid),
         ),
         child: Stack(
@@ -427,32 +474,33 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    padding: EdgeInsets.all(compact ? 8 : 16),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: theme.primaryColor.withOpacity(0.2),
                     ),
-                    child: Icon(Icons.add, color: theme.primaryColor, size: 32),
+                    child: Icon(Icons.add, color: theme.primaryColor, size: compact ? 20 : 32),
                   ),
-                  const SizedBox(height: 12),
+                  SizedBox(height: compact ? 6 : 12),
                   Text(
                     'Create Custom',
-                    style: theme.textTheme.titleMedium,
+                    style: compact ? theme.textTheme.bodySmall : theme.textTheme.titleMedium,
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ),
             ),
             if (!isPremium)
               Positioned(
-                top: 12,
-                right: 12,
+                top: compact ? 6 : 12,
+                right: compact ? 6 : 12,
                 child: Container(
-                  padding: const EdgeInsets.all(6),
+                  padding: EdgeInsets.all(compact ? 4 : 6),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.lock, color: Colors.amber, size: 16),
+                  child: Icon(Icons.lock, color: Colors.amber, size: compact ? 12 : 16),
                 ),
               ),
           ],
