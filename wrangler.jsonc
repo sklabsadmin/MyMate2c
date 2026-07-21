@@ -21,8 +21,12 @@
   "vars": {
     "REQUIRE_CHAT_LOGS": "false",
     // Update this once the worker's real URL is confirmed (used for
-    // Instagram-auth redirects only; not load-bearing for chat/logging).
-    "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev"
+    // Instagram/Google-auth redirects only; not load-bearing for chat/logging).
+    "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev",
+    // Google Sign-In (Settings > Continue with Google). Client ID is not
+    // secret; GOOGLE_CLIENT_SECRET is set via `wrangler secret put`.
+    "GOOGLE_CLIENT_ID": "791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com",
+    "GOOGLE_REDIRECT_URI": "https://mymate-v2.sklabs-admin.workers.dev/auth/google/callback"
   },
   "compatibility_flags": [
     "nodejs_compat"

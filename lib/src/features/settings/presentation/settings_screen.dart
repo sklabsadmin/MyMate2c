@@ -69,6 +69,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await _launchUrl(authUrl);
   }
 
+  Future<void> _connectGoogle() async {
+    final returnTo = kIsWeb
+        ? Uri.base.toString()
+        : 'mymate://settings?google=connected';
+    final authUrl = AppConfig.googleAuthUrl(returnTo);
+    if (authUrl.isEmpty) return;
+    await _launchUrl(authUrl);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -112,11 +121,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _buildSectionHeader('ACCOUNT'),
               _buildSettingsTile(
                 context,
-                icon: Icons.camera_alt_outlined,
-                title: 'Continue with Instagram',
+                icon: Icons.g_mobiledata,
+                title: 'Continue with Google',
                 subtitle: 'Optional: keep your companion history with you',
                 iconColor: Colors.pinkAccent,
-                onTap: _connectInstagram,
+                onTap: _connectGoogle,
               ),
               _buildBenefitsCard([
                 'Restore your chats when you come back',

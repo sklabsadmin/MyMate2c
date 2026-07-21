@@ -86,4 +86,11 @@ class AppConfig {
       queryParameters: {'return_to': returnTo},
     );
   }
+
+  static String googleAuthUrl(String returnTo) {
+    return apiUrl(
+      '/auth/google/start',
+      queryParameters: {'return_to': returnTo},
+    );
+  }
 }

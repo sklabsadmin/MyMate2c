@@ -24,15 +24,23 @@ export default {
             return finishInstagramAuth(request, env, url);
         }
 
+        if (request.method === "GET" && url.pathname === "/auth/google/start") {
+            return startGoogleAuth(request, env, url);
+        }
+
+        if (request.method === "GET" && url.pathname === "/auth/google/callback") {
+            return finishGoogleAuth(request, env, url);
+        }
+
         if (request.method === "GET" && url.pathname === "/auth/me") {
             const session = await getSessionFromRequest(request, env);
             return jsonResponse({
                 authenticated: Boolean(session),
-                user: session ? {
-                    provider: "instagram",
-                    id: session.instagramId,
-                    username: session.username,
-                } : null,
+                user: session ? (
+                    session.provider === "google"
+                        ? { provider: "google", id: session.googleId, username: session.name || session.email }
+                        : { provider: "instagram", id: session.instagramId, username: session.username }
+                ) : null,
             }, { headers: corsHeaders(request) });
         }
 
@@ -136,7 +144,7 @@ export default {
             const timestamp = request.headers.get("x-timestamp");
             const session = await getSessionFromRequest(request, env);
             const userId = session
-                ? `instagram:${session.instagramId}`
+                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
 
@@ -420,6 +428,95 @@ async function finishInstagramAuth(request, env, url) {
     }
 }
 
+async function startGoogleAuth(request, env, url) {
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+        return jsonResponse({ error: "Google auth is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+
+    const state = crypto.randomUUID();
+    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "google=connected");
+    const redirectUri = getGoogleRedirectUri(request, env);
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+
+    authUrl.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("scope", "openid email profile");
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("access_type", "online");
+    authUrl.searchParams.set("state", state);
+
+    return redirectResponse(authUrl.toString(), [
+        cookie("mymate_google_state", `${state}|${returnTo}`, request, { maxAge: 600 }),
+    ]);
+}
+
+async function finishGoogleAuth(request, env, url) {
+    const state = url.searchParams.get("state");
+    const code = url.searchParams.get("code");
+    const stateCookie = getCookie(request, "mymate_google_state");
+
+    if (!state || !code || !stateCookie) {
+        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+            expiredCookie("mymate_google_state", request),
+        ]);
+    }
+
+    const [expectedState, returnTo] = stateCookie.split("|");
+    if (state !== expectedState) {
+        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+            expiredCookie("mymate_google_state", request),
+        ]);
+    }
+
+    try {
+        const redirectUri = getGoogleRedirectUri(request, env);
+        const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: env.GOOGLE_CLIENT_ID,
+                client_secret: env.GOOGLE_CLIENT_SECRET,
+                grant_type: "authorization_code",
+                redirect_uri: redirectUri,
+                code,
+            }),
+        });
+        const tokenData = await tokenResponse.json();
+        if (!tokenResponse.ok || !tokenData.access_token) {
+            throw new Error("Google token exchange failed");
+        }
+
+        const profileResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        const profile = await profileResponse.json();
+        if (!profileResponse.ok || !profile.sub) {
+            throw new Error("Google profile lookup failed");
+        }
+
+        const sessionValue = await signSession(env, {
+            provider: "google",
+            googleId: profile.sub,
+            email: profile.email || null,
+            name: profile.name || null,
+            exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
+        });
+
+        return redirectResponse(returnTo || `${getAppOrigin(env)}/#/settings?google=connected`, [
+            expiredCookie("mymate_google_state", request),
+            cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
+        ]);
+    } catch (error) {
+        console.error(JSON.stringify({ event: "google_auth_failed", error: error.message }));
+        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+            expiredCookie("mymate_google_state", request),
+        ]);
+    }
+}
+
 function corsHeaders(request) {
     const origin = request.headers.get("Origin") || "*";
     return {
@@ -462,12 +559,18 @@ function getInstagramRedirectUri(request, env) {
     return `${url.origin}/auth/instagram/callback`;
 }
 
+function getGoogleRedirectUri(request, env) {
+    if (env.GOOGLE_REDIRECT_URI) return env.GOOGLE_REDIRECT_URI;
+    const url = new URL(request.url);
+    return `${url.origin}/auth/google/callback`;
+}
+
 function getAppOrigin(env) {
     return (env.APP_ORIGIN || "http://localhost:8787").replace(/\/$/, "");
 }
 
-function safeReturnTo(value, env) {
-    const fallback = `${getAppOrigin(env)}/#/settings?instagram=connected`;
+function safeReturnTo(value, env, fallbackQuery = "instagram=connected") {
+    const fallback = `${getAppOrigin(env)}/#/settings?${fallbackQuery}`;
     if (!value) return fallback;
     try {
         const url = new URL(value);
