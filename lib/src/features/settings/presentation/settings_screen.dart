@@ -255,12 +255,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               builder: (context, snapshot) {
                 final packageInfo = snapshot.data;
                 return _buildAboutCard(
-                  appName: packageInfo?.appName ?? 'MyMate',
                   version: packageInfo == null
                       ? 'Loading...'
                       : '${packageInfo.version} (${packageInfo.buildNumber})',
-                  packageName: packageInfo?.packageName ?? 'Loading...',
-                  runtime: _runtimeLabel(),
                 );
               },
             ),
@@ -380,10 +377,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Widget _buildAboutCard({
-    required String appName,
     required String version,
-    required String packageName,
-    required String runtime,
   }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -394,10 +388,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ),
       child: Column(
         children: [
-          _buildInfoRow('App', appName),
           _buildInfoRow('Version', version),
-          _buildInfoRow('Bundle', packageName),
-          _buildInfoRow('Runtime', runtime),
         ],
       ),
     );
@@ -436,16 +427,4 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  String _runtimeLabel() {
-    if (kIsWeb) return 'Web';
-
-    return switch (defaultTargetPlatform) {
-      TargetPlatform.iOS => 'iOS',
-      TargetPlatform.macOS => 'macOS',
-      TargetPlatform.android => 'Android',
-      TargetPlatform.linux => 'Linux',
-      TargetPlatform.windows => 'Windows',
-      _ => 'Unknown',
-    };
-  }
 }

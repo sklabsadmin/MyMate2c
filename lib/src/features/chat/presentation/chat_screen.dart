@@ -12,7 +12,6 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
 import '../services/openai_service.dart';
-import '../../../core/models/language.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String? scenario;
@@ -39,7 +38,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final Random _bubbleDelayRandom = Random();
   bool _isTyping = false;
   String _currentVibe = "Gentle";
-  String _currentLanguage = "en";
   OpenAIService? _aiService;
 
   /// Successful AI replies this signed-out user has received from this
@@ -724,62 +722,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  void _showLanguageSelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.95),
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 16),
-            Text(
-              'Select Language',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: ListView.builder(
-                itemCount: Language.supportedLanguages.length,
-                itemBuilder: (context, index) {
-                  final lang = Language.supportedLanguages[index];
-                  final isSelected = _currentLanguage == lang.code;
-                  return ListTile(
-                    leading: Text(
-                      lang.flag,
-                      style: const TextStyle(fontSize: 24),
-                    ),
-                    title: Text(lang.nativeName),
-                    subtitle: Text(lang.name),
-                    trailing: isSelected
-                        ? const Icon(Icons.check, color: Colors.pink)
-                        : null,
-                    onTap: () {
-                      setState(() => _currentLanguage = lang.code);
-                      Navigator.pop(context);
-
-                      // Notify AI of language change
-                      if (_aiService != null) {
-                        _aiService!.sendMessage(
-                          "SYSTEM UPDATE: User wants to chat in ${lang.name}. Respond ONLY in ${lang.name} from now on.",
-                        );
-                      }
-                    },
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _reportMessage(ChatMessage message) {
     showDialog(
       context: context,
@@ -874,14 +816,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           tooltip: 'Back',
         ),
         actions: [
-          IconButton(
-            icon: Text(
-              Language.getByCode(_currentLanguage).flag,
-              style: const TextStyle(fontSize: 24),
-            ),
-            onPressed: _showLanguageSelector,
-            tooltip: 'Change Language',
-          ),
           IconButton(
             icon: Icon(Icons.tune, color: theme.colorScheme.secondary),
             onPressed: _showVibeSelector,
