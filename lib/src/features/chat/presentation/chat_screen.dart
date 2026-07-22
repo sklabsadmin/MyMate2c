@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
@@ -39,7 +42,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String _currentLanguage = "en";
   OpenAIService? _aiService;
 
+  /// Successful AI replies this signed-out user has received from this
+  /// character (persisted, per character). Drives the free-reply gate.
+  int _replyCount = 0;
+
   String get _chatId => widget.scenario ?? 'default';
+
+  /// Stable per-character key for the free-reply counter: the characterId
+  /// when we have one, otherwise the scenario string (covers custom
+  /// characters and roleplay scenarios).
+  String get _characterKey {
+    final id = widget.characterId;
+    if (id != null && id.isNotEmpty) return id;
+    return widget.scenario ?? 'default';
+  }
 
   /// "Zeus (Olympian King)" -> "Zeus"; used in the typing indicator's
   /// rotating status phrases.
@@ -54,12 +70,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void initState() {
     super.initState();
     _loadHistory();
+    _loadReplyCount();
+    // Refresh auth status in case the user just returned from an OAuth
+    // redirect back into this chat.
+    ref.read(authProvider.notifier).refresh();
     // Track active character
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref
           .read(activeChatProvider.notifier)
           .setActive(widget.scenario ?? 'Unknown', _currentVibe);
     });
+  }
+
+  Future<void> _loadReplyCount() async {
+    final count = await ref.read(storageServiceProvider).getReplyCount(
+          _characterKey,
+        );
+    if (mounted) setState(() => _replyCount = count);
   }
 
   @override
@@ -476,14 +503,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
-    // Check Message Limits
-    final isPremium = ref.read(userSubscriptionProvider);
-    // Count local user messages
-    final userMessageCount = _messages.where((m) => m.isUser).length;
-
-    if (!isPremium && userMessageCount >= 10) {
-      // Show Paywall
-      context.push('/paywall');
+    // Free-reply gate: signed-out users get AppConfig.freeRepliesPerCharacter
+    // successful replies per character, then must sign in to keep chatting
+    // with this one. Signing in removes the limit. Other characters are
+    // unaffected until they each hit their own limit.
+    final authed = ref.read(authProvider).value?.authenticated ?? false;
+    if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+      _showLoginGate();
       return;
     }
 
@@ -505,6 +531,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Call Gemini API
     if (_aiService == null) return;
     final responseText = await _aiService!.sendMessage(text);
+
+    if (!mounted) return;
+
+    // Count this toward the free allowance only if a real reply came back
+    // (not a rate-limit/"trouble thinking" fallback), and only while the
+    // gate still applies (signed out).
+    if (_aiService!.lastSendSucceeded) {
+      final next = await ref
+          .read(storageServiceProvider)
+          .incrementReplyCount(_characterKey);
+      if (mounted) setState(() => _replyCount = next);
+    }
 
     if (!mounted) return;
 
@@ -536,6 +574,117 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     }
+  }
+
+  Future<void> _launchGoogleAuth() async {
+    final returnTo = Uri.base.toString();
+    final prefs = await SharedPreferences.getInstance();
+    final anonId = prefs.getString('user_id');
+    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
+    if (authUrl.isEmpty) return;
+    // Same-tab navigation so the browser keeps the user-gesture context and
+    // doesn't popup-block the OAuth redirect.
+    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
+  }
+
+  void _showLoginGate() {
+    final name = _characterDisplayName;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return Container(
+          padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.favorite, color: theme.primaryColor, size: 40),
+              const SizedBox(height: 16),
+              Text(
+                '$name wants to remember you',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.playfairDisplay(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                "Sign in so $name doesn't forget talking to you. "
+                "Your conversations stay with you across visits and devices.",
+                textAlign: TextAlign.center,
+                style: GoogleFonts.lato(
+                  color: Colors.white.withOpacity(0.6),
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _launchGoogleAuth();
+                  },
+                  icon: const Icon(Icons.g_mobiledata, size: 28),
+                  label: const Text('Continue with Google'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: theme.primaryColor,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    textStyle: GoogleFonts.lato(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    ScaffoldMessenger.of(sheetContext).showSnackBar(
+                      const SnackBar(
+                        content: Text('Instagram login is coming soon.'),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.camera_alt_outlined, size: 22),
+                  label: const Text('Continue with Instagram  ·  WIP'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white.withOpacity(0.7),
+                    side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    textStyle: GoogleFonts.lato(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.pop(sheetContext),
+                child: Text(
+                  'Maybe later',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4)),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _showVibeSelector() {
@@ -820,9 +969,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildInputArea(ThemeData theme) {
-    final userMessageCount = _messages.where((m) => m.isUser).length;
+    final authed = ref.watch(authProvider).value?.authenticated ?? false;
+    // Only signed-out users are gated, so only they see the counter.
+    final showCounter = !authed;
+    final remaining =
+        (AppConfig.freeRepliesPerCharacter - _replyCount).clamp(0, 9999);
     return SizedBox(
-      height: 118, // Explicit height constraint to ensure visibility
+      height: showCounter ? 118 : 100,
       child: Stack(
         children: [
           // Glass Effect Layer
@@ -851,16 +1004,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Text(
-                      '$userMessageCount/20 messages',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white38,
-                        fontSize: 11,
+                  if (showCounter)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Text(
+                        remaining > 0
+                            ? '$_replyCount/${AppConfig.freeRepliesPerCharacter} free messages'
+                            : 'Sign in to keep chatting with $_characterDisplayName',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: remaining > 0
+                              ? Colors.white38
+                              : theme.primaryColor,
+                          fontSize: 11,
+                        ),
                       ),
                     ),
-                  ),
                   Row(
                     children: [
                       const SizedBox(width: 8),

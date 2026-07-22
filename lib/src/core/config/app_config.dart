@@ -41,6 +41,12 @@ class AppConfig {
   /// the animated dots.
   static const int typingStatusIntervalMs = 4000;
 
+  /// How many successful AI replies a signed-out user gets per character
+  /// before the login gate appears. Counted per character and persisted
+  /// on-device; welcome messages and failed/"trouble thinking" replies do
+  /// not count. Signing in removes the limit entirely.
+  static const int freeRepliesPerCharacter = 20;
+
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';
 

@@ -13,6 +13,11 @@ class OpenAIService {
   String _currentLanguage = 'English';
   final Dio _dio = Dio();
 
+  /// True only when the most recent [sendMessage] produced a real AI reply
+  /// (not a rate-limit/error/"trouble thinking" fallback). Used to decide
+  /// whether the free-reply counter should increment.
+  bool lastSendSucceeded = false;
+
   OpenAIService({
     List<dynamic> history = const [],
     String language = 'English',
@@ -60,6 +65,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
   }
 
   Future<String> sendMessage(String message) async {
+    lastSendSucceeded = false;
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
@@ -150,6 +156,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
           "content": responseText,
         });
 
+        lastSendSucceeded = true;
         return responseText;
       } else if (response.statusCode == 429) {
         return "I need a moment, darling. We've been talking so fast!";

@@ -73,6 +73,24 @@ class CustomCharactersNotifier extends Notifier<List<Map<String, dynamic>>> {
 class StorageService {
   static const String _kChatHistoryKey = 'chat_history_v1';
 
+  // --- Free-reply counter (per character, persisted) ---
+  // Counts successful AI replies per character so the login gate can trigger
+  // at AppConfig.freeRepliesPerCharacter. Keyed by characterId (or scenario
+  // for custom characters), so each character has its own independent count.
+  static const String _kReplyCountPrefix = 'reply_count_v1_';
+
+  Future<int> getReplyCount(String characterKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt('$_kReplyCountPrefix$characterKey') ?? 0;
+  }
+
+  Future<int> incrementReplyCount(String characterKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    final next = (prefs.getInt('$_kReplyCountPrefix$characterKey') ?? 0) + 1;
+    await prefs.setInt('$_kReplyCountPrefix$characterKey', next);
+    return next;
+  }
+
   Future<int> loadScore() async {
      // Legacy/Helper access
      final prefs = await SharedPreferences.getInstance();

@@ -100,6 +100,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  Future<void> _logout() async {
+    final url = AppConfig.apiUrl('/auth/logout');
+    if (url.isEmpty) return;
+    // Same-tab navigation: the worker clears the session cookie and redirects
+    // back, so the app reloads signed out.
+    await launchUrl(Uri.parse(url), webOnlyWindowName: '_self');
+  }
+
   Future<void> _connectGoogle() async {
     final returnTo = kIsWeb
         ? Uri.base.toString()
@@ -188,12 +196,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ? const Icon(Icons.check_circle, color: Colors.greenAccent)
                     : null,
               ),
-              _buildBenefitsCard([
-                'Restore your chats when you come back',
-                'Keep the same companion identity across browsers',
-                'Protect your message history if browser storage is cleared',
-                'Make future premium access easier to recognize',
-              ]),
+              if (_linkedProvider != null)
+                _buildSettingsTile(
+                  context,
+                  icon: Icons.logout,
+                  title: 'Sign out',
+                  subtitle: 'Disconnect this account on this device',
+                  iconColor: Colors.white70,
+                  onTap: _logout,
+                ),
+              if (_linkedProvider == null)
+                _buildBenefitsCard([
+                  'Restore your chats when you come back',
+                  'Keep the same companion identity across browsers',
+                  'Protect your message history if browser storage is cleared',
+                  'Make future premium access easier to recognize',
+                ]),
 
               const SizedBox(height: 30),
             ],

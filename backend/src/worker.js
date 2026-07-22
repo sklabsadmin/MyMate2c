@@ -45,7 +45,9 @@ export default {
         }
 
         if (request.method === "GET" && url.pathname === "/auth/logout") {
-            return redirectResponse(getAppOrigin(env), [
+            // Redirect back to the origin the request came in on (workers.dev
+            // or a custom domain) so the user stays on the domain they're using.
+            return redirectResponse(`${url.origin}/#/settings`, [
                 expiredCookie("mymate_session", request),
             ]);
         }
