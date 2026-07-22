@@ -128,7 +128,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 context,
                 icon: Icons.camera_alt_outlined,
                 title: 'Continue with Instagram',
-                subtitle: 'Coming soon',
+                subtitle: 'WIP',
                 iconColor: Colors.pinkAccent,
                 onTap: _showInstagramComingSoon,
               ),
