@@ -150,7 +150,15 @@ export default {
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
 
-            if (!signature || !timestamp) {
+            // Signature checking is on unless REQUIRE_SIGNATURE is explicitly
+            // "false". It exists to stop strangers spending our OpenAI credits
+            // through this endpoint, not to protect user data — so it can be
+            // turned off pre-launch, but turn it back on before there are real
+            // users. Client and worker must share the same APP_SECRET for it
+            // to pass; a mismatch fails every request with "Invalid signature".
+            const requireSignature = env.REQUIRE_SIGNATURE !== "false";
+
+            if (requireSignature && (!signature || !timestamp)) {
                 return new Response(JSON.stringify({ error: "Missing signature or timestamp" }), {
                     status: 401,
                     headers: jsonHeaders(request)
@@ -158,23 +166,28 @@ export default {
             }
 
             // Check timestamp freshness (prevent replay attacks > 5 mins)
-            const now = Date.now();
-            const reqTime = parseInt(timestamp, 10);
-            if (Math.abs(now - reqTime) > 5 * 60 * 1000) {
-                return new Response(JSON.stringify({ error: "Request expired" }), {
-                    status: 401,
-                    headers: jsonHeaders(request)
-                });
+            if (requireSignature) {
+                const now = Date.now();
+                const reqTime = parseInt(timestamp, 10);
+                if (Math.abs(now - reqTime) > 5 * 60 * 1000) {
+                    return new Response(JSON.stringify({ error: "Request expired" }), {
+                        status: 401,
+                        headers: jsonHeaders(request)
+                    });
+                }
             }
 
             const bodyText = await request.text();
-            const verified = await verifySignature(env.APP_SECRET, bodyText, timestamp, signature);
 
-            if (!verified) {
-                return new Response(JSON.stringify({ error: "Invalid signature" }), {
-                    status: 401,
-                    headers: jsonHeaders(request)
-                });
+            if (requireSignature) {
+                const verified = await verifySignature(env.APP_SECRET, bodyText, timestamp, signature);
+
+                if (!verified) {
+                    return new Response(JSON.stringify({ error: "Invalid signature" }), {
+                        status: 401,
+                        headers: jsonHeaders(request)
+                    });
+                }
             }
 
             // 2. Input Validation
