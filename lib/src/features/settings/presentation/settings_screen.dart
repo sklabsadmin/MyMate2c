@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,10 +20,42 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final Future<PackageInfo> _packageInfoFuture;
 
+  // Which account provider (if any) the current session is linked to, from
+  // GET /auth/me. Null until checked, or if not signed in.
+  String? _linkedProvider;
+  String? _linkedUsername;
+
   @override
   void initState() {
     super.initState();
     _packageInfoFuture = PackageInfo.fromPlatform();
+    if (kIsWeb) {
+      _checkAuthStatus();
+    }
+  }
+
+  Future<void> _checkAuthStatus() async {
+    final url = AppConfig.apiUrl('/auth/me');
+    if (url.isEmpty) return;
+    try {
+      final response = await Dio().get(
+        url,
+        options: Options(extra: {'withCredentials': true}),
+      );
+      final data = response.data;
+      if (data is Map && data['authenticated'] == true) {
+        final user = data['user'];
+        if (user is Map && mounted) {
+          setState(() {
+            _linkedProvider = user['provider'] as String?;
+            _linkedUsername = user['username'] as String?;
+          });
+        }
+      }
+    } catch (_) {
+      // Not signed in, offline, or the endpoint is unreachable - leave
+      // as not-linked rather than surfacing an error here.
+    }
   }
 
   Future<void> _launchUrl(String url) async {
@@ -72,7 +105,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         : 'mymate://settings?google=connected';
     final authUrl = AppConfig.googleAuthUrl(returnTo);
     if (authUrl.isEmpty) return;
-    await _launchUrl(authUrl);
+    // Navigate in the same tab (not a new one) so the browser doesn't treat
+    // this as a popup - launchUrl after an awaited canLaunchUrl check loses
+    // the user-gesture context that window.open() needs to avoid being
+    // silently blocked.
+    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
   }
 
   @override
@@ -119,18 +156,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _buildSettingsTile(
                 context,
                 icon: Icons.g_mobiledata,
-                title: 'Continue with Google',
-                subtitle: 'Optional: keep your companion history with you',
+                title: _linkedProvider == 'google'
+                    ? 'Connected with Google'
+                    : 'Continue with Google',
+                subtitle: _linkedProvider == 'google'
+                    ? 'Linked${_linkedUsername != null ? ' as $_linkedUsername' : ''}'
+                    : 'Keep your companion history between sessions and devices.',
                 iconColor: Colors.pinkAccent,
                 onTap: _connectGoogle,
+                trailing: _linkedProvider == 'google'
+                    ? const Icon(Icons.check_circle, color: Colors.greenAccent)
+                    : null,
               ),
               _buildSettingsTile(
                 context,
                 icon: Icons.camera_alt_outlined,
-                title: 'Continue with Instagram',
-                subtitle: 'WIP',
+                title: _linkedProvider == 'instagram'
+                    ? 'Connected with Instagram'
+                    : 'Continue with Instagram',
+                subtitle: _linkedProvider == 'instagram'
+                    ? 'Linked${_linkedUsername != null ? ' as $_linkedUsername' : ''}'
+                    : 'Keep your companion history between sessions and devices. WIP',
                 iconColor: Colors.pinkAccent,
                 onTap: _showInstagramComingSoon,
+                trailing: _linkedProvider == 'instagram'
+                    ? const Icon(Icons.check_circle, color: Colors.greenAccent)
+                    : null,
               ),
               _buildBenefitsCard([
                 'Restore your chats when you come back',
@@ -218,6 +269,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     String? subtitle,
     Color? iconColor,
     VoidCallback? onTap,
+    Widget? trailing,
   }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -252,12 +304,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               )
             : null,
-        trailing: onTap == null
-            ? null
-            : Icon(
-                Icons.chevron_right,
-                color: Colors.white.withValues(alpha: 0.3),
-              ),
+        trailing: trailing ??
+            (onTap == null
+                ? null
+                : Icon(
+                    Icons.chevron_right,
+                    color: Colors.white.withValues(alpha: 0.3),
+                  )),
       ),
     );
   }
