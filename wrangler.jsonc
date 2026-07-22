@@ -6,6 +6,10 @@
   "name": "mymate-v2",
   "main": "backend/src/worker.js",
   "compatibility_date": "2026-07-05",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "chat.deeploveechoes.com", "custom_domain": true }
+  ],
   "observability": {
     "enabled": true
   },
