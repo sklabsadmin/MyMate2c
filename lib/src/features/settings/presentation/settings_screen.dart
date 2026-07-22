@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:in_app_review/in_app_review.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
@@ -103,7 +104,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final returnTo = kIsWeb
         ? Uri.base.toString()
         : 'mymate://settings?google=connected';
-    final authUrl = AppConfig.googleAuthUrl(returnTo);
+    // Pass along the pre-login anonymous user id so the backend can merge
+    // this device's existing chat history onto the linked account.
+    final prefs = await SharedPreferences.getInstance();
+    final anonId = prefs.getString('user_id');
+    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
     if (authUrl.isEmpty) return;
     // Navigate in the same tab (not a new one) so the browser doesn't treat
     // this as a popup - launchUrl after an awaited canLaunchUrl check loses

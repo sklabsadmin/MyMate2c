@@ -350,7 +350,7 @@ async function startInstagramAuth(request, env, url) {
     }
 
     const state = crypto.randomUUID();
-    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env);
+    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "instagram=connected", request);
     const redirectUri = getInstagramRedirectUri(request, env);
     const authUrl = new URL(env.INSTAGRAM_AUTH_URL || "https://api.instagram.com/oauth/authorize");
 
@@ -437,7 +437,10 @@ async function startGoogleAuth(request, env, url) {
     }
 
     const state = crypto.randomUUID();
-    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "google=connected");
+    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "google=connected", request);
+    // The client's pre-login anonymous user id (see x-user-id on /api/chat),
+    // so we can merge their existing chat history onto the linked account.
+    const anonId = (url.searchParams.get("anon_id") || "").replace(/\|/g, "");
     const redirectUri = getGoogleRedirectUri(request, env);
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 
@@ -449,7 +452,7 @@ async function startGoogleAuth(request, env, url) {
     authUrl.searchParams.set("state", state);
 
     return redirectResponse(authUrl.toString(), [
-        cookie("mymate_google_state", `${state}|${returnTo}`, request, { maxAge: 600 }),
+        cookie("mymate_google_state", `${state}|${returnTo}|${anonId}`, request, { maxAge: 600 }),
     ]);
 }
 
@@ -464,7 +467,7 @@ async function finishGoogleAuth(request, env, url) {
         ]);
     }
 
-    const [expectedState, returnTo] = stateCookie.split("|");
+    const [expectedState, returnTo, anonId] = stateCookie.split("|");
     if (state !== expectedState) {
         return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
@@ -505,6 +508,15 @@ async function finishGoogleAuth(request, env, url) {
             exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
         });
 
+        await recordLinkedAccount(env, {
+            userId: `google:${profile.sub}`,
+            provider: "google",
+            providerId: profile.sub,
+            email: profile.email || null,
+            displayName: profile.name || null,
+            anonId: anonId || null,
+        });
+
         return redirectResponse(returnTo || `${getAppOrigin(env)}/#/settings?google=connected`, [
             expiredCookie("mymate_google_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
@@ -514,6 +526,44 @@ async function finishGoogleAuth(request, env, url) {
         return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
+    }
+}
+
+// Records that userId is now linked to (provider, providerId), and - if this
+// is the first time this account has linked and an anonId was supplied -
+// reattributes that anonymous user's existing conversation_logs rows to the
+// linked account so their prior history carries over. Never throws: a DB
+// hiccup here shouldn't fail an otherwise-successful login.
+async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId }) {
+    if (!env.CHAT_LOGS_DB) return;
+
+    try {
+        const existing = await env.CHAT_LOGS_DB.prepare(
+            `SELECT merged_anon_id FROM linked_accounts WHERE provider = ? AND provider_id = ?`
+        ).bind(provider, providerId).first();
+
+        await env.CHAT_LOGS_DB.prepare(`
+            INSERT INTO linked_accounts (
+                id, user_id, provider, provider_id, email, display_name, merged_anon_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, provider_id) DO UPDATE SET
+                linked_at = CURRENT_TIMESTAMP,
+                email = excluded.email,
+                display_name = excluded.display_name
+        `).bind(
+            crypto.randomUUID(), userId, provider, providerId, email, displayName,
+            existing ? existing.merged_anon_id : (anonId || null)
+        ).run();
+
+        // Only merge once per account, and only if there's actually an
+        // anonymous id to merge from (skip if already merged before).
+        if (anonId && anonId !== userId && !existing?.merged_anon_id) {
+            await env.CHAT_LOGS_DB.prepare(
+                `UPDATE conversation_logs SET user_id = ? WHERE user_id = ?`
+            ).bind(userId, anonId).run();
+        }
+    } catch (error) {
+        console.error(JSON.stringify({ event: "record_linked_account_failed", error: error.message }));
     }
 }
 
@@ -569,12 +619,22 @@ function getAppOrigin(env) {
     return (env.APP_ORIGIN || "http://localhost:8787").replace(/\/$/, "");
 }
 
-function safeReturnTo(value, env, fallbackQuery = "instagram=connected") {
-    const fallback = `${getAppOrigin(env)}/#/settings?${fallbackQuery}`;
+function safeReturnTo(value, env, fallbackQuery = "instagram=connected", request = null) {
+    // The worker is reachable on more than one origin (the workers.dev URL
+    // and any custom domains, e.g. chat.deeploveechoes.com) - allow whichever
+    // one the request actually came in on, in addition to APP_ORIGIN, so
+    // users stay on the domain they started on after auth completes.
+    const allowedOrigins = new Set([getAppOrigin(env)]);
+    if (request) {
+        try {
+            allowedOrigins.add(new URL(request.url).origin);
+        } catch (_) {}
+    }
+    const fallback = `${request ? new URL(request.url).origin : getAppOrigin(env)}/#/settings?${fallbackQuery}`;
     if (!value) return fallback;
     try {
         const url = new URL(value);
-        if (url.origin === getAppOrigin(env)) return url.toString();
+        if (allowedOrigins.has(url.origin)) return url.toString();
     } catch (_) {}
     return fallback;
 }

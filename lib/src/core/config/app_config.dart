@@ -87,10 +87,13 @@ class AppConfig {
     );
   }
 
-  static String googleAuthUrl(String returnTo) {
+  static String googleAuthUrl(String returnTo, {String? anonId}) {
     return apiUrl(
       '/auth/google/start',
-      queryParameters: {'return_to': returnTo},
+      queryParameters: {
+        'return_to': returnTo,
+        if (anonId != null && anonId.isNotEmpty) 'anon_id': anonId,
+      },
     );
   }
 }
