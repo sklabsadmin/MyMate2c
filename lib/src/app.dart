@@ -15,8 +15,10 @@ import 'features/chat/presentation/recent_chats_screen.dart';
 import 'features/home/presentation/dashboard_screen.dart';
 import 'features/roleplay/presentation/roleplay_screen.dart';
 import 'core/presentation/scaffold_with_navbar.dart';
+import 'features/maintenance/presentation/maintenance_screen.dart';
 import 'features/paywall/presentation/paywall_screen.dart';
 import 'features/settings/presentation/settings_screen.dart';
+import 'core/config/app_config.dart';
 
 // Placeholder screens - will be implemented later
 class PlaceholderScreen extends StatelessWidget {
@@ -150,9 +152,26 @@ class _AIAppState extends ConsumerState<AIApp> {
   Widget build(BuildContext context) {
     // Recreate router with dynamic initial location
     final router = GoRouter(
-      initialLocation: widget.onboardingCompleted ? '/dashboard' : '/',
+      // The holding page comes before everything, including onboarding, so
+      // the first thing a visitor sees while the gate is on is the notice
+      // rather than a work-in-progress build.
+      initialLocation: AppConfig.showMaintenanceGate
+          ? '/wip'
+          : (widget.onboardingCompleted ? '/dashboard' : '/'),
       navigatorKey: _rootNavigatorKey,
+      // Deep links (and reloads on a sub-route) would otherwise skip the
+      // gate entirely, so bounce them back to it until it has been passed.
+      redirect: (context, state) {
+        if (!AppConfig.showMaintenanceGate) return null;
+        if (AppConfig.maintenanceGateBypassed) return null;
+        return state.uri.path == '/wip' ? null : '/wip';
+      },
       routes: [
+        GoRoute(
+          path: '/wip',
+          parentNavigatorKey: _rootNavigatorKey,
+          builder: (context, state) => const MaintenanceScreen(),
+        ),
         StatefulShellRoute.indexedStack(
           builder: (context, state, navigationShell) {
             return ScaffoldWithNavBar(navigationShell: navigationShell);
