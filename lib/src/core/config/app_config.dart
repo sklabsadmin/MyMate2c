@@ -9,18 +9,53 @@ class AppConfig {
   /// When ready for monetization, set this to FALSE.
   static const bool isFreeTier = true;
 
+  /// Shows a holding page instead of the app on launch, so casual visitors to
+  /// the live URL don't wander through a work-in-progress build. Set to FALSE
+  /// to launch straight into the app.
+  ///
+  /// It is a soft gate, not access control: pressing Tab (or long-pressing the
+  /// artwork on touch devices, which have no Tab key) enters the real app with
+  /// everything working normally. Anyone who knows the trick — or who reads the
+  /// shipped JavaScript — gets in, which is the point. It filters the casual,
+  /// nothing more, so don't rely on it to hide anything sensitive.
+  static const bool showMaintenanceGate = true;
+
+  /// Set once the user has tabbed past the gate. Deliberately in-memory only:
+  /// a reload shows the holding page again, which is the desired behaviour for
+  /// a page whose whole job is to greet new arrivals.
+  static bool maintenanceGateBypassed = false;
+
   /// Which built-in characters (by id) to show on the dashboard, and in
   /// what order. Hides the rest without deleting their definitions. Does
   /// not affect user-created custom characters, which are always shown
   /// after this list.
   static const List<String> visibleCharacterIds = [
+    ...greekCharacterIds,
+    ...modernCharacterIds,
+  ];
+
+  /// Dashboard groups, rendered as labelled sections in this order. An id
+  /// listed here must exist in dashboard_screen.dart's _characters list.
+  /// Moving an id between groups only changes where its card appears — the
+  /// character itself, and which engine the worker picks for it, is
+  /// unaffected.
+  static const List<String> greekCharacterIds = [
     'zeus',
+    'odysseus',
+    'oedipus',
+    'penelope',
+    'cupid',
+  ];
+
+  static const List<String> modernCharacterIds = [
     'badboy',
     'poet',
     'surfer',
-    'odysseus',
-    'oedipus',
   ];
+
+  /// Section headings for the two groups above.
+  static const String greekSectionTitle = 'Greek';
+  static const String modernSectionTitle = 'Modern';
 
   /// Whether the dashboard offers user-created custom characters: the
   /// "Create Custom" card and any already-created ones. Set to TRUE to

@@ -150,6 +150,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'color': const Color(0xFF7D3F25),
       'engine': 'inworld',
     },
+    // These two run on the default direct-OpenAI path (no INWORLD_CHARACTERS
+    // entry in the worker), so their persona comes from 'vibe'/'desc' alone
+    // rather than a dedicated system prompt — same as Zeus.
+    // Cupid still uses placeholder art: drop in
+    // assets/images/avatar_cupid_real.png and update its 'image' line below.
+    {
+      'id': 'penelope',
+      'name': 'Penelope',
+      'vibe': 'Queen of Ithaca',
+      'desc': 'Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.',
+      'image': 'assets/images/avatar_penelope_real.png',
+      'color': const Color(0xFF6A4C93),
+    },
+    {
+      'id': 'cupid',
+      'name': 'Cupid',
+      'vibe': 'God of Desire',
+      'desc': 'Mischievous and disarming, with an aim no mortal heart survives.',
+      'image': 'assets/images/avatar_zeus_real.png', // TODO: placeholder
+      'color': const Color(0xFFD81B60),
+    },
   ];
 
   /// Built-in characters allowed by AppConfig.visibleCharacterIds, in that
@@ -158,6 +179,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return AppConfig.visibleCharacterIds
         .map((id) => _characters.firstWhere((c) => c['id'] == id))
         .toList();
+  }
+
+  /// Characters for one dashboard group, in the group list's order. Ids with
+  /// no matching entry are skipped rather than throwing, so a typo in
+  /// AppConfig hides one card instead of taking down the whole dashboard.
+  List<Map<String, dynamic>> _charactersForGroup(List<String> ids) {
+    return ids
+        .map((id) => _characters.where((c) => c['id'] == id).firstOrNull)
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  /// Greeting that tracks the viewer's own clock rather than being fixed to
+  /// evening. Boundaries: morning until noon, afternoon until 17:00.
+  String _timeOfDayGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good Morning,';
+    if (hour < 17) return 'Good Afternoon,';
+    return 'Good Evening,';
   }
 
   @override
@@ -176,7 +216,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final customChars = AppConfig.enableCustomCharacters
         ? ref.watch(customCharactersProvider)
         : const <Map<String, dynamic>>[];
-    final allCharacters = [..._visibleCharacters, ...customChars];
 
     final theme = Theme.of(context);
     final score = ref.watch(userScoreProvider);
@@ -214,13 +253,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Good Evening,',
+                              _timeOfDayGreeting(),
                               style: theme.textTheme.bodyLarge?.copyWith(
                                 color: Colors.white70,
                               ),
                             ),
                             Text(
-                              'Beautiful',
+                              'Titillating Mortal',
                               style: theme.textTheme.displayLarge?.copyWith(fontSize: 28, color: Colors.white),
                             ),
                           ],
@@ -283,38 +322,94 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                    const SizedBox(height: 32),
                    
                    Text(
-                      'Select Your Partner',
+                      'Select your ChatMate',
                       style: theme.textTheme.headlineSmall,
                    ),
                    const SizedBox(height: 16),
-                   
-                   // Grid of Boyfriends
+
+                   // One tab per character group, Greek first. Custom
+                   // characters get their own trailing tab so they never
+                   // mix into the built-in groups.
                    Expanded(
-                     child: LayoutBuilder(
-                       builder: (context, constraints) {
-                         // Mobile screens keep the original large cards;
-                         // wider (desktop/PC) viewports get more, smaller
-                         // cards instead of stretching each one huge.
-                         final isWide = constraints.maxWidth > 600;
-                         return GridView.builder(
-                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: isWide ? 4 : 2,
-                              childAspectRatio: 0.75,
-                              crossAxisSpacing: isWide ? 12 : 16,
-                              mainAxisSpacing: isWide ? 12 : 16,
-                            ),
-                            // +1 for the "Create Custom" card when enabled
-                            itemCount: allCharacters.length +
-                                (AppConfig.enableCustomCharacters ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (index == allCharacters.length) {
-                                return _buildCreateNewCard(theme, compact: isWide);
-                              }
-                              final character = allCharacters[index];
-                              return _buildCharacterCard(character, theme, compact: isWide);
-                            },
-                          );
-                       },
+                     child: DefaultTabController(
+                       length: AppConfig.enableCustomCharacters ? 3 : 2,
+                       child: Column(
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+                           // Styled as a filled segmented control rather than
+                           // underlined text: on first open the Greek tab is
+                           // selected, and the unselected segments need to
+                           // read clearly as "there is more here", not as
+                           // decoration above the grid.
+                           Container(
+                             padding: const EdgeInsets.all(3),
+                             decoration: BoxDecoration(
+                               color: Colors.white.withOpacity(0.07),
+                               borderRadius: BorderRadius.circular(22),
+                               border: Border.all(
+                                 color: Colors.white.withOpacity(0.12),
+                               ),
+                             ),
+                             child: TabBar(
+                               labelColor: Colors.white,
+                               unselectedLabelColor: Colors.white70,
+                               dividerColor: Colors.transparent,
+                               indicatorSize: TabBarIndicatorSize.tab,
+                               splashBorderRadius: BorderRadius.circular(18),
+                               indicator: BoxDecoration(
+                                 color: theme.primaryColor,
+                                 borderRadius: BorderRadius.circular(18),
+                               ),
+                               labelPadding: EdgeInsets.zero,
+                               labelStyle: const TextStyle(
+                                 fontSize: 12,
+                                 fontWeight: FontWeight.bold,
+                               ),
+                               unselectedLabelStyle: const TextStyle(
+                                 fontSize: 12,
+                                 fontWeight: FontWeight.w600,
+                               ),
+                               tabs: [
+                                 _buildTab(
+                                   AppConfig.greekSectionTitle,
+                                   _charactersForGroup(
+                                     AppConfig.greekCharacterIds,
+                                   ).length,
+                                 ),
+                                 _buildTab(
+                                   AppConfig.modernSectionTitle,
+                                   _charactersForGroup(
+                                     AppConfig.modernCharacterIds,
+                                   ).length,
+                                 ),
+                                 if (AppConfig.enableCustomCharacters)
+                                   _buildTab('Yours', customChars.length),
+                               ],
+                             ),
+                           ),
+                           const SizedBox(height: 10),
+                           Expanded(
+                             child: TabBarView(
+                               children: [
+                                 _buildCharacterGrid(
+                                   _charactersForGroup(AppConfig.greekCharacterIds),
+                                   theme,
+                                 ),
+                                 _buildCharacterGrid(
+                                   _charactersForGroup(AppConfig.modernCharacterIds),
+                                   theme,
+                                 ),
+                                 if (AppConfig.enableCustomCharacters)
+                                   _buildCharacterGrid(
+                                     customChars,
+                                     theme,
+                                     trailingCreateCard: true,
+                                   ),
+                               ],
+                             ),
+                           ),
+                         ],
+                       ),
                      ),
                    ),
                  ],
@@ -322,6 +417,102 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
              ),
            ),
         ],
+      ),
+    );
+  }
+
+  /// A tab label with its character count, so both tabs advertise how much
+  /// is behind them even while the other one is selected.
+  Widget _buildTab(String title, int count) {
+    return Tab(
+      height: 25,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(title),
+          const SizedBox(width: 5),
+          Text(
+            '$count',
+            style: const TextStyle(fontSize: 10, color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The card grid for one tab. Empty groups show a short placeholder
+  /// rather than a blank pane, so an empty tab still reads as intentional.
+  Widget _buildCharacterGrid(
+    List<Map<String, dynamic>> characters,
+    ThemeData theme, {
+    bool trailingCreateCard = false,
+  }) {
+    if (characters.isEmpty && !trailingCreateCard) {
+      return Center(
+        child: Text(
+          'Nobody here yet.',
+          style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white38),
+        ),
+      );
+    }
+
+    final itemCount = characters.length + (trailingCreateCard ? 1 : 0);
+
+    // Always two across, on every viewport width, and sized to show exactly
+    // one 2x2 screenful. When a group holds more than four, the grid is made
+    // slightly taller so the next row peeks in underneath — that sliver of
+    // artwork is what tells people to keep scrolling. The width cap stops
+    // two columns from stretching into full-screen cards on desktop.
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            const spacing = 16.0;
+            const aspectRatio = 0.75;
+            const peekFraction = 0.2;
+
+            final cardWidth = (constraints.maxWidth - spacing) / 2;
+            final cardHeight = cardWidth / aspectRatio;
+
+            // Two full rows, plus a peek at the third only when there is
+            // actually more to reveal.
+            var desiredHeight = (cardHeight * 2) + spacing;
+            if (itemCount > 4) {
+              desiredHeight += spacing + (cardHeight * peekFraction);
+            }
+
+            final height = desiredHeight.clamp(0.0, constraints.maxHeight);
+
+            return Align(
+              alignment: Alignment.topCenter,
+              child: SizedBox(
+                height: height,
+                child: GridView.builder(
+                  padding: EdgeInsets.zero,
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    childAspectRatio: aspectRatio,
+                    crossAxisSpacing: spacing,
+                    mainAxisSpacing: spacing,
+                  ),
+                  itemCount: itemCount,
+                  itemBuilder: (context, index) {
+                    if (index == characters.length) {
+                      return _buildCreateNewCard(theme, compact: false);
+                    }
+                    return _buildCharacterCard(
+                      characters[index],
+                      theme,
+                      compact: false,
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
