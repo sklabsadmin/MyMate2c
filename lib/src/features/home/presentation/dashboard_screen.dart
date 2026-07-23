@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/data/character_profiles.dart';
+import '../../character/presentation/character_profile_screen.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -124,7 +126,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'name': 'Kai',
       'vibe': 'Surfer',
       'desc': 'Sun, salt, and endless chill vibes.',
-      'image': 'assets/images/avatar_badboy_real.png',
+      'image': 'assets/images/custom_avatar_02.png',
       'color': Colors.cyanAccent,
     },
     // Imported from SKLabChat — these two run on the Inworld pipeline
@@ -151,10 +153,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'engine': 'inworld',
     },
     // These two run on the default direct-OpenAI path (no INWORLD_CHARACTERS
-    // entry in the worker), so their persona comes from 'vibe'/'desc' alone
-    // rather than a dedicated system prompt — same as Zeus.
-    // Cupid still uses placeholder art: drop in
-    // assets/images/avatar_cupid_real.png and update its 'image' line below.
+    // entry in the worker), so their persona comes from CHARACTER_PERSONAS
+    // in backend/src/worker.js rather than from the fields here.
     {
       'id': 'penelope',
       'name': 'Penelope',
@@ -168,7 +168,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'name': 'Cupid',
       'vibe': 'God of Desire',
       'desc': 'Mischievous and disarming, with an aim no mortal heart survives.',
-      'image': 'assets/images/avatar_zeus_real.png', // TODO: placeholder
+      // 4:3 rather than the square every other portrait uses; the card
+      // crops with BoxFit.cover, so the sides are trimmed rather than
+      // letterboxed.
+      'image': 'assets/images/avatar_cupid_real.png',
       'color': const Color(0xFFD81B60),
     },
   ];
@@ -191,10 +194,21 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         .toList();
   }
 
-  /// Greeting that tracks the viewer's own clock rather than being fixed to
-  /// evening. Boundaries: morning until noon, afternoon until 17:00.
+  /// Greeting driven by the viewer's own device clock — DateTime.now() is
+  /// local time, so this follows whatever timezone they are actually in.
+  ///
+  ///   05:00 – 11:59  Good Morning,
+  ///   12:00 – 16:59  Good Afternoon,
+  ///   17:00 – 21:59  Good Evening,
+  ///   22:00 – 04:59  Still awake,
+  ///
+  /// The late band exists because the naive version greeted someone at 2am
+  /// with "Good Morning" — technically true, but it reads as a bug. "Still
+  /// awake" suits the hour and the app's tone better than a fourth
+  /// "Good ..." variant.
   String _timeOfDayGreeting() {
     final hour = DateTime.now().hour;
+    if (hour >= 22 || hour < 5) return 'Still awake,';
     if (hour < 12) return 'Good Morning,';
     if (hour < 17) return 'Good Afternoon,';
     return 'Good Evening,';
@@ -241,7 +255,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
            
            SafeArea(
              child: Padding(
-               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+               // No bottom padding: the character grid runs to the edge of
+               // the body so its clipped last row meets the nav bar directly.
+               // Padding there left a band of background between the fade and
+               // the bar, which read as the grid floating short of the bottom.
+               padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
                child: Column(
                  crossAxisAlignment: CrossAxisAlignment.start,
                  children: [
@@ -259,7 +277,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               ),
                             ),
                             Text(
-                              'Titillating Mortal',
+                              'Clever Creature',
                               style: theme.textTheme.displayLarge?.copyWith(fontSize: 28, color: Colors.white),
                             ),
                           ],
@@ -323,7 +341,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                    
                    Text(
                       'Select your ChatMate',
-                      style: theme.textTheme.headlineSmall,
+                      style: theme.textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.normal,
+                      ),
                    ),
                    const SizedBox(height: 16),
 
@@ -364,26 +384,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                labelStyle: const TextStyle(
                                  fontSize: 12,
                                  fontWeight: FontWeight.bold,
+                                 letterSpacing: 1.1,
                                ),
                                unselectedLabelStyle: const TextStyle(
                                  fontSize: 12,
                                  fontWeight: FontWeight.w600,
+                                 letterSpacing: 1.1,
                                ),
                                tabs: [
-                                 _buildTab(
-                                   AppConfig.greekSectionTitle,
-                                   _charactersForGroup(
-                                     AppConfig.greekCharacterIds,
-                                   ).length,
-                                 ),
-                                 _buildTab(
-                                   AppConfig.modernSectionTitle,
-                                   _charactersForGroup(
-                                     AppConfig.modernCharacterIds,
-                                   ).length,
-                                 ),
+                                 _buildTab(AppConfig.greekSectionTitle),
+                                 _buildTab(AppConfig.modernSectionTitle),
                                  if (AppConfig.enableCustomCharacters)
-                                   _buildTab('Yours', customChars.length),
+                                   _buildTab('Yours'),
                                ],
                              ),
                            ),
@@ -421,22 +433,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  /// A tab label with its character count, so both tabs advertise how much
-  /// is behind them even while the other one is selected.
-  Widget _buildTab(String title, int count) {
+  /// A tab label, uppercased for display. In mixed case at this size the
+  /// "rn" in "Modern" runs together and reads as "Modem"; caps plus letter
+  /// spacing removes the ambiguity, which is what lets the label sit at
+  /// 12pt. The config values stay in normal case so they read naturally in
+  /// code.
+  Widget _buildTab(String title) {
     return Tab(
-      height: 25,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(title),
-          const SizedBox(width: 5),
-          Text(
-            '$count',
-            style: const TextStyle(fontSize: 10, color: Colors.white70),
-          ),
-        ],
-      ),
+      height: 22,
+      child: Text(title.toUpperCase()),
     );
   }
 
@@ -463,51 +468,142 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     // slightly taller so the next row peeks in underneath — that sliver of
     // artwork is what tells people to keep scrolling. The width cap stops
     // two columns from stretching into full-screen cards on desktop.
-    return Center(
+    // Align rather than Center: the grid is pinned to the top of whatever
+    // space it is given, so any shortfall shows up as one gap at the bottom
+    // that the fill logic below can close, not as two half-gaps.
+    return Align(
+      alignment: Alignment.topCenter,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: LayoutBuilder(
           builder: (context, constraints) {
             const spacing = 16.0;
-            const aspectRatio = 0.75;
-            const peekFraction = 0.2;
 
+            // Half a card of the next row stays in view, which together with
+            // the two full rows above it is the 2.5 rows the grid is sized
+            // for. Must match minRowsVisible below — a smaller peek would
+            // size cards for 2.5 rows but only ever reveal 2.2 of them.
+            const peekFraction = 0.5;
+
+            // At least two and a half rows should be in view, so the grid
+            // never reads as a single row of cards with space beneath. On a
+            // short window that means shorter cards rather than fewer rows:
+            // the height is derived from the space available, not fixed.
+            const minRowsVisible = 2.5;
+
+            // Card proportions stay between these bounds so the adaptive
+            // height can't produce something absurd — 0.75 is the original
+            // portrait shape and the tallest allowed; 0.6 lets cards go
+            // wide-ish on a short window, which is what buys the 2.5 rows
+            // there. A tighter floor left cards too tall to fit 2.5 and the
+            // grid quietly fell back to two.
+            const tallestRatio = 0.75;
+            const squattestRatio = 0.6;
+
+            final available = constraints.maxHeight;
             final cardWidth = (constraints.maxWidth - spacing) / 2;
-            final cardHeight = cardWidth / aspectRatio;
 
-            // Two full rows, plus a peek at the third only when there is
-            // actually more to reveal.
-            var desiredHeight = (cardHeight * 2) + spacing;
-            if (itemCount > 4) {
-              desiredHeight += spacing + (cardHeight * peekFraction);
+            final fitHeight =
+                (available - (2 * spacing)) / minRowsVisible;
+            final cardHeight = fitHeight.clamp(
+              cardWidth * squattestRatio,
+              cardWidth / tallestRatio,
+            );
+            final aspectRatio = cardWidth / cardHeight;
+            final rowStride = cardHeight + spacing;
+
+            final totalRows = (itemCount / 2).ceil();
+            final contentHeight =
+                (totalRows * cardHeight) + ((totalRows - 1) * spacing);
+
+            // When the group overflows, the grid fills the whole space it has
+            // been given rather than stopping at a computed row boundary.
+            //
+            // Two reasons. Cards are already sized so ~2.5 rows fit, so
+            // filling lands the cut mid-card without extra arithmetic. And
+            // leaving dead space below meant the fade ended in mid-air with
+            // its own bottom edge showing against the purple backdrop — a
+            // floating band. Reaching the bottom puts that edge flush against
+            // the nav bar, where there is nothing to see it against.
+            //
+            // When the whole group already fits, none of this applies: the
+            // grid takes its natural height and nothing is clipped, because
+            // faking a cut-off row when there is nothing below reads as a
+            // rendering bug rather than an invitation.
+            final double height;
+            final bool scrollable;
+            if (contentHeight <= available) {
+              height = contentHeight;
+              scrollable = false;
+            } else {
+              height = available;
+              scrollable = true;
             }
-
-            final height = desiredHeight.clamp(0.0, constraints.maxHeight);
 
             return Align(
               alignment: Alignment.topCenter,
               child: SizedBox(
                 height: height,
-                child: GridView.builder(
-                  padding: EdgeInsets.zero,
-                  gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    childAspectRatio: aspectRatio,
-                    crossAxisSpacing: spacing,
-                    mainAxisSpacing: spacing,
-                  ),
-                  itemCount: itemCount,
-                  itemBuilder: (context, index) {
-                    if (index == characters.length) {
-                      return _buildCreateNewCard(theme, compact: false);
-                    }
-                    return _buildCharacterCard(
-                      characters[index],
-                      theme,
-                      compact: false,
-                    );
-                  },
+                child: Stack(
+                  children: [
+                    GridView.builder(
+                      padding: EdgeInsets.zero,
+                      gridDelegate:
+                          SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: aspectRatio,
+                        crossAxisSpacing: spacing,
+                        mainAxisSpacing: spacing,
+                      ),
+                      itemCount: itemCount,
+                      itemBuilder: (context, index) {
+                        if (index == characters.length) {
+                          return _buildCreateNewCard(theme, compact: false);
+                        }
+                        return _buildCharacterCard(
+                          characters[index],
+                          theme,
+                          compact: false,
+                        );
+                      },
+                    ),
+                    // Softens the clipped row into a fade rather than a hard
+                    // cut.
+                    //
+                    // Fades to black rather than to scaffoldBackgroundColor:
+                    // the page behind sits on a purple gradient, so a solid
+                    // scaffold colour ended in a hue that did not match its
+                    // surroundings and the gradient's own bottom edge became
+                    // visible as a floating band. Black shares the backdrop's
+                    // darkest tone, so the ramp reads as the artwork dimming
+                    // out instead of a rectangle laid over it.
+                    //
+                    // IgnorePointer so it never swallows a scroll or a tap on
+                    // the card underneath.
+                    if (scrollable)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: cardHeight * peekFraction,
+                        child: IgnorePointer(
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                stops: [0.0, 0.45, 1.0],
+                                colors: [
+                                  Color(0x00000000),
+                                  Color(0x33000000),
+                                  Color(0xF2000000),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             );
@@ -517,18 +613,85 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
+  /// Opens a character's profile from the dashboard.
+  ///
+  /// Backing out returns here, to the character list — the profile was opened
+  /// from the dashboard, so that is where "back" belongs. Chat is only opened
+  /// when the user actually taps an "Ask Me About" opener, which arrives as
+  /// the pop result and is then sent as the first message.
+  Future<void> _openProfileFor(Map<String, dynamic> character) async {
+    final profile = profileForCharacter(character['id'] as String?);
+    if (profile == null) return;
+
+    final question = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => CharacterProfileScreen(
+          name: character['name'] as String,
+          title: character['vibe'] as String,
+          imagePath: character['image'] as String,
+          profile: profile,
+          // Messages are keyed by the scenario string the chat screen uses.
+          chatId: '${character['name']} (${character['vibe']})',
+          characterKey: character['id'] as String?,
+        ),
+      ),
+    );
+
+    // Null means the user backed out rather than picking an opener — stay on
+    // the dashboard instead of pushing them into a chat they didn't ask for.
+    if (!mounted || question == null || question.isEmpty) return;
+    _openChat(character, initialMessage: question);
+  }
+
+  void _openChat(Map<String, dynamic> character, {String? initialMessage}) {
+    final characterId = character['id'] as String?;
+    final characterIdParam = (characterId != null && characterId.isNotEmpty)
+        ? '&characterId=${Uri.encodeComponent(characterId)}'
+        : '';
+    final openerParam = (initialMessage != null && initialMessage.isNotEmpty)
+        ? '&initialMessage=${Uri.encodeComponent(initialMessage)}'
+        : '';
+    context.push(
+      '/chat/session?scenario=${Uri.encodeComponent('${character['name']} (${character['vibe']})')}'
+      '&characterImage=${Uri.encodeComponent(character['image'])}'
+      '&isRoleplay=false$characterIdParam$openerParam',
+    );
+  }
+
   Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme, {required bool compact}) {
     final isCustom = character['isCustom'] == true;
-    
+    final hasProfile = profileForCharacter(character['id'] as String?) != null;
+
+    return _HoverRegion(
+      builder: (hovering) => Stack(
+        children: [
+          _buildCardBody(character, theme, compact: compact, isCustom: isCustom),
+          // Profile affordance. Always rendered when a profile exists — not
+          // hover-only — because touch devices have no hover state and would
+          // otherwise never see it. Pointer devices get a stronger version
+          // on hover; touch users get a permanently tappable target.
+          if (hasProfile)
+            Positioned(
+              top: compact ? 6 : 10,
+              right: compact ? 6 : 10,
+              child: _ProfileBadge(
+                highlighted: hovering,
+                onTap: () => _openProfileFor(character),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCardBody(
+    Map<String, dynamic> character,
+    ThemeData theme, {
+    required bool compact,
+    required bool isCustom,
+  }) {
     return GestureDetector(
-      onTap: () {
-        // Navigate to Chat
-        final characterId = character['id'] as String?;
-        final characterIdParam = (characterId != null && characterId.isNotEmpty)
-            ? '&characterId=${Uri.encodeComponent(characterId)}'
-            : '';
-        context.push('/chat/session?scenario=${Uri.encodeComponent(character['name'] + " (" + character['vibe'] + ")")}&characterImage=${Uri.encodeComponent(character['image'])}&isRoleplay=false$characterIdParam');
-      },
+      onTap: () => _openChat(character),
       onLongPress: isCustom ? () {
         // Show delete dialog for custom characters
         showDialog(
@@ -701,4 +864,95 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
 
+}
+
+/// Tracks pointer hover so a child can render a stronger affordance on
+/// desktop. On touch devices onEnter/onExit never fire, so `hovering` stays
+/// false and the child must still be usable in that state.
+class _HoverRegion extends StatefulWidget {
+  final Widget Function(bool hovering) builder;
+
+  const _HoverRegion({required this.builder});
+
+  @override
+  State<_HoverRegion> createState() => _HoverRegionState();
+}
+
+class _HoverRegionState extends State<_HoverRegion> {
+  bool _hovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit: (_) => setState(() => _hovering = false),
+      child: widget.builder(_hovering),
+    );
+  }
+}
+
+/// The "open profile" affordance on a character card.
+///
+/// Visible at all times so touch users have something to tap, but quiet
+/// enough not to compete with the artwork: a small translucent dot. On hover
+/// it brightens and grows a "Profile" label, which is the desktop cue that
+/// the card holds more than a chat.
+class _ProfileBadge extends StatelessWidget {
+  final bool highlighted;
+  final VoidCallback onTap;
+
+  const _ProfileBadge({required this.highlighted, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.symmetric(
+            horizontal: highlighted ? 10 : 6,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            color: highlighted
+                ? theme.primaryColor.withOpacity(0.95)
+                : Colors.black.withOpacity(0.45),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: Colors.white.withOpacity(highlighted ? 0.9 : 0.35),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.person_outline,
+                size: 14,
+                color: Colors.white,
+              ),
+              // The label only appears on hover; on a phone the icon alone
+              // has to carry it, which is why the dot is always present.
+              if (highlighted) ...[
+                const SizedBox(width: 4),
+                const Text(
+                  'Profile',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

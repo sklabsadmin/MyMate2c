@@ -209,6 +209,8 @@ class _AIAppState extends ConsumerState<AIApp> {
                           characterImage: characterImage,
                           isRoleplay: isRoleplay,
                           characterId: characterId,
+                          initialMessage:
+                              state.uri.queryParameters['initialMessage'],
                         );
                       },
                     ),

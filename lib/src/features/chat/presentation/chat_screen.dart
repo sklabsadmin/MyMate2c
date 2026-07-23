@@ -12,6 +12,8 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
 import '../services/openai_service.dart';
+import '../../../core/data/character_profiles.dart';
+import '../../character/presentation/character_profile_screen.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String? scenario;
@@ -19,12 +21,17 @@ class ChatScreen extends ConsumerStatefulWidget {
   final bool isRoleplay; // Distinction flag
   final String? characterId;
 
+  /// Sent automatically once the screen settles, as though the user had typed
+  /// it. Set when arriving from a profile card's "Ask Me About" button.
+  final String? initialMessage;
+
   const ChatScreen({
     super.key,
     this.scenario,
     this.characterImage,
     this.isRoleplay = false, // Default to false (Character mode)
     this.characterId,
+    this.initialMessage,
   });
 
   @override
@@ -77,6 +84,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ref
           .read(activeChatProvider.notifier)
           .setActive(widget.scenario ?? 'Unknown', _currentVibe);
+
+      // An opener tapped on the profile card before entering the chat. Sent
+      // through _handleSend so it behaves exactly like a typed message —
+      // same reply gate, history and logging.
+      final opener = widget.initialMessage;
+      if (opener != null && opener.trim().isNotEmpty) {
+        _textController.text = opener;
+        _handleSend();
+      }
     });
   }
 
@@ -497,6 +513,70 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return AppConfig.minBubbleDelayMs + _bubbleDelayRandom.nextInt(range + 1);
   }
 
+  /// Opens the character's profile card. Returns the tapped "Ask Me About"
+  /// question, if any, which is then sent as a normal message — routing it
+  /// through _handleSend rather than straight to the service keeps the free
+  /// reply gate, history and logging identical to typing it by hand.
+  Future<void> _openProfile() async {
+    final profile = profileForCharacter(widget.characterId);
+    if (profile == null || widget.characterImage == null) return;
+
+    // "Zeus (Olympian King)" → name and title, matching the card's layout.
+    final raw = widget.scenario ?? '';
+    final match = RegExp(r'^(.*?)\s*\((.*)\)$').firstMatch(raw);
+    final name = match?.group(1) ?? raw;
+    final title = match?.group(2) ?? '';
+
+    final question = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => CharacterProfileScreen(
+          name: name,
+          title: title,
+          imagePath: widget.characterImage!,
+          profile: profile,
+          chatId: _chatId,
+          characterKey: _characterKey,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    // The profile can clear this conversation (Tab). That only wipes
+    // storage, so without this the screen keeps rendering the messages it
+    // already holds in memory and the clear looks like it did nothing.
+    await _reloadIfHistoryCleared();
+
+    if (question == null || !mounted) return;
+    _textController.text = question;
+    _handleSend();
+  }
+
+  /// Drops the in-memory conversation if its stored copy has gone, and
+  /// restarts the character with a fresh welcome. Compares against storage
+  /// rather than taking a signal from the profile screen, so it stays correct
+  /// no matter what cleared it.
+  Future<void> _reloadIfHistoryCleared() async {
+    if (_messages.isEmpty) return;
+
+    final stored = await ref
+        .read(storageServiceProvider)
+        .loadMessages(chatId: _chatId);
+    if (!mounted || stored.isNotEmpty) return;
+
+    setState(() {
+      _messages.clear();
+      _aiService = OpenAIService(
+        history: const [],
+        scenario: widget.scenario,
+        characterId: widget.characterId,
+      );
+    });
+
+    await _loadReplyCount();
+    if (mounted) _triggerWelcomeSequence();
+  }
+
   void _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -685,42 +765,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  void _showVibeSelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _VibeSelectorSheet(
-        currentVibe: _currentVibe,
-        onVibeSelected: (vibe) async {
-          setState(() => _currentVibe = vibe);
-          Navigator.pop(context);
-
-          // Update active character tracking
-          ref
-              .read(activeChatProvider.notifier)
-              .setActive(widget.scenario ?? 'Unknown', vibe);
-
-          // Show user via System Bubble
-          _addMessage(
-            ChatMessage(
-              id: DateTime.now().toString(),
-              text: "✨ Mood set to $vibe",
-              isUser: false,
-              isSystem: true, // Use system bubble for consistency
-              timestamp: DateTime.now(),
-            ),
-          );
-
-          // Inform AI
-          if (_aiService != null) {
-            await _aiService!.sendMessage(
-              "SYSTEM UPDATE: User wants you to be '$vibe' now. Adjust your tone immediately.",
-            );
-          }
-        },
-      ),
-    );
-  }
 
   void _reportMessage(ChatMessage message) {
     showDialog(
@@ -768,7 +812,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Row(
+        title: GestureDetector(
+          // The whole header — portrait and name — opens the profile, the
+          // way tapping a contact's name does in a messaging app. Inert for
+          // characters that have no profile written yet.
+          onTap: _openProfile,
+          behavior: HitTestBehavior.opaque,
+          child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (widget.characterImage != null)
@@ -800,6 +850,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
             ),
           ],
+          ),
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -816,11 +867,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           tooltip: 'Back',
         ),
         actions: [
-          IconButton(
-            icon: Icon(Icons.tune, color: theme.colorScheme.secondary),
-            onPressed: _showVibeSelector,
-            tooltip: 'Set Vibe',
-          ),
           if (!AppConfig.isFreeTier)
             IconButton(
               icon: const Icon(Icons.diamond_outlined),
@@ -1226,64 +1272,3 @@ class _TypingBubbleState extends State<_TypingBubble>
   }
 }
 
-class _VibeSelectorSheet extends StatelessWidget {
-  final String currentVibe;
-  final Function(String) onVibeSelected;
-
-  const _VibeSelectorSheet({
-    required this.currentVibe,
-    required this.onVibeSelected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final vibes = ["Gentle", "Dominant", "Playful", "Intellectual"];
-
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        border: Border(
-          top: BorderSide(color: theme.primaryColor.withOpacity(0.3)),
-        ),
-      ),
-      padding: const EdgeInsets.all(24),
-      child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("Set the Mood", style: theme.textTheme.headlineSmall),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: vibes.map((vibe) {
-                final isSelected = vibe == currentVibe;
-                return ChoiceChip(
-                  label: Text(vibe),
-                  selected: isSelected,
-                  selectedColor: theme.primaryColor,
-                  backgroundColor: Colors.white.withOpacity(0.1),
-                  labelStyle: theme.textTheme.bodyMedium?.copyWith(
-                    color: isSelected ? Colors.white : Colors.white70,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                  onSelected: (_) => onVibeSelected(vibe),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  side: BorderSide.none,
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 20),
-          ],
-        ),
-      ),
-    );
-  }
-}

@@ -1,15 +1,17 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:in_app_review/in_app_review.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/presentation/clear_history_prompt.dart';
+import '../../../core/services/storage_service.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -68,31 +70,83 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  static const String _supportEmail = 'admin@sklabs.us';
+
+  /// Opens the user's mail client, or shows the address if that fails.
+  ///
+  /// mailto: only works where the OS or browser has a registered mail
+  /// handler, so on a desktop browser with none configured the tap did
+  /// nothing at all — a dead button. Any failure now falls through to a
+  /// dialog showing the address, so there is always a way to reach support.
   Future<void> _sendEmail() async {
     final Uri emailLaunchUri = Uri(
       scheme: 'mailto',
-      path: 'admin@sklabs.us',
+      path: _supportEmail,
       query: 'subject=MyMate AI Support Request',
     );
-    if (await canLaunchUrl(emailLaunchUri)) {
-      await launchUrl(emailLaunchUri);
+
+    // canLaunchUrl reports false for mailto: on some browsers even when the
+    // launch would have worked, so try regardless and treat a throw or a
+    // false return as the signal to fall back.
+    var launched = false;
+    try {
+      launched = await launchUrl(emailLaunchUri);
+    } catch (_) {
+      launched = false;
     }
+
+    if (launched || !mounted) return;
+    await _showSupportEmailFallback();
   }
 
-  Future<void> _requestReview() async {
-    final InAppReview inAppReview = InAppReview.instance;
-    if (await inAppReview.isAvailable()) {
-      inAppReview.requestReview();
-    } else {
-      // Platform specific store listing
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-        inAppReview.openStoreListing(appStoreId: '6739669562');
-      } else {
-        // Android uses package name automatically
-        inAppReview.openStoreListing();
-      }
-    }
+  Future<void> _showSupportEmailFallback() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text(
+          'Contact Support',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "We couldn't open your mail app. Email us at:",
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            SelectableText(
+              _supportEmail,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(
+                const ClipboardData(text: _supportEmail),
+              );
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Copy address'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close',
+                style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
   }
+
 
   void _showInstagramComingSoon() {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -125,8 +179,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
   }
 
+  /// Tab opens the hidden clear-history prompt. On-device only — the D1
+  /// conversation logs on the worker are never touched.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.tab) {
+      _promptClearAllHistory();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Future<void> _promptClearAllHistory() async {
+    final confirmed = await showClearHistoryPrompt(
+      context,
+      message: 'Do you want all your chat history cleared?',
+    );
+    if (!confirmed || !mounted) return;
+
+    await ref.read(storageServiceProvider).clearAllChatHistory();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Chat history cleared on this device.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    return Focus(
+      autofocus: true,
+      onKeyEvent: _onKey,
+      child: _buildScaffold(context),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black, // Dark theme background
       appBar: AppBar(
@@ -216,13 +302,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 30),
             ],
             _buildSectionHeader('SUPPORT'),
-            _buildSettingsTile(
-              context,
-              icon: Icons.star_outline,
-              title: 'Rate Us',
-              subtitle: 'Love the app? Let us know!',
-              onTap: _requestReview,
-            ),
             _buildSettingsTile(
               context,
               icon: Icons.mail_outline,

@@ -206,10 +206,59 @@ class StorageService {
     
     await prefs.setStringList(_kRecentChatsKey, chats.map((c) => jsonEncode(c)).toList());
     
-    // Also delete the actual messages to reset history/limits
-    final key = 'chat_$chatId';
-    await prefs.remove(key); 
-    
+    // Also delete the actual messages to reset history/limits. Note the
+    // prefix must match saveMessages' 'chat_history_' — an earlier version
+    // removed 'chat_$chatId', which silently left every message in place.
+    await prefs.remove('chat_history_$chatId');
+
+    _recentChatsController.add(chats);
+  }
+
+  /// Wipes every locally cached conversation: messages, the recent-chats
+  /// list, and the per-character free-reply counters.
+  ///
+  /// On-device only. Conversation logs already sent to the worker's D1
+  /// database are untouched — this is a "clear my phone", not a "delete my
+  /// data" — so a cleared device does not lose anything server-side.
+  Future<void> clearAllChatHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    for (final key in prefs.getKeys().toList()) {
+      if (key.startsWith('chat_history_') ||
+          key.startsWith(_kReplyCountPrefix)) {
+        await prefs.remove(key);
+      }
+    }
+
+    await prefs.remove(_kRecentChatsKey);
+    _recentChatsController.add([]);
+  }
+
+  /// Same as [clearAllChatHistory] but for a single character: its messages,
+  /// its entry in the recent-chats list, and its free-reply counter.
+  ///
+  /// [chatId] is the scenario string used to key messages; [characterKey] is
+  /// the character id used to key the reply counter. They differ, so both are
+  /// needed to leave nothing behind.
+  Future<void> clearChatHistoryFor({
+    required String chatId,
+    required String characterKey,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.remove('chat_history_$chatId');
+    await prefs.remove('$_kReplyCountPrefix$characterKey');
+
+    final currentList = prefs.getStringList(_kRecentChatsKey) ?? [];
+    final chats = currentList
+        .map((s) => jsonDecode(s) as Map<String, dynamic>)
+        .where((c) => c['chatId'] != chatId)
+        .toList();
+
+    await prefs.setStringList(
+      _kRecentChatsKey,
+      chats.map((c) => jsonEncode(c)).toList(),
+    );
     _recentChatsController.add(chats);
   }
 
