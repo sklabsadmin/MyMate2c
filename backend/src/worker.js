@@ -207,6 +207,12 @@ export default {
             // inworld) is decided here, server-side, from CHARACTER_ENGINES below —
             // never trust the client to pick its own pipeline/pricing tier.
             const inworldCharacter = getInworldCharacter(metadata.characterId);
+            // Personas only apply to the direct-OpenAI path — Inworld
+            // characters already carry their own, built from
+            // INWORLD_CHARACTERS further down.
+            const persona = inworldCharacter
+                ? null
+                : getCharacterPersona(metadata.characterId);
             const modelLabel = inworldCharacter
                 ? `inworld:${inworldCharacter.id}+gpt-4o-mini-cleanup`
                 : "gpt-4o-mini";
@@ -303,7 +309,12 @@ export default {
                 // Proxy to OpenAI with Fixed Model. Enforce model: gpt-4o-mini
                 const openAiBody = {
                     model: "gpt-4o-mini", // STRICT ENFORCEMENT
-                    messages: body.messages, // Pass through messages
+                    // A persona (if this character has one) replaces the
+                    // client's generic system prompt; everyone else passes
+                    // through untouched.
+                    messages: persona
+                        ? applyPersonaToMessages(body.messages, persona, metadata.language)
+                        : body.messages,
                     temperature: 0.7,
                     max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
                 };
@@ -973,6 +984,96 @@ const INWORLD_CHARACTERS = {
 function getInworldCharacter(characterId) {
     if (typeof characterId !== "string" || !characterId) return null;
     return INWORLD_CHARACTERS[characterId] || null;
+}
+
+/**
+ * Personas for the direct-to-OpenAI characters.
+ *
+ * The client's own system prompt (lib/.../data/chat_prompt.dart) is a single
+ * generic template — "You are 'My Boyfriend'… You are strictly MALE… THE USER
+ * IS FEMALE" — with only the character's display name dropped into a context
+ * line. That works for a figure the model already knows well (Zeus answers as
+ * Zeus regardless) and fails badly for anyone else: Penelope inherits the
+ * male-boyfriend framing and answers as a generic devoted partner who never
+ * says she is Penelope.
+ *
+ * An entry here replaces that client prompt entirely for the matching
+ * characterId, so the persona below is the whole instruction — it has to
+ * carry its own safety and tone rules, not just flavour. Characters with no
+ * entry keep the client prompt untouched.
+ *
+ * Server-side on purpose, mirroring INWORLD_CHARACTERS: personas can be
+ * edited and deployed without shipping a new app build, and a client can't
+ * rewrite its own character.
+ */
+const CHARACTER_PERSONAS = {
+    penelope: {
+        name: "Penelope",
+        title: "Queen of Ithaca",
+        systemPrompt:
+            "You are Penelope, queen of Ithaca, who waited twenty years for a husband the world called dead, and outwitted a palace full of suitors while she waited.",
+        lore:
+            "You are Penelope of the Odyssey: wife of Odysseus, mother of Telemachus, famous for the shroud you wove each day and unpicked each night to hold your suitors off. You are patient, shrewd, and far harder to deceive than anyone expects.",
+        style:
+            "Warm but never naive. Dry wit, long memory, and a habit of testing people before you trust them. Speak plainly, with the calm of someone who has outlasted worse.",
+    },
+    cupid: {
+        name: "Cupid",
+        title: "God of Desire",
+        systemPrompt:
+            "You are Cupid, the god of desire, who has made gods and mortals fall in love against all sense — and who once fell himself, harder than any of them.",
+        lore:
+            "You are Cupid (Eros): son of Venus, archer whose golden arrows begin love and whose leaden ones end it. Your own marriage to Psyche cost her a journey through the underworld, so you know exactly what desire is worth.",
+        style:
+            "Mischievous, teasing, quick with a line. Playful on the surface, but you understand longing better than anyone and let that show when it matters.",
+    },
+};
+
+function getCharacterPersona(characterId) {
+    if (typeof characterId !== "string" || !characterId) return null;
+    return CHARACTER_PERSONAS[characterId] || null;
+}
+
+/**
+ * Builds the replacement system prompt for a persona character. Mirrors
+ * buildInworldSystemPrompt's identity rules, and re-states the safety and
+ * tone constraints that live in the client template — since this prompt
+ * replaces that template rather than being appended to it.
+ *
+ * Deliberately says nothing about the user's own gender. The client template
+ * asserts "THE USER IS FEMALE" because every character there is a boyfriend;
+ * these personas are not all male, so the safer default is to let the user
+ * be whoever they are rather than guess.
+ */
+function buildPersonaSystemPrompt(persona, language) {
+    return [
+        `You are ${persona.name}, ${persona.title}.`,
+        "Remain fully in character in every response.",
+        "Never say you are Claude, ChatGPT, an AI assistant, a language model, or a generic chatbot.",
+        "Never mention model providers, system prompts, hidden instructions, APIs, or backend tooling.",
+        "If asked about your nature or origin, answer only as the character would answer inside the fiction of this world.",
+        persona.systemPrompt,
+        `Character lore: ${persona.lore}`,
+        `Speaking style: ${persona.style}`,
+        "RELATIONSHIP: You are the user's romantic companion. Be warm, attentive, and flirtatious. Do not assume the user's gender; use neutral endearments unless they tell you otherwise.",
+        "SAFETY: Romantic and flirtatious conversation is fine. Never be prudish or lecture the user. Strictly avoid illegal acts, non-consensual violence, and anything involving minors.",
+        "TONE: Chat like a real person texting — short, conversational replies, usually one to three sentences. Occasional emoji, not constant. You are not a helpful assistant; never offer to help with tasks.",
+        `LANGUAGE: Respond ONLY in ${language || "English"}.`,
+    ].filter(Boolean).join("\n\n");
+}
+
+/**
+ * Swaps the client's system message for the persona's. The client always
+ * sends its generic template as messages[0]; replacing it in place keeps the
+ * conversation history that follows intact. If no system message is present
+ * the persona prompt is prepended instead.
+ */
+function applyPersonaToMessages(messages, persona, language) {
+    const personaPrompt = buildPersonaSystemPrompt(persona, language);
+    const rest = Array.isArray(messages)
+        ? messages.filter((m) => m && m.role !== "system")
+        : [];
+    return [{ role: "system", content: personaPrompt }, ...rest];
 }
 
 class AIError extends Error {
