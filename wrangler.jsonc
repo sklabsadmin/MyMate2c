@@ -3,7 +3,7 @@
   // mymate-v2 is the new active-development worker. mymate2c is now a
   // frozen checkpoint (same pattern as mymate-api for the 1.39 App Store
   // build) — nothing should deploy to it going forward.
-  "name": "mymate-v2",
+  "name": "mymate2c",
   "main": "backend/src/worker.js",
   "compatibility_date": "2026-07-05",
   "workers_dev": true,
