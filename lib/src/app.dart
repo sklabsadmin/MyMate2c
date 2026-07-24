@@ -13,7 +13,7 @@ import 'features/character/presentation/create_character_screen.dart';
 import 'features/chat/presentation/chat_screen.dart';
 import 'features/chat/presentation/recent_chats_screen.dart';
 import 'features/home/presentation/dashboard_screen.dart';
-import 'features/roleplay/presentation/roleplay_screen.dart';
+import 'features/profile/presentation/user_profile_screen.dart';
 import 'core/presentation/scaffold_with_navbar.dart';
 import 'features/maintenance/presentation/maintenance_screen.dart';
 import 'features/paywall/presentation/paywall_screen.dart';
@@ -45,8 +45,8 @@ final _shellNavigatorDashboardKey = GlobalKey<NavigatorState>(
 final _shellNavigatorChatKey = GlobalKey<NavigatorState>(
   debugLabel: 'shellChat',
 );
-final _shellNavigatorRoleplayKey = GlobalKey<NavigatorState>(
-  debugLabel: 'shellRoleplay',
+final _shellNavigatorProfileKey = GlobalKey<NavigatorState>(
+  debugLabel: 'shellProfile',
 );
 
 // Router is now defined dynamically in AIApp to handle Onboarding redirection
@@ -218,12 +218,17 @@ class _AIAppState extends ConsumerState<AIApp> {
                 ),
               ],
             ),
+            // Third nav slot. Was the Roleplay/Fantasy tab, which this replaces
+            // outright — the /roleplay route is gone, so roleplay_screen.dart
+            // is now unreferenced. The file is left in place deliberately:
+            // restoring the tab means re-adding an import and this one route,
+            // and its scenario copy predates the friend/mentor rewrite anyway.
             StatefulShellBranch(
-              navigatorKey: _shellNavigatorRoleplayKey,
+              navigatorKey: _shellNavigatorProfileKey,
               routes: [
                 GoRoute(
-                  path: '/roleplay',
-                  builder: (context, state) => const RoleplayScreen(),
+                  path: '/my-profile',
+                  builder: (context, state) => const UserProfileScreen(),
                 ),
               ],
             ),

@@ -989,7 +989,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       padding: const EdgeInsets.only(bottom: 6),
                       child: Text(
                         remaining > 0
-                            ? '$_replyCount/${AppConfig.freeRepliesPerCharacter} free messages'
+                            ? '$_replyCount/${AppConfig.freeRepliesPerCharacter} anonymous messages'
                             : 'Sign in to keep chatting with $_characterDisplayName',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: remaining > 0

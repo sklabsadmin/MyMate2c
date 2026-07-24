@@ -8,6 +8,11 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>MyMate</string>
+	<!-- Required by image_picker for the My Profile avatar. Without this key
+	     iOS terminates the app the moment the gallery is opened, rather than
+	     showing a permission prompt. -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a photo to use as your profile picture.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

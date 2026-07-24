@@ -55,12 +55,12 @@ class ScaffoldWithNavBar extends StatelessWidget {
               NavigationDestination(
                 icon: Icon(Icons.chat_bubble_outline),
                 selectedIcon: Icon(Icons.chat_bubble, color: Color(0xFFD81B60)),
-                label: 'Chat',
+                label: 'Chats',
               ),
               NavigationDestination(
-                icon: Icon(Icons.masks_outlined), // Mask for roleplay/fantasy
-                selectedIcon: Icon(Icons.masks, color: Color(0xFFD81B60)),
-                label: 'Fantasy',
+                icon: Icon(Icons.person_outline),
+                selectedIcon: Icon(Icons.person, color: Color(0xFFD81B60)),
+                label: 'My Profile',
               ),
             ],
           ),

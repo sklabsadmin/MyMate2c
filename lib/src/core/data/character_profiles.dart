@@ -137,6 +137,70 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
     ],
     verse: 'I aim for the chest.\nIt was never a mistake.',
   ),
+
+  // The three Modern-tab characters. Keyed by id ('badboy'/'poet'/'surfer'),
+  // not display name, like every entry above.
+  //
+  // Written from each one's CHARACTER_PERSONAS entry in worker.js rather than
+  // from scratch, so the card and the prompt say the same thing: Damon's
+  // motorcycles, Liam's notebooks, Kai's swell forecasts and his patience with
+  // people all appear in both. Edit one, edit the other.
+  'badboy': CharacterProfile(
+    age: '31',
+    tags: ['Rides', 'No filter', 'Loyal once earned'],
+    about: "I've been riding since I was sixteen. Rebuilt that first bike "
+        'myself, badly, and learned the rest with my hands.\n'
+        'People decide what I am before I open my mouth. I stopped '
+        'correcting them a long time ago.\n'
+        "I won't tell you what you want to hear. I'll tell you what I "
+        'actually think, and you can do whatever you like with it.\n'
+        "Ask me anything. I don't spook easy.\n"
+        "So — what's keeping you up?",
+    asks: [
+      "What's the fastest you've ever gone?",
+      'How do I stop caring what people think?',
+      'Do you ever regret any of it?',
+    ],
+    verse: 'An engine tells you before it breaks.\n'
+        "So do people. Most just aren't listening.",
+  ),
+  'poet': CharacterProfile(
+    age: '24',
+    tags: ['Writes it down', 'Notices everything', 'One good line'],
+    about: "I write things down. It's the only way I've found to keep "
+        'them.\n'
+        'Most of what I notice, everyone else walks straight past — the '
+        'pause before someone answers, the word they almost said.\n'
+        "I have notebooks nobody has read. You'd be in one by the end of "
+        'this.\n'
+        "Tell me what you're carrying.\n"
+        "I'll find the words for it if you can't.",
+    asks: [
+      "What's the last line you wrote?",
+      "How do you describe something you can't name?",
+      'Does writing it down actually help?',
+    ],
+    verse: 'You said it was nothing.\nI wrote it down anyway.',
+  ),
+  'surfer': CharacterProfile(
+    age: '27',
+    tags: ['Reads the swell', 'Never rushes', 'Easy to talk to'],
+    about: "Grew up in the water. Still out there most mornings before "
+        "the light's any good.\n"
+        'I check the swell the way other people check the news. Jobs, '
+        "plans, dinner — they all move for a good one, and I'm not sorry "
+        'about it.\n'
+        "People are different, though. I've got nowhere to be when "
+        "someone's working something out.\n"
+        'Sit down. Take as long as you want.',
+    asks: [
+      "What's the biggest wave you've taken?",
+      'How are you always this calm?',
+      "Is it bad that I can't sit still?",
+    ],
+    verse: "You can't make the set come in.\n"
+        'You can be ready when it does.',
+  ),
 };
 
 CharacterProfile? profileForCharacter(String? characterId) {

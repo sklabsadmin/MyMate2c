@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chat_message.dart';
+import '../models/user_profile.dart';
 import 'package:state_notifier/state_notifier.dart';
 
 import '../config/app_config.dart';
@@ -95,6 +96,37 @@ class StorageService {
      // Legacy/Helper access
      final prefs = await SharedPreferences.getInstance();
      return prefs.getInt('user_score_v1') ?? 0;
+  }
+
+  // --- The player's own profile ---
+  // Device-local, like chat history: this is personal detail the user typed
+  // about themselves, so it stays on their device until there is a reason for
+  // it to leave. Stored as one JSON blob rather than six keys so adding a
+  // field later doesn't need a migration.
+  static const String _kUserProfileKey = 'user_profile_v1';
+
+  Future<UserProfile> loadUserProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kUserProfileKey);
+    if (raw == null || raw.isEmpty) return UserProfile.empty;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return UserProfile.fromJson(decoded);
+    } catch (_) {
+      // Corrupt or hand-edited value — fall back to empty rather than
+      // blocking the profile screen from opening at all.
+    }
+    return UserProfile.empty;
+  }
+
+  Future<void> saveUserProfile(UserProfile profile) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUserProfileKey, jsonEncode(profile.toJson()));
+  }
+
+  Future<void> clearUserProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kUserProfileKey);
   }
 
   Future<void> saveMessages(List<ChatMessage> messages, {String chatId = 'default'}) async {

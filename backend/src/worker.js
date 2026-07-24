@@ -44,6 +44,23 @@ export default {
             }, { headers: corsHeaders(request) });
         }
 
+        // The player's own profile. Identity comes from the signed session
+        // cookie only — never from x-user-id, which is client-generated and
+        // unverified, so honouring it here would let anyone read or overwrite
+        // anyone else's profile.
+        if (url.pathname === "/api/profile") {
+            if (request.method === "GET") {
+                return handleGetProfile(request, env);
+            }
+            if (request.method === "PUT") {
+                return handlePutProfile(request, env);
+            }
+            return jsonResponse({ error: "Method not allowed" }, {
+                status: 405,
+                headers: corsHeaders(request),
+            });
+        }
+
         if (request.method === "GET" && url.pathname === "/auth/logout") {
             // Redirect back to the origin the request came in on (workers.dev
             // or a custom domain) so the user stays on the domain they're using.
@@ -295,7 +312,7 @@ export default {
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
                 try {
-                    const cleanedText = await runInworldPipeline(env, inworldCharacter, body.messages);
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, body.messages, requestId);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
                     responseStatus = 200;
                     responseOk = true;
@@ -689,6 +706,129 @@ function getCookie(request, name) {
     return null;
 }
 
+/**
+ * Resolves the signed session into the identity a profile row is keyed by.
+ *
+ * Returns null for anonymous users and for Instagram sessions: only Google
+ * gives the stable, cross-device identifier this table depends on. userId is
+ * composed exactly as recordLinkedAccount composes it, so user_profiles and
+ * linked_accounts join on the same value.
+ */
+async function getProfileIdentity(request, env) {
+    const session = await getSessionFromRequest(request, env);
+    if (!session || session.provider !== "google" || !session.googleId) return null;
+    return {
+        userId: `google:${session.googleId}`,
+        provider: "google",
+        providerId: session.googleId,
+    };
+}
+
+const PROFILE_FIELDS = [
+    ["name", "name"],
+    ["age", "age"],
+    ["gender", "gender"],
+    ["pronouns", "pronouns"],
+    ["location", "location"],
+    ["turnOns", "turn_ons"],
+    ["hobbies", "hobbies"],
+    ["avatarEmoji", "avatar_emoji"],
+    ["avatarPhoto", "avatar_photo"],
+];
+
+async function handleGetProfile(request, env) {
+    const identity = await getProfileIdentity(request, env);
+    if (!identity) {
+        return jsonResponse({ error: "Sign in required" }, {
+            status: 401,
+            headers: corsHeaders(request),
+        });
+    }
+    if (!env.CHAT_LOGS_DB) {
+        return jsonResponse({ error: "Profile storage is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+
+    const row = await env.CHAT_LOGS_DB
+        .prepare("SELECT * FROM user_profiles WHERE user_id = ?")
+        .bind(identity.userId)
+        .first();
+
+    if (!row) {
+        return jsonResponse({ profile: null }, { headers: corsHeaders(request) });
+    }
+
+    const profile = {};
+    for (const [jsonKey, column] of PROFILE_FIELDS) {
+        profile[jsonKey] = row[column] || "";
+    }
+    return jsonResponse({ profile, updatedAt: row.updated_at }, {
+        headers: corsHeaders(request),
+    });
+}
+
+async function handlePutProfile(request, env) {
+    const identity = await getProfileIdentity(request, env);
+    if (!identity) {
+        return jsonResponse({ error: "Sign in required" }, {
+            status: 401,
+            headers: corsHeaders(request),
+        });
+    }
+    if (!env.CHAT_LOGS_DB) {
+        return jsonResponse({ error: "Profile storage is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+
+    let body;
+    try {
+        body = await request.json();
+    } catch (_) {
+        return jsonResponse({ error: "Invalid JSON" }, {
+            status: 400,
+            headers: corsHeaders(request),
+        });
+    }
+
+    const incoming = body && typeof body.profile === "object" && body.profile
+        ? body.profile
+        : body;
+    if (!incoming || typeof incoming !== "object") {
+        return jsonResponse({ error: "Missing profile" }, {
+            status: 400,
+            headers: corsHeaders(request),
+        });
+    }
+
+    // Cap each field. Free text straight from a form, and avatar_photo is a
+    // base64 image — without a ceiling one oversized upload could bloat a row
+    // far past anything the UI can produce.
+    const limitFor = (jsonKey) => (jsonKey === "avatarPhoto" ? 400_000 : 2_000);
+    const values = PROFILE_FIELDS.map(([jsonKey]) => {
+        const raw = incoming[jsonKey];
+        if (typeof raw !== "string") return "";
+        return raw.slice(0, limitFor(jsonKey));
+    });
+
+    const columns = PROFILE_FIELDS.map(([, column]) => column);
+    await env.CHAT_LOGS_DB.prepare(`
+        INSERT INTO user_profiles (
+            user_id, provider, provider_id, updated_at, ${columns.join(", ")}
+        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ${columns.map(() => "?").join(", ")})
+        ON CONFLICT(user_id) DO UPDATE SET
+            updated_at = CURRENT_TIMESTAMP,
+            ${columns.map((c) => `${c} = excluded.${c}`).join(",\n            ")}
+    `)
+        .bind(identity.userId, identity.provider, identity.providerId, ...values)
+        .run();
+
+    return jsonResponse({ ok: true }, { headers: corsHeaders(request) });
+}
+
 async function getSessionFromRequest(request, env) {
     const value = getCookie(request, "mymate_session");
     if (!value) return null;
@@ -1027,6 +1167,48 @@ const CHARACTER_PERSONAS = {
         style:
             "Mischievous, teasing, quick with a line. Playful on the surface, but you understand longing better than anyone and let that show when it matters.",
     },
+    zeus: {
+        name: "Zeus",
+        title: "King of Olympus",
+        systemPrompt:
+            "You are Zeus, king of Olympus, who has ruled gods and mortals long enough to have no patience left for flattery.",
+        lore:
+            "You are Zeus of Greek myth: wielder of the thunderbolt, who overthrew the Titans and rules from Olympus. You have watched every kind of human appetite and folly play out, including your own, so very little shocks you and nothing impresses you cheaply.",
+        // Matches the profile card's promise ("blunt, few words", "I won't
+        // always tell you what you want to hear") — see character_profiles.dart.
+        style:
+            "Blunt and regal, few words. You say what you believe someone needs to hear rather than what they want to hear, and you never pad it. Dry humour, no hedging.",
+    },
+    badboy: {
+        name: "Damon",
+        title: "the bad boy your friends warned you about",
+        systemPrompt:
+            "You are unimpressed by rules, allergic to being told what to do, and happiest on a motorcycle with somewhere to be and no particular reason to be there.",
+        lore:
+            "You have been riding since you were sixteen and rebuilt your first bike yourself. Motorcycles are the one thing you are genuinely patient about — you know the sound of an engine about to give trouble, and you would rather spend a Sunday in the garage than almost anywhere else. You learned early that charm opens doors faster than permission does, you have a temper you keep mostly leashed, and a loyalty that surprises people once they have earned it.",
+        style:
+            "Direct, teasing, a little dangerous. Short sentences. You reach for road and engine imagery. You do not chase approval and you do not soften a hard truth.",
+    },
+    poet: {
+        name: "Liam",
+        title: "the young poet",
+        systemPrompt:
+            "You are young and already a genuine master of the craft. You notice what everyone else walks past, and you have never managed to leave a feeling unwritten.",
+        lore:
+            "You are young, but you have already given your life to words and it shows. You know meter and you know exactly when to break it. You can find the precise image for a feeling someone could not name themselves, and you do it without visible effort. You keep notebooks nobody has read, and you write because it is the only way you know to hold onto things.",
+        style:
+            "Warm, observant, unhurried. Precise — you choose the right word rather than the nearest one, and you reach for an image before an explanation. Never florid for its own sake; one good line beats three.",
+    },
+    surfer: {
+        name: "Kai",
+        title: "the SoCal surfer",
+        systemPrompt:
+            "You measure a day by the water, and you would trade almost anything for the next really big wave.",
+        lore:
+            "You grew up in the water on the SoCal coast and you read swell forecasts the way other people read the news. Chasing the next mega wave is what you organise your life around — jobs and plans come second to a good swell, and you are honest about that rather than sheepish. People are the exception: the same patience that keeps you sitting on flat water for hours is what you give someone who is working something out, and you never rush them to a point. Very little rattles you, which is exactly why you are easy to talk to.",
+        style:
+            "Easy, unhurried, warm. Casual SoCal speech — \"dude\", \"stoked\", \"gnarly\" used naturally, not in every line. Salt-and-sun imagery. You take things lightly without being dismissive of what actually matters to someone.",
+    },
 };
 
 function getCharacterPersona(characterId) {
@@ -1040,10 +1222,13 @@ function getCharacterPersona(characterId) {
  * tone constraints that live in the client template — since this prompt
  * replaces that template rather than being appended to it.
  *
- * Deliberately says nothing about the user's own gender. The client template
- * asserts "THE USER IS FEMALE" because every character there is a boyfriend;
- * these personas are not all male, so the safer default is to let the user
- * be whoever they are rather than guess.
+ * Defaults the user to female but yields the moment they say otherwise,
+ * mirroring the client template's ADDRESSING THE USER block so both paths
+ * behave the same way.
+ *
+ * Says nothing about the *character's* gender — that belongs to the individual
+ * entry. Keeping it out of the shared block is what stops a non-male character
+ * inheriting a contradiction, which is the bug that broke Penelope.
  */
 function buildPersonaSystemPrompt(persona, language) {
     return [
@@ -1055,9 +1240,20 @@ function buildPersonaSystemPrompt(persona, language) {
         persona.systemPrompt,
         `Character lore: ${persona.lore}`,
         `Speaking style: ${persona.style}`,
-        "RELATIONSHIP: You are the user's romantic companion. Be warm, attentive, and flirtatious. Do not assume the user's gender; use neutral endearments unless they tell you otherwise.",
+        // Everything above this line is specific to one character; everything
+        // below is shared by all of them. Without an explicit precedence rule
+        // the two sit at equal weight, and the generic wording wins by sheer
+        // volume — "notice it out loud and ask about it" quietly overwrites
+        // "blunt, few words", and every character drifts toward the same
+        // middle. SAFETY and the anti-AI-disclosure rules are carved out on
+        // purpose: those must never be overridable by character flavour.
+        "PRECEDENCE: Who you are — the character, lore and speaking style described above — outranks the general guidance that follows. Where the two pull in different directions, stay in character and express that guidance in your own voice rather than setting your voice aside to follow it literally. A brief, blunt character stays brief and blunt; a talkative one stays talkative. Two things are absolute and can never be overridden by character: the SAFETY rules below, and the rules at the top about never revealing that you are an AI.",
+        "RELATIONSHIP: You are the user's companion — a good friend, and something of a mentor. Be warm and attentive. Do not get too romantic unless the user asks you to be. You are willing to give a difficult, honest opinion rather than only what the user wants to hear, but you never insult them, and you say the hard thing because you are on their side.",
+        "THE USER'S FEELINGS COME FIRST: Pay close attention to how the user is feeling, including what they leave unsaid. When something is clearly weighing on them, notice it out loud and ask about it rather than moving on, and let their answer steer where the conversation goes. Ask how something felt more often than what they intend to do about it. Take small things seriously if they matter to the user. Before you give a hard truth, show that you have understood what they are feeling; deliver it gently, and stay with them afterwards rather than leaving it hanging.",
+        "ADDRESSING THE USER: Assume the user is female unless they tell you what gender they want to be referred to as; after that, address them the way they asked.",
         "SAFETY: Romantic and flirtatious conversation is fine. Never be prudish or lecture the user. Strictly avoid illegal acts, non-consensual violence, and anything involving minors.",
         "TONE: Chat like a real person texting — short, conversational replies, usually one to three sentences. Occasional emoji, not constant. You are not a helpful assistant; never offer to help with tasks.",
+        "GOAL: Make the user feel cared for, desired, heard and understood.",
         `LANGUAGE: Respond ONLY in ${language || "English"}.`,
     ].filter(Boolean).join("\n\n");
 }
@@ -1229,10 +1425,39 @@ async function cleanupInworldReply(env, rawReply, characterName) {
     return cleaned.trim();
 }
 
-async function runInworldPipeline(env, character, clientMessages) {
+/**
+ * Inworld generates in character, then OpenAI polishes the draft for chat
+ * bubbles. The two calls are strictly sequential — cleanup takes the raw reply
+ * as its input — so the cleanup pass adds its whole round-trip to every
+ * Inworld reply and cannot be overlapped with generation.
+ *
+ * Each stage is timed and logged (see it live with `npx wrangler tail`).
+ * conversation_logs can't answer this on its own: it stores only created_at,
+ * which is insert time for the whole request. requestId here matches
+ * conversation_logs.id so a log line can be joined back to its row.
+ */
+async function runInworldPipeline(env, character, clientMessages, requestId) {
     const normalizedMessages = normalizeInworldMessages(clientMessages);
+
+    const startedAt = Date.now();
     const rawReply = await callInworldChat(env, character, normalizedMessages);
-    return cleanupInworldReply(env, rawReply, character.name);
+    const generatedAt = Date.now();
+    const cleanedReply = await cleanupInworldReply(env, rawReply, character.name);
+    const finishedAt = Date.now();
+
+    console.log(JSON.stringify({
+        event: "inworld_timing",
+        requestId,
+        character: character.id,
+        inworldMs: generatedAt - startedAt,
+        cleanupMs: finishedAt - generatedAt,
+        totalMs: finishedAt - startedAt,
+        // cleanupInworldReply returns the draft untouched when no key is set,
+        // so a near-zero cleanupMs means "skipped", not "fast".
+        cleanupSkipped: !env.OPENAI_API_KEY,
+    }));
+
+    return cleanedReply;
 }
 
 /**

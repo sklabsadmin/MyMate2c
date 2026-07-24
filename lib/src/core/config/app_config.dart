@@ -18,7 +18,7 @@ class AppConfig {
   /// everything working normally. Anyone who knows the trick — or who reads the
   /// shipped JavaScript — gets in, which is the point. It filters the casual,
   /// nothing more, so don't rely on it to hide anything sensitive.
-  static const bool showMaintenanceGate = false;
+  static const bool showMaintenanceGate = true;
 
   /// Set once the user has tabbed past the gate. Deliberately in-memory only:
   /// a reload shows the holding page again, which is the desired behaviour for

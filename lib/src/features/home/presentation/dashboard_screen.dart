@@ -117,7 +117,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'id': 'zeus',
       'name': 'Zeus',
       'vibe': 'Olympian King',
-      'desc': 'Regal, magnetic. Let him light a storm in your desires.',
+      'desc': "Regal, magnetic. He'll tell you what you need to hear.",
       'image': 'assets/images/avatar_zeus_real.png',
       'color': Colors.amber,
     },
@@ -197,10 +197,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// Greeting driven by the viewer's own device clock — DateTime.now() is
   /// local time, so this follows whatever timezone they are actually in.
   ///
-  ///   05:00 – 11:59  Good Morning,
-  ///   12:00 – 16:59  Good Afternoon,
-  ///   17:00 – 21:59  Good Evening,
-  ///   22:00 – 04:59  Still awake,
+  ///   05:00 – 11:59  Good Morning
+  ///   12:00 – 16:59  Good Afternoon
+  ///   17:00 – 21:59  Good Evening
+  ///   22:00 – 04:59  Still awake?
+  ///
+  /// No trailing commas: these used to run into the viewer's name on the next
+  /// line ("Good Afternoon, Clever Creature"). That line is gone, so a comma
+  /// would now point at nothing.
   ///
   /// The late band exists because the naive version greeted someone at 2am
   /// with "Good Morning" — technically true, but it reads as a bug. "Still
@@ -208,10 +212,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// "Good ..." variant.
   String _timeOfDayGreeting() {
     final hour = DateTime.now().hour;
-    if (hour >= 22 || hour < 5) return 'Still awake,';
-    if (hour < 12) return 'Good Morning,';
-    if (hour < 17) return 'Good Afternoon,';
-    return 'Good Evening,';
+    if (hour >= 22 || hour < 5) return 'Still awake?';
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
   }
 
   @override
@@ -259,7 +263,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                // the body so its clipped last row meets the nav bar directly.
                // Padding there left a band of background between the fade and
                // the bar, which read as the grid floating short of the bottom.
-               padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+               padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
                child: Column(
                  crossAxisAlignment: CrossAxisAlignment.start,
                  children: [
@@ -275,10 +279,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               style: theme.textTheme.bodyLarge?.copyWith(
                                 color: Colors.white70,
                               ),
-                            ),
-                            Text(
-                              'Clever Creature',
-                              style: theme.textTheme.displayLarge?.copyWith(fontSize: 28, color: Colors.white),
                             ),
                           ],
                         ),
