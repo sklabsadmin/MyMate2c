@@ -36,8 +36,19 @@
     "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev",
     // Google Sign-In (Settings > Continue with Google). Client ID is not
     // secret; GOOGLE_CLIENT_SECRET is set via `wrangler secret put`.
-    "GOOGLE_CLIENT_ID": "791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com",
-    "GOOGLE_REDIRECT_URI": "https://mymate-v2.sklabs-admin.workers.dev/auth/google/callback"
+    "GOOGLE_CLIENT_ID": "791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com"
+    // GOOGLE_REDIRECT_URI is deliberately NOT set. getGoogleRedirectUri() falls
+    // back to `<origin of this request>/auth/google/callback`, so sign-in
+    // completes on whichever domain the user actually started on instead of
+    // bouncing everyone to workers.dev. Setting it again pins all three origins
+    // back to one URL.
+    //
+    // Every origin that needs sign-in must be listed as an Authorized redirect
+    // URI on the OAuth client in Google Cloud Console, or Google rejects the
+    // request with redirect_uri_mismatch:
+    //   https://mymate-v2.sklabs-admin.workers.dev/auth/google/callback
+    //   https://chat.deeploveechoes.com/auth/google/callback
+    //   https://chat.deeplovepoems.com/auth/google/callback
   },
   "compatibility_flags": [
     "nodejs_compat"

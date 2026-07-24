@@ -11,10 +11,15 @@ class AuthState {
   final String? provider; // "google" | "instagram"
   final String? username; // display name or email
 
+  /// Google account avatar URL. Null for Instagram sessions and when Google
+  /// returns no picture, so every use has to handle its absence.
+  final String? avatarUrl;
+
   const AuthState({
     this.authenticated = false,
     this.provider,
     this.username,
+    this.avatarUrl,
   });
 
   static const AuthState signedOut = AuthState();
@@ -51,6 +56,7 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
             authenticated: true,
             provider: user['provider'] as String?,
             username: user['username'] as String?,
+            avatarUrl: user['picture'] as String?,
           );
         }
       }

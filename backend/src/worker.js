@@ -38,7 +38,7 @@ export default {
                 authenticated: Boolean(session),
                 user: session ? (
                     session.provider === "google"
-                        ? { provider: "google", id: session.googleId, username: session.name || session.email }
+                        ? { provider: "google", id: session.googleId, username: session.name || session.email, picture: session.picture || null }
                         : { provider: "instagram", id: session.instagramId, username: session.username }
                 ) : null,
             }, { headers: corsHeaders(request) });
@@ -548,6 +548,9 @@ async function finishGoogleAuth(request, env, url) {
             googleId: profile.sub,
             email: profile.email || null,
             name: profile.name || null,
+            // Google's avatar URL, so the app can show the account's own icon
+            // instead of a generic placeholder once linked.
+            picture: profile.picture || null,
             exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
         });
 

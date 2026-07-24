@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../character/presentation/character_profile_screen.dart';
@@ -194,6 +195,47 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         .toList();
   }
 
+  /// The linked Google account's own avatar, shown top-right once signed in.
+  ///
+  /// Renders nothing at all when signed out, on Instagram sessions, or when
+  /// Google returned no picture — an empty SizedBox rather than a placeholder,
+  /// so the header looks unchanged for users who have never linked.
+  Widget _googleAvatar(ThemeData theme) {
+    final auth = ref.watch(authProvider).value;
+    final url = auth?.avatarUrl;
+    if (auth == null || !auth.authenticated || url == null || url.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 12),
+      child: GestureDetector(
+        onTap: () => context.push('/settings'),
+        child: Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: theme.primaryColor.withOpacity(0.6), width: 2),
+          ),
+          child: ClipOval(
+            child: Image.network(
+              url,
+              fit: BoxFit.cover,
+              // Google avatar URLs can 403 once the reference ages out, so
+              // never let a broken image take the header down with it.
+              errorBuilder: (_, _, _) => Container(
+                color: Colors.white.withOpacity(0.1),
+                alignment: Alignment.center,
+                child: const Icon(Icons.person, size: 18, color: Colors.white70),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Greeting driven by the viewer's own device clock — DateTime.now() is
   /// local time, so this follows whatever timezone they are actually in.
   ///
@@ -320,6 +362,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                    ),
                                 ],
                               ),
+                             // Google account avatar, once linked. Sits before
+                             // the settings gear so the gear stays the
+                             // rightmost control it has always been.
+                             _googleAvatar(theme),
                              const SizedBox(width: 16),
                              GestureDetector(
                                onTap: () => context.push('/settings'),
