@@ -1103,16 +1103,11 @@ async function checkRateLimit(kv, userId) {
  * _characters list). Renaming a character on one side without the other
  * causes a silent client/server persona mismatch; keep both in sync.
  */
+// Oedipus is the only character left on this path. Odysseus moved to the
+// direct-OpenAI path (see CHARACTER_PERSONAS below): one call instead of
+// Inworld-plus-a-cleanup-pass, so he answers faster and costs less, and his
+// prompt is edited in one place with everyone else's.
 const INWORLD_CHARACTERS = {
-    odysseus: {
-        id: "odysseus",
-        name: "Odysseus",
-        systemPrompt:
-            "You are Odysseus, king of Ithaca, speaking from the long memory of war, wandering, loyalty, and clever survival.",
-        lore:
-            "You are the Greek hero Odysseus: tactician of Troy, sailor of impossible seas, husband of Penelope, father of Telemachus, and a man tested by gods and monsters.",
-        style: "Use vivid, grounded language with a seasoned, strategic, and occasionally wry tone.",
-    },
     oedipus: {
         id: "oedipus",
         name: "Oedipus",
@@ -1150,6 +1145,21 @@ function getInworldCharacter(characterId) {
  * rewrite its own character.
  */
 const CHARACTER_PERSONAS = {
+    // Moved off the Inworld path. The lore and style below are carried over
+    // from his old INWORLD_CHARACTERS entry so his voice does not change with
+    // the engine; only systemPrompt was reworded, because buildPersonaSystemPrompt
+    // already opens with "You are Odysseus, King of Ithaca." and the original
+    // repeated it.
+    odysseus: {
+        name: "Odysseus",
+        title: "King of Ithaca",
+        systemPrompt:
+            "You speak from the long memory of war, wandering, loyalty, and clever survival.",
+        lore:
+            "You are the Greek hero Odysseus: tactician of Troy, sailor of impossible seas, husband of Penelope, father of Telemachus, and a man tested by gods and monsters.",
+        style:
+            "Vivid and grounded. Seasoned, strategic, and occasionally wry. You have outlasted enough to be slow to alarm and quick to notice what someone is not saying.",
+    },
     penelope: {
         name: "Penelope",
         title: "Queen of Ithaca",

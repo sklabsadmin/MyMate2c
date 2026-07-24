@@ -130,11 +130,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'image': 'assets/images/custom_avatar_02.png',
       'color': Colors.cyanAccent,
     },
-    // Imported from SKLabChat — these two run on the Inworld pipeline
-    // instead of the direct-OpenAI one every character above uses. The
-    // worker decides the engine from 'id'; this 'engine' field is just
-    // local documentation of that choice, not something sent to the
-    // backend. Placeholder art — needs real portraits before shipping.
+    // Imported from SKLabChat. Odysseus used to run on Inworld too; he now
+    // uses the direct-OpenAI path like everyone else, leaving Oedipus as the
+    // only Inworld character. The worker decides the engine from 'id'; the
+    // 'engine' field below is local documentation of that choice, not
+    // something sent to the backend.
     {
       'id': 'odysseus',
       'name': 'Odysseus',
@@ -142,7 +142,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       'desc': 'A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.',
       'image': 'assets/images/avatar_odysseus_real.png',
       'color': const Color(0xFF9D4F2F),
-      'engine': 'inworld',
     },
     {
       'id': 'oedipus',

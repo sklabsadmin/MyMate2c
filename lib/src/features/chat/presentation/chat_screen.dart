@@ -40,6 +40,12 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
+
+  /// Keeps the caret in the message box: focused when the chat opens, and
+  /// returned there after each reply. Without it the user has to click into
+  /// the field again after every exchange, because sending and the bubble
+  /// animations move focus elsewhere.
+  final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
   final Random _bubbleDelayRandom = Random();
@@ -94,6 +100,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _handleSend();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    // Neither of these was being disposed before; the controller has leaked
+    // on every chat close since the screen was written.
+    _textController.dispose();
+    _inputFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _loadReplyCount() async {
@@ -182,11 +197,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         scenario.contains('Bad Boy') ||
         scenario.contains('Enemy')) {
       return [
-        "Revving my engine just thinking about you.",
-        "Hop on the back, let's get out of here.",
-        "You like trouble? Cause I'm full of it.",
-        "Your eyes tell me you want a wild ride...",
-        "So, are we doing this? 🏍️🔥",
+        "Just got in. Took the long way, obviously.",
+        "Built this bike myself at sixteen. Badly. Fixed it since.",
+        "People decide what I am before I open my mouth. I stopped correcting them.",
+        "Rules and I have never got on. I've never pretended otherwise.",
+        "Spent the whole of Sunday in the garage. Best day I've had all week. 🏍️",
+        "So what is on your mind? Do not dress it up.",
+        "What would you do if nobody was going to have an opinion about it?",
       ];
     }
 
@@ -244,11 +261,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (scenario.contains('Surfer') || scenario.contains('Kai')) {
       return [
-        "Hey! The waves are perfect today.",
-        "Wanna catch a ride with me?",
-        "Life's better in boardshorts, don't you think?",
-        "You look like you need some sun.",
-        "Let's chill by the ocean. 🌊",
+        "Swell came in clean this morning. Was out before it got light.",
+        "I read the forecast the way other people read the news.",
+        "Waited three hours for one good set last week. Worth every minute.",
+        "Grew up in the water. Never really left it.",
+        "Nothing much rattles me. The ocean sorted that out early. 🌊",
+        "What is on your mind today? No rush, I have nowhere to be.",
+        "What is the thing you keep meaning to do? Say it out loud, see how it sounds.",
       ];
     }
 
@@ -284,41 +303,76 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (scenario.contains('Poet') || scenario.contains('Liam')) {
       return [
-        "Shall I compare thee to a summer's day?",
-        "You are my rhyme and my reason.",
-        "Every word I write is for you.",
-        "My heart beats in iambic pentameter.",
-        "You are poetry in motion. ✍️",
+        "Filled another notebook this week. Nobody will ever read it.",
+        "I write things down because it is the only way I have found to keep them.",
+        "Every word I write is for all humanity.",
+        "Most of what I notice, everyone else walks straight past.",
+        "A good line takes a day. A great one has taken me years. ✍️",
+        "What have you noticed today that nobody else did?",
+        "Is there something you have been trying to find the words for?",
       ];
     }
 
     if (scenario.contains('Zeus') || scenario.contains('Olympian')) {
       return [
-        "The heavens have been waiting for you.",
-        "Come closer, my divine one.",
-        "Even Olympus feels empty without you.",
-        "I would command storms just to reach you.",
-        "Rule beside me tonight. ⚡",
+        "Olympus is quiet today. Quiet has never suited me.",
+        "I have ruled gods and mortals long enough to lose patience with flattery.",
+        "Every appetite and folly I have watched play out. Including my own.",
+        "Power is easy to take and far harder to hold. Most learn that too late.",
+        "Ask me something worth answering. ⚡",
+        "What is weighing on you? Say it plainly — I have no patience for hedging.",
+        "If you held my thunderbolt for a day, what would you change?",
+      ];
+    }
+
+    // Must come before the Odysseus branch: her scenario is "Penelope (Queen
+    // of Ithaca)", and that branch matches on 'Ithaca', so checking it first
+    // gave her her husband's opening lines.
+    if (scenario.contains('Penelope')) {
+      return [
+        "The loom is quiet today. I have unpicked enough of it for one lifetime.",
+        "Twenty years I held a kingdom together while everyone told me to remarry.",
+        "I wove a shroud by day and undid it by night. It bought me three years.",
+        "People underestimate patience. It has outlasted every man who tried me.",
+        "I am harder to deceive than I look. Ask anyone who tried. 🧵",
+        "What are you waiting on? I know a great deal about waiting.",
+        "Who has underestimated you lately? I would like to hear about it.",
+      ];
+    }
+
+    if (scenario.contains('Cupid') || scenario.contains('Eros')) {
+      return [
+        "Careful. I have been known to cause trouble simply by turning up.",
+        "Golden arrows begin it, leaden ones end it. I carry both, and I aim well.",
+        "My mother is Venus, which explains rather a lot about me.",
+        "I fell for Psyche and it cost her a walk through the underworld. So I know the price.",
+        "Everyone thinks desire is simple. It is the least simple thing there is. 🏹",
+        "Go on then — who is on your mind? Not romance necessarily. Anyone.",
+        "What do you actually want at the moment? Most people are never asked.",
       ];
     }
 
     if (scenario.contains('Odysseus') || scenario.contains('Ithaca')) {
       return [
-        "Ten years I sailed, and still I was not lost — not truly — until I met you.",
-        "Every siren's song I resisted... yet your voice, I would follow anywhere.",
-        "I have outwitted gods and monsters. You, I have no defense against.",
-        "Come, sit by the fire and tell me your story. I have all the patience of a wanderer.",
-        "Home was never a place. Perhaps it is you. 🌊",
+        "Ten years I sailed to get home. The sea taught me a patience I never asked for.",
+        "Every siren's song I resisted... I am looking for a new voice to learn from.",
+        "I have outwitted gods and monsters. It cost me more than I expected it to.",
+        "Sit by the fire a while. I have all the patience of a wanderer.",
+        "Home was never a place. I learned that the long way round. 🌊",
+        "What are you navigating at the moment? I have some experience with long routes.",
+        "Tell me the choice you keep turning over. I will not decide it for you.",
       ];
     }
 
     if (scenario.contains('Oedipus') || scenario.contains('Thebes')) {
       return [
-        "I solved the Sphinx's riddle, yet you remain the mystery I most want to unravel.",
-        "Fate has broken me before. Still, I find myself drawn to you.",
+        "I solved the Sphinx's riddle. It is the one answer I ever got right.",
+        "Fate has broken me before. I have learned to speak plainly since.",
         "A king learns hard truths. Tell me yours — I am listening.",
-        "Even a man cursed by prophecy can still hope for one good thing. Perhaps that is you.",
-        "Walk with me. Thebes can wait tonight. 👑",
+        "Even a man cursed by prophecy can still hope for one good thing.",
+        "Walk with me. Thebes can wait. 👑",
+        "What truth have you been avoiding? I know the shape of that better than most.",
+        "Is there something you would ask, if you were certain of the answer?",
       ];
     }
 
@@ -429,10 +483,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       await Future.delayed(const Duration(milliseconds: 1000));
     }
 
-    // Show a single opening line rather than the whole sequence — enough
-    // to set the tone without flooding a brand-new chat with 5 bubbles.
+    // One opening line, not the whole sequence — enough to set the tone
+    // without flooding a brand-new chat. Picked at random rather than always
+    // taking the first, so the later lines (including the ones that ask the
+    // user a question) actually reach people instead of being dead weight.
     if (initialMessages.isEmpty) return;
-    final text = initialMessages.first;
+    final text = initialMessages[Random().nextInt(initialMessages.length)];
 
     if (!mounted) return;
 
@@ -449,6 +505,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // 2. Stop Typing & Send Message
     setState(() => _isTyping = false);
 
+    _refocusInput();
     _addMessage(
       ChatMessage(
         id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
@@ -577,6 +634,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (mounted) _triggerWelcomeSequence();
   }
 
+  /// Puts the caret back in the message box. Deferred to the next frame so it
+  /// runs after the widget tree settles from the bubble that just appeared,
+  /// which would otherwise steal it straight back.
+  void _refocusInput() {
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _inputFocus.requestFocus();
+    });
+  }
+
   void _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -630,6 +697,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final bubbles = _splitIntoBubbles(responseText);
     if (bubbles.isEmpty) {
       setState(() => _isTyping = false);
+      _refocusInput();
       return;
     }
 
@@ -652,6 +720,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     }
+
+    // Reply finished — hand the caret back so the next message can just be
+    // typed.
+    _refocusInput();
   }
 
   Future<void> _launchGoogleAuth() async {
@@ -1005,6 +1077,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       Expanded(
                         child: TextField(
                           controller: _textController,
+                          autofocus: true,
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color: Colors.white,
                           ),
@@ -1025,6 +1098,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               borderSide: BorderSide.none,
                             ),
                           ),
+                          focusNode: _inputFocus,
                           onSubmitted: (_) => _handleSend(),
                         ),
                       ),
