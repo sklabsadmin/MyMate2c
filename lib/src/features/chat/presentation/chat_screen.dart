@@ -50,6 +50,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final List<ChatMessage> _messages = [];
   final Random _bubbleDelayRandom = Random();
   bool _isTyping = false;
+
+  /// Idle nudge. If the user goes quiet after a reply, the character says
+  /// something neutral to invite them back in. The text is canned and local —
+  /// no API call — so a chat left open costs nothing.
+  ///
+  /// Capped at [_maxIdleNudges] per quiet stretch and reset when the user
+  /// sends, so someone who puts their phone down is not nagged indefinitely.
+  Timer? _idleTimer;
+  int _idleNudges = 0;
+  static const Duration _idleAfter = Duration(seconds: 20);
+  static const int _maxIdleNudges = 2;
+
+  static const List<String> _idlePrompts = [
+    "So — what's on your mind?",
+    "Still there?",
+    "Take your time. I'm not going anywhere.",
+    "Anything you feel like talking about?",
+    "You've gone quiet. That's allowed.",
+    "What are you thinking?",
+    "No rush. Say something whenever you're ready.",
+    "Where did you get to?",
+  ];
   String _currentVibe = "Gentle";
   OpenAIService? _aiService;
 
@@ -106,6 +128,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void dispose() {
     // Neither of these was being disposed before; the controller has leaked
     // on every chat close since the screen was written.
+    _cancelIdleTimer();
     _textController.dispose();
     _inputFocus.dispose();
     super.dispose();
@@ -506,6 +529,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() => _isTyping = false);
 
     _refocusInput();
+    _startIdleTimer();
     _addMessage(
       ChatMessage(
         id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
@@ -634,6 +658,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (mounted) _triggerWelcomeSequence();
   }
 
+  void _cancelIdleTimer() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+  }
+
+  /// (Re)starts the quiet countdown. Called once a reply has fully landed and
+  /// after the opening line; cancelled as soon as the user sends anything.
+  void _startIdleTimer() {
+    _cancelIdleTimer();
+    if (_idleNudges >= _maxIdleNudges) return;
+    _idleTimer = Timer(_idleAfter, _sendIdlePrompt);
+  }
+
+  void _sendIdlePrompt() {
+    if (!mounted) return;
+    // Don't talk over a reply still arriving, and don't interrupt someone who
+    // has already started typing — wait out another interval instead.
+    if (_isTyping || _textController.text.trim().isNotEmpty) {
+      _startIdleTimer();
+      return;
+    }
+
+    _idleNudges++;
+    _addMessage(
+      ChatMessage(
+        id: 'idle_${DateTime.now().millisecondsSinceEpoch}',
+        text: _idlePrompts[Random().nextInt(_idlePrompts.length)],
+        isUser: false,
+        timestamp: DateTime.now(),
+      ),
+    );
+    _scrollToBottom();
+    _startIdleTimer();
+  }
+
   /// Puts the caret back in the message box. Deferred to the next frame so it
   /// runs after the widget tree settles from the bubble that just appeared,
   /// which would otherwise steal it straight back.
@@ -647,6 +706,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
+
+    // The user is back — stop nudging and give them a fresh allowance.
+    _cancelIdleTimer();
+    _idleNudges = 0;
 
     // Free-reply gate: signed-out users get AppConfig.freeRepliesPerCharacter
     // successful replies per character, then must sign in to keep chatting
@@ -698,6 +761,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (bubbles.isEmpty) {
       setState(() => _isTyping = false);
       _refocusInput();
+      _startIdleTimer();
       return;
     }
 
@@ -722,8 +786,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     // Reply finished — hand the caret back so the next message can just be
-    // typed.
+    // typed, and start counting down to a nudge if they go quiet.
     _refocusInput();
+    _startIdleTimer();
   }
 
   Future<void> _launchGoogleAuth() async {
