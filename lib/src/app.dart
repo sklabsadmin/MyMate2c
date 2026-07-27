@@ -329,7 +329,7 @@ class _AIAppState extends ConsumerState<AIApp> {
     );
 
     return MaterialApp.router(
-      title: 'MyMate',
+      title: 'Mythos Companion',
       theme: AppTheme.romanticTheme,
       routerConfig: router,
       debugShowCheckedModeBanner: false,

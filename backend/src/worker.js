@@ -1279,7 +1279,7 @@ async function serveCharacterLanding(request, env, url, ctx) {
     const pageUrl = `${url.origin}/c/${characterId}`;
     const tags = [
         `<meta property="og:type" content="website">`,
-        `<meta property="og:site_name" content="MyMate">`,
+        `<meta property="og:site_name" content="Mythos Companion">`,
         `<meta property="og:title" content="${escapeHtmlAttribute(title)}">`,
         `<meta property="og:description" content="${escapeHtmlAttribute(card.desc)}">`,
         `<meta property="og:image" content="${escapeHtmlAttribute(imageUrl)}">`,
@@ -1979,7 +1979,7 @@ function adminReferralsPageHtml() {
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
-<title>MyMate - Campaign Links</title>
+<title>Mythos - Campaign Links</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
   header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -2056,7 +2056,7 @@ function adminLogsPageHtml() {
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
-<title>MyMate - Chat Logs</title>
+<title>Mythos - Chat Logs</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
   header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

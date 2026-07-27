@@ -1,11 +1,11 @@
 {
-    "name": "MyMate",
-    "short_name": "MyMate",
-    "start_url": ".",
+    "name": "Mythos Companion",
+    "short_name": "Mythos",
+    "start_url": "/",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "MyMate AI companion chat.",
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "description": "Chat with the heroes and gods of Greek myth.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
@@ -30,6 +30,11 @@
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "maskable"
+        },
+        {
+            "src": "icons/apple-touch-icon-180.png",
+            "sizes": "180x180",
+            "type": "image/png"
         }
     ]
 }

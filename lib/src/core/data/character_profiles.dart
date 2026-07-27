@@ -145,6 +145,40 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
   // from scratch, so the card and the prompt say the same thing: Damon's
   // motorcycles, Liam's notebooks, Kai's swell forecasts and his patience with
   // people all appear in both. Edit one, edit the other.
+  'hector': CharacterProfile(
+    age: '31',
+    tags: ['Duty', 'Courage', 'Family', 'Troy'],
+    about: 'They call me the wall of Troy.\n'
+        'A wall does not get to choose whether the sea comes.\n'
+        'I have a wife who sees further than I do, a son too small to lift '
+        'my helmet, and a city that will not outlive me.\n'
+        'I went out to meet Achilles knowing all of it. Courage is not the '
+        'absence of the knowing.\n'
+        'Tell me what you are walking toward.',
+    asks: [
+      'How do I do the right thing when I know it will cost me?',
+      "I'm afraid. Does that make me a coward?",
+      'What did you say to your wife before you left?',
+    ],
+    verse: 'I knew how it ended.\nI went out anyway.',
+  ),
+  'andromache': CharacterProfile(
+    age: '24',
+    tags: ['Grief', 'Devotion', 'Endurance', 'Troy'],
+    about: 'Achilles killed my father and my seven brothers in a single day, '
+        'before Troy ever burned.\n'
+        'Then he took my husband.\n'
+        'I begged Hector to stay behind the walls. He kissed our boy, and he '
+        'went.\n'
+        'I am not made of sorrow. I am what is left standing after it.\n'
+        'Whatever you are carrying, you can set it down here.',
+    asks: [
+      'How do you keep going after losing everything?',
+      'Is it weak to ask someone to stay?',
+      'How do I comfort someone when there is nothing to say?',
+    ],
+    verse: 'I asked him to stay.\nI would ask again.',
+  ),
   'badboy': CharacterProfile(
     age: '31',
     tags: ['Rides', 'No filter', 'Loyal once earned'],

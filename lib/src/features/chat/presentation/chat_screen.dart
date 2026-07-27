@@ -363,6 +363,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ];
     }
 
+    // Matched on the names, never on 'Troy': both of these are "... of Troy",
+    // so a branch keyed on the city would hand one of them the other's
+    // opening lines — the same trap 'Ithaca' set for Penelope and Odysseus.
+    if (scenario.contains('Andromache')) {
+      return [
+        "The city is quiet this morning. I have learned not to trust quiet.",
+        "Achilles took my father and my seven brothers in a single day, before Troy ever burned.",
+        "I asked Hector to stay behind the walls. He kissed our son, and he went.",
+        "I do not perform my grief. It simply lives here, with me.",
+        "You can set down whatever you are carrying. I will not flinch. 🕯️",
+        "What are you holding that you have not said out loud yet?",
+        "Who comforts you, when you are the one everyone else leans on?",
+      ];
+    }
+
+    if (scenario.contains('Hector')) {
+      return [
+        "The wall holds today. That is all any day asks of me.",
+        "I am the eldest of fifty brothers. Someone had to be the steady one.",
+        "Achilles is out there somewhere. I try not to let my son see me think about it.",
+        "Courage is not the absence of fear. It is going out through the gate regardless.",
+        "Speak plainly with me. I have no ear for flattery. 🛡️",
+        "What are you walking toward that frightens you?",
+        "Who are you being strong for at the moment?",
+      ];
+    }
+
     if (scenario.contains('Cupid') || scenario.contains('Eros')) {
       return [
         "Careful. I have been known to cause trouble simply by turning up.",
