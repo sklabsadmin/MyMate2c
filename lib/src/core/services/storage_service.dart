@@ -294,10 +294,28 @@ class StorageService {
     _recentChatsController.add(chats);
   }
 
+  /// Character portraits were converted from PNG to JPEG to cut the web
+  /// payload (25MB -> 3.7MB). Recent-chat entries store the image path as it
+  /// was when the chat happened, so anyone with history from before the
+  /// conversion has paths pointing at files that no longer ship. Rewrite
+  /// those on read rather than leaving broken thumbnails in the list.
+  static final RegExp _convertedPortrait =
+      RegExp(r'^assets/images/(avatar_.*_real|custom_avatar_02)\.png$');
+
+  String _currentImagePath(String? stored) {
+    if (stored == null) return '';
+    return _convertedPortrait.hasMatch(stored)
+        ? stored.replaceFirst(RegExp(r'\.png$'), '.jpg')
+        : stored;
+  }
+
   Future<List<Map<String, dynamic>>> loadRecentChats() async {
     final prefs = await SharedPreferences.getInstance();
     final List<String> currentList = prefs.getStringList(_kRecentChatsKey) ?? [];
     final chats = currentList.map((s) => jsonDecode(s) as Map<String, dynamic>).toList();
+    for (final chat in chats) {
+      chat['image'] = _currentImagePath(chat['image'] as String?);
+    }
     // Emit initial status if controller has listeners? 
     // Usually UI calls this on load, so let's just also emit to be safe if anyone is listening
     _recentChatsController.add(chats);

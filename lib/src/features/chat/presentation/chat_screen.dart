@@ -584,7 +584,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         characterName: widget.scenario!,
         characterImage:
             widget.characterImage ??
-            'assets/images/avatar_ceo_real.png', // Fallback
+            'assets/images/avatar_ceo_real.jpg', // Fallback
         lastMessage: message.text,
         timestamp: message.timestamp,
         vibe: _currentVibe,

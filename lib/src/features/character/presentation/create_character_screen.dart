@@ -23,11 +23,11 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
   String _selectedEyes = '';
   String _selectedHair = '';
   String _selectedStyle = '';
-  String _selectedImage = 'assets/images/avatar_ceo_real.png'; // Default
+  String _selectedImage = 'assets/images/avatar_ceo_real.jpg'; // Default
 
   final List<String> _availableAvatars = [
     'assets/images/custom_avatar_01.png',
-    'assets/images/custom_avatar_02.png',
+    'assets/images/custom_avatar_02.jpg',
     'assets/images/custom_avatar_03.png',
     'assets/images/custom_avatar_04.png',
     'assets/images/custom_avatar_05.png',
@@ -41,19 +41,19 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
     'assets/images/custom_avatar_13.png',
     'assets/images/custom_avatar_14.png',
     'assets/images/custom_avatar_15.png',
-    'assets/images/avatar_ceo_real.png',
-    'assets/images/avatar_architect_real.png',
-    'assets/images/avatar_artist_real.png',
-    'assets/images/avatar_badboy_real.png',
-    'assets/images/avatar_biker_real.png',
-    'assets/images/avatar_bodyguard_real.png',
-    'assets/images/avatar_ceo_real.png',
-    'assets/images/avatar_chef_real.png',
-    'assets/images/avatar_doctor_real.png',
-    'assets/images/avatar_pilot_real.png',
-    'assets/images/avatar_poet_real.png',
-    'assets/images/avatar_rockstar_real.png',
-    'assets/images/avatar_vampire_real.png',
+    'assets/images/avatar_ceo_real.jpg',
+    'assets/images/avatar_architect_real.jpg',
+    'assets/images/avatar_artist_real.jpg',
+    'assets/images/avatar_badboy_real.jpg',
+    'assets/images/avatar_biker_real.jpg',
+    'assets/images/avatar_bodyguard_real.jpg',
+    'assets/images/avatar_ceo_real.jpg',
+    'assets/images/avatar_chef_real.jpg',
+    'assets/images/avatar_doctor_real.jpg',
+    'assets/images/avatar_pilot_real.jpg',
+    'assets/images/avatar_poet_real.jpg',
+    'assets/images/avatar_rockstar_real.jpg',
+    'assets/images/avatar_vampire_real.jpg',
     'assets/images/avatar_trainer_real.png',
   ];
   

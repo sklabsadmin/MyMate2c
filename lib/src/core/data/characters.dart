@@ -20,7 +20,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Christian',
       'vibe': 'The CEO',
       'desc': 'Dominant, wealthy, and possessive.',
-      'image': 'assets/images/avatar_ceo_real.png', 
+      'image': 'assets/images/avatar_ceo_real.jpg', 
       'color': const Color(0xFF1A237E),
     },
     {
@@ -28,7 +28,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Damon',
       'vibe': 'Bad Boy',
       'desc': 'Rebellious, passionate, and dangerous.',
-      'image': 'assets/images/avatar_badboy_real.png',
+      'image': 'assets/images/avatar_badboy_real.jpg',
       'color': const Color(0xFFB71C1C),
     },
     {
@@ -36,7 +36,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Julian',
       'vibe': 'The Artist',
       'desc': 'Sensitive, romantic, and attentive.',
-      'image': 'assets/images/avatar_artist_real.png',
+      'image': 'assets/images/avatar_artist_real.jpg',
       'color': const Color(0xFF4A148C),
     },
     // New Boyfriends
@@ -45,7 +45,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Adrian',
       'vibe': 'Architect',
       'desc': 'Structured, visionary, and builds a future with you.',
-      'image': 'assets/images/avatar_architect_real.png', 
+      'image': 'assets/images/avatar_architect_real.jpg', 
       'color': Colors.teal,
     },
     {
@@ -53,7 +53,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Jax',
       'vibe': 'Rockstar',
       'desc': 'Wild concerts, late nights, and songs about you.',
-      'image': 'assets/images/avatar_rockstar_real.png', 
+      'image': 'assets/images/avatar_rockstar_real.jpg', 
       'color': Colors.purpleAccent,
     },
     {
@@ -61,7 +61,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Marco',
       'vibe': 'The Chef',
       'desc': 'Passionate, fiery, and knows how to taste.',
-      'image': 'assets/images/avatar_chef_real.png', 
+      'image': 'assets/images/avatar_chef_real.jpg', 
       'color': Colors.orange,
     },
     {
@@ -69,7 +69,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Dr. Ethan',
       'vibe': 'The Doctor',
       'desc': 'Intelligent, caring, and knows anatomy well.',
-      'image': 'assets/images/avatar_doctor_real.png', 
+      'image': 'assets/images/avatar_doctor_real.jpg', 
       'color': Colors.cyan,
     },
     {
@@ -77,7 +77,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Captain Ryker',
       'vibe': 'The Pilot',
       'desc': 'Adventure, uniforms, and taking you to new heights.',
-      'image': 'assets/images/avatar_pilot_real.png', 
+      'image': 'assets/images/avatar_pilot_real.jpg', 
       'color': Colors.indigo,
     },
     {
@@ -85,7 +85,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Spike',
       'vibe': 'Biker',
       'desc': 'Leather, chrome, and the open road.',
-      'image': 'assets/images/avatar_biker_real.png', 
+      'image': 'assets/images/avatar_biker_real.jpg', 
       'color': Colors.grey,
     },
     {
@@ -93,7 +93,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Liam',
       'vibe': 'The Poet',
       'desc': 'Words are his weapon, and he writes them for you.',
-      'image': 'assets/images/avatar_poet_real.png', 
+      'image': 'assets/images/avatar_poet_real.jpg', 
       'color': Colors.brown,
     },
     {
@@ -101,7 +101,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Lucien',
       'vibe': 'Vampire',
       'desc': 'Eternal love, dark secrets, and a dangerous bite.',
-      'image': 'assets/images/avatar_vampire_real.png', 
+      'image': 'assets/images/avatar_vampire_real.jpg', 
       'color': Colors.red,
     },
     {
@@ -109,7 +109,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Silas',
       'vibe': 'Bodyguard',
       'desc': 'He fails at nothing, especially protecting you.',
-      'image': 'assets/images/avatar_bodyguard_real.png', 
+      'image': 'assets/images/avatar_bodyguard_real.jpg', 
       'color': Colors.black,
     },
     {
@@ -117,7 +117,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Zeus',
       'vibe': 'Olympian King',
       'desc': "Regal, magnetic. He'll tell you what you need to hear.",
-      'image': 'assets/images/avatar_zeus_real.png',
+      'image': 'assets/images/avatar_zeus_real.jpg',
       'color': Colors.amber,
     },
     {
@@ -125,7 +125,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Kai',
       'vibe': 'Surfer',
       'desc': 'Sun, salt, and endless chill vibes.',
-      'image': 'assets/images/custom_avatar_02.png',
+      'image': 'assets/images/custom_avatar_02.jpg',
       'color': Colors.cyanAccent,
     },
     // Imported from SKLabChat. Odysseus used to run on Inworld too; he now
@@ -138,7 +138,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Odysseus',
       'vibe': 'King of Ithaca',
       'desc': 'A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.',
-      'image': 'assets/images/avatar_odysseus_real.png',
+      'image': 'assets/images/avatar_odysseus_real.jpg',
       'color': const Color(0xFF9D4F2F),
     },
     {
@@ -146,7 +146,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Oedipus',
       'vibe': 'King of Thebes',
       'desc': 'A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.',
-      'image': 'assets/images/avatar_oedipus_real.png',
+      'image': 'assets/images/avatar_oedipus_real.jpg',
       'color': const Color(0xFF7D3F25),
       'engine': 'inworld',
     },
@@ -158,7 +158,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Penelope',
       'vibe': 'Queen of Ithaca',
       'desc': 'Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.',
-      'image': 'assets/images/avatar_penelope_real.png',
+      'image': 'assets/images/avatar_penelope_real.jpg',
       'color': const Color(0xFF6A4C93),
     },
     {
@@ -169,7 +169,7 @@ const List<Map<String, dynamic>> kCharacters = [
       // 4:3 rather than the square every other portrait uses; the card
       // crops with BoxFit.cover, so the sides are trimmed rather than
       // letterboxed.
-      'image': 'assets/images/avatar_cupid_real.png',
+      'image': 'assets/images/avatar_cupid_real.jpg',
       'color': const Color(0xFFD81B60),
     },
     {
@@ -177,7 +177,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Hector',
       'vibe': 'Prince of Troy',
       'desc': "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.",
-      'image': 'assets/images/avatar_hector_real.png',
+      'image': 'assets/images/avatar_hector_real.jpg',
       'color': const Color(0xFFB03A2E),
     },
     {
@@ -185,7 +185,7 @@ const List<Map<String, dynamic>> kCharacters = [
       'name': 'Andromache',
       'vibe': 'Lady of Troy',
       'desc': 'Gentle and clear-eyed, carrying quiet strength through everything war took.',
-      'image': 'assets/images/avatar_andromache_real.png',
+      'image': 'assets/images/avatar_andromache_real.jpg',
       'color': const Color(0xFF8E6C9B),
     },
 ];

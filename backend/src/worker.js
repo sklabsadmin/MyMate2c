@@ -1177,16 +1177,16 @@ function getInworldCharacter(characterId) {
 /// Keep the two in step by hand — a character missing here still works, it
 /// just falls back to the generic app preview.
 const CHARACTER_SHARE_CARDS = {
-    zeus: { name: "Zeus", vibe: "Olympian King", desc: "Regal, magnetic. He'll tell you what you need to hear.", image: "avatar_zeus_real.png" },
-    odysseus: { name: "Odysseus", vibe: "King of Ithaca", desc: "A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.", image: "avatar_odysseus_real.png" },
-    oedipus: { name: "Oedipus", vibe: "King of Thebes", desc: "A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.", image: "avatar_oedipus_real.png" },
-    penelope: { name: "Penelope", vibe: "Queen of Ithaca", desc: "Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.", image: "avatar_penelope_real.png" },
-    cupid: { name: "Cupid", vibe: "God of Desire", desc: "Mischievous and disarming, with an aim no mortal heart survives.", image: "avatar_cupid_real.png" },
-    hector: { name: "Hector", vibe: "Prince of Troy", desc: "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.", image: "avatar_hector_real.png" },
-    andromache: { name: "Andromache", vibe: "Lady of Troy", desc: "Gentle and clear-eyed, carrying quiet strength through everything war took.", image: "avatar_andromache_real.png" },
-    badboy: { name: "Damon", vibe: "Bad Boy", desc: "Rebellious, passionate, and dangerous.", image: "avatar_badboy_real.png" },
-    poet: { name: "Liam", vibe: "The Poet", desc: "Words are his weapon, and he writes them for you.", image: "avatar_poet_real.png" },
-    surfer: { name: "Kai", vibe: "Surfer", desc: "Sun, salt, and endless chill vibes.", image: "custom_avatar_02.png" },
+    zeus: { name: "Zeus", vibe: "Olympian King", desc: "Regal, magnetic. He'll tell you what you need to hear.", image: "avatar_zeus_real.jpg" },
+    odysseus: { name: "Odysseus", vibe: "King of Ithaca", desc: "A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.", image: "avatar_odysseus_real.jpg" },
+    oedipus: { name: "Oedipus", vibe: "King of Thebes", desc: "A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.", image: "avatar_oedipus_real.jpg" },
+    penelope: { name: "Penelope", vibe: "Queen of Ithaca", desc: "Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.", image: "avatar_penelope_real.jpg" },
+    cupid: { name: "Cupid", vibe: "God of Desire", desc: "Mischievous and disarming, with an aim no mortal heart survives.", image: "avatar_cupid_real.jpg" },
+    hector: { name: "Hector", vibe: "Prince of Troy", desc: "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.", image: "avatar_hector_real.jpg" },
+    andromache: { name: "Andromache", vibe: "Lady of Troy", desc: "Gentle and clear-eyed, carrying quiet strength through everything war took.", image: "avatar_andromache_real.jpg" },
+    badboy: { name: "Damon", vibe: "Bad Boy", desc: "Rebellious, passionate, and dangerous.", image: "avatar_badboy_real.jpg" },
+    poet: { name: "Liam", vibe: "The Poet", desc: "Words are his weapon, and he writes them for you.", image: "avatar_poet_real.jpg" },
+    surfer: { name: "Kai", vibe: "Surfer", desc: "Sun, salt, and endless chill vibes.", image: "custom_avatar_02.jpg" },
 };
 
 /// Records one campaign-link arrival. Fire-and-forget via ctx.waitUntil: a
