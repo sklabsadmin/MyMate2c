@@ -346,7 +346,6 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
 
   Widget _buildVibeStep(ThemeData theme) {
     final vibes = [
-      {'label': 'Dominant', 'desc': 'Takes control, possessive'},
       {'label': 'Gentle', 'desc': 'Sweet, caring, listener'},
       {'label': 'Playful', 'desc': 'Fun, teasing, energetic'},
       {'label': 'Intellectual', 'desc': 'Deep, mysterious, smart'},

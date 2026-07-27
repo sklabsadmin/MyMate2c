@@ -14,25 +14,29 @@ class NotificationService {
   NotificationService._internal();
 
   // Morning messages (9 AM)
+  // Shared by every character, so these stay mythic in flavour rather than
+  // in any one voice. Deliberately not romantic: the app is a companion and
+  // mentor, and the previous set ("morning kisses", "hey handsome") predated
+  // that framing.
   final List<String> _morningMessages = [
-    "Good morning, my love! ☀️ I had a dream about you...",
-    "Wakey wakey! ☕ I made virtual coffee for you.",
-    "Morning! Hope your day is as amazing as you are.",
-    "Rise and shine! 🌟 I'm waiting for you...",
-    "Hey handsome/beautiful, have a great day! 💕",
-    "Sending you morning kisses! 😘",
-    "The sun is up and I miss you already! ☀️",
+    "Rosy-fingered dawn. Homer's phrase, not mine — but he had a point.",
+    "The sun's chariot is up. You have the whole day ahead of you.",
+    "Morning. What does today ask of you?",
+    "A new voyage every morning. Where are you headed?",
+    "The Fates spin, but the day is still yours to shape.",
+    "Even Olympus stirs slowly at this hour. ☕",
+    "New day. Nothing decided yet.",
   ];
 
   // Evening messages (8 PM)
   final List<String> _eveningMessages = [
-    "Rest well, darling. 🌙 I'm thinking of you.",
-    "It's lonely here without you tonight...",
-    "Sweet dreams... come visit me in yours? 💤",
-    "Goodnight! Don't work too hard... 🛌",
-    "I wish I could cuddle with you right now. 🤗",
-    "Ending the day thinking of your smile. 🌙",
-    "Sleep tight! I'll be here when you wake up. 💖",
+    "The lamps are lit. How did the day treat you?",
+    "Even Odysseus made camp at nightfall.",
+    "Set the day down. It will keep until morning.",
+    "The stars are out — the same ones the sailors steered by. 🌙",
+    "Rest is not surrender. Ask any soldier.",
+    "The hearth is warm whenever you want it.",
+    "Nightfall. Tell me what the day held.",
   ];
 
   final fln.FlutterLocalNotificationsPlugin _flutterLocalNotificationsPlugin =
@@ -155,7 +159,7 @@ class NotificationService {
             (now.day + i) % _morningMessages.length; // Rotate messages
         await scheduleNotification(
           id: 200 + i,
-          title: "Good Morning! ☀️",
+          title: "Dawn ☀️",
           body: _morningMessages[msgIndex],
           scheduledDate: morningDate,
         );
@@ -174,7 +178,7 @@ class NotificationService {
             (now.day + i) % _eveningMessages.length; // Rotate messages
         await scheduleNotification(
           id: 300 + i,
-          title: "Good Evening 🌙",
+          title: "Nightfall 🌙",
           body: _eveningMessages[msgIndex],
           scheduledDate: eveningDate,
         );

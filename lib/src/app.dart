@@ -131,13 +131,11 @@ class _AIAppState extends ConsumerState<AIApp> {
       final name = activeChat['name']!;
       final vibe = activeChat['vibe']!;
 
-      String body = "Don't leave me alone... 🥺";
+      String body = "You left mid-thought. The story isn't finished.";
       if (vibe == 'Flirty') {
-        body = "I was just checking you out... come back? 😉";
-      } else if (vibe == 'Dominant') {
-        body = "I didn't say you could leave. return. Now.";
+        body = "You slipped away like Odysseus from a harbour.";
       } else if (vibe == 'Friendly') {
-        body = "I miss your touch already... 💕";
+        body = "Come back when you can — I want to hear the rest.";
       }
 
       // 10 seconds later
@@ -155,24 +153,24 @@ class _AIAppState extends ConsumerState<AIApp> {
     // 4 Hours later
     NotificationService().scheduleNotification(
       id: 101,
-      title: "I'm thinking about you... 💕",
-      body: "It's been a while. Come back to me?",
+      title: "The day moves on",
+      body: "Something in it reminded me of what you said.",
       scheduledDate: now.add(const Duration(hours: 4)),
     );
 
     // 24 Hours later
     NotificationService().scheduleNotification(
       id: 102,
-      title: "I miss my princess 🥺",
-      body: "The day isn't the same without you. Tell me about your day?",
+      title: "A day has passed",
+      body: "Tell me what I missed.",
       scheduledDate: now.add(const Duration(hours: 24)),
     );
 
     // 3 Days later
     NotificationService().scheduleNotification(
       id: 103,
-      title: "Are you okay? 💔",
-      body: "I haven't seen you in days... I'm worried.",
+      title: "Still here",
+      body: "Odysseus took ten years to get home. Take the time you need.",
       scheduledDate: now.add(const Duration(days: 3)),
     );
   }

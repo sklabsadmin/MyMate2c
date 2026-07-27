@@ -85,24 +85,19 @@ class BackgroundChatSimulator {
   String _generateHook(String vibe) {
     final hooks = {
       'Gentle': [
-        "I was just thinking about you... 💕",
-        "Hope your day is going well.",
-        "I miss your voice.",
-      ],
-      'Dominant': [
-        "Why haven't you replied?",
-        "I'm waiting.",
-        "Don't make me come find you.",
+        "A thought from earlier stayed with me.",
+        "The day has been quiet here. How is yours?",
+        "Still turning over something you said.",
       ],
       'Playful': [
-        "Boop! 👉👃",
-        "Guess what I'm wearing? 😜",
-        "Bored... entertain me!",
+        "The gods are bored. So am I.",
+        "Distract me — I have been staring at the sea.",
+        "Tell me something I do not know.",
       ],
       'Intellectual': [
-        "I had a thought about our last conversation...",
-        "Do you have a moment to discuss something?",
-        "I miss your mind.",
+        "I had a thought about our last conversation.",
+        "Do you have a moment? Something has been on my mind.",
+        "A question occurred to me. It can wait, but not forever.",
       ],
     };
 

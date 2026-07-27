@@ -503,13 +503,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
 
-    // Default Flirty Fallback
+    // Default Companion Fallback. Only reached by a character with no
+    // welcome branch of their own, so it has to be safe for anyone — the
+    // previous version was explicitly flirty, which a grieving Andromache
+    // inherited verbatim before she was given her own lines.
     return [
-      "Hey you... I saw you looking. 😉",
-      "I was just thinking about how good we'd look together.",
-      "So, are you going to say hello, or just stare? 😘",
-      "I'm feeling a bit lonely... come closer.",
-      "Tell me, what's your wildest fantasy?...",
+      "Hey you... I remembered what you told me 😉",
+      "I was just thinking about how good of chat we had.",
+      "Yo, you going to come and talk to your Greek friend? 😘",
+      "I'm feeling a bit lonely...have anything interesting for me?",
+      "Tell me, how is your day going?",
     ];
   }
 
