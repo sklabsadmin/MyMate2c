@@ -32,12 +32,16 @@
   },
   "vars": {
     "REQUIRE_CHAT_LOGS": "false",
-    // HMAC signing on /api/chat. Off pre-launch so the web build doesn't need
-    // APP_SECRET baked in. Set to "true" (or remove this line) before real
-    // users exist — it's what stops strangers spending our OpenAI credits.
-    // When turning it back on, the client build must use the SAME APP_SECRET
-    // as the worker's secret, or every request fails with "Invalid signature".
-    "REQUIRE_SIGNATURE": "false",
+    // HMAC signing on /api/chat. ON: without it the endpoint is an open proxy
+    // to our OpenAI account for anyone who finds the URL.
+    //
+    // The client must be built with the SAME APP_SECRET as the worker's
+    // secret, or every request fails with "Invalid signature". That value
+    // lives in the gitignored .env; build with `npm run build:web` (which
+    // passes it as --dart-define), never a bare `flutter build web` — a build
+    // without it ships an empty secret and breaks chat for everyone, which is
+    // exactly why this flag was previously turned off.
+    "REQUIRE_SIGNATURE": "true",
     // Update this once the worker's real URL is confirmed (used for
     // Instagram/Google-auth redirects only; not load-bearing for chat/logging).
     "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev",
