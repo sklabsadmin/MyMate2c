@@ -45,6 +45,8 @@ class AppConfig {
     'oedipus',
     'penelope',
     'cupid',
+    'hector',
+    'andromache',
   ];
 
   static const List<String> modernCharacterIds = [

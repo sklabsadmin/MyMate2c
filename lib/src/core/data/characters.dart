@@ -172,6 +172,22 @@ const List<Map<String, dynamic>> kCharacters = [
       'image': 'assets/images/avatar_cupid_real.png',
       'color': const Color(0xFFD81B60),
     },
+    {
+      'id': 'hector',
+      'name': 'Hector',
+      'vibe': 'Prince of Troy',
+      'desc': "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.",
+      'image': 'assets/images/avatar_hector_real.png',
+      'color': const Color(0xFFB03A2E),
+    },
+    {
+      'id': 'andromache',
+      'name': 'Andromache',
+      'vibe': 'Lady of Troy',
+      'desc': 'Gentle and clear-eyed, carrying quiet strength through everything war took.',
+      'image': 'assets/images/avatar_andromache_real.png',
+      'color': const Color(0xFF8E6C9B),
+    },
 ];
 
 /// The roster entry for [characterId], or null when there is no such
