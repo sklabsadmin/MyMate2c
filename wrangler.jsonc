@@ -17,10 +17,17 @@
   "assets": {
     "directory": "build/web",
     "not_found_handling": "single-page-application",
+    // The binding lets the worker fetch index.html itself, which is how the
+    // /c/* handler injects per-character Open Graph tags into the shell.
+    "binding": "ASSETS",
     "run_worker_first": [
       "/api/*",
       "/auth/*",
-      "/admin/*"
+      "/admin/*",
+      // Campaign links: the worker must see these to log the arrival and
+      // serve the character's share card. Without this the asset handler
+      // answers first and every link previews identically.
+      "/c/*"
     ]
   },
   "vars": {

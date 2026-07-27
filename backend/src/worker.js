@@ -12,6 +12,13 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
+        // Campaign deep links. Handled here rather than by the static asset
+        // handler so the arrival is recorded and the character's Open Graph
+        // tags are injected before any crawler sees the page.
+        if (request.method === "GET" && url.pathname.startsWith("/c/")) {
+            return serveCharacterLanding(request, env, url, ctx);
+        }
+
         if (request.method === "OPTIONS") {
             return new Response(null, { headers: corsHeaders(request) });
         }
@@ -1144,6 +1151,136 @@ function getInworldCharacter(characterId) {
  * edited and deployed without shipping a new app build, and a client can't
  * rewrite its own character.
  */
+/// Share-card metadata for the /c/<id> campaign links.
+///
+/// Deliberately duplicated from lib/src/core/data/characters.dart: the Dart
+/// roster is compiled into the bundle and unreadable from the worker, and
+/// these strings are what a social crawler sees before any JavaScript runs.
+/// Keep the two in step by hand — a character missing here still works, it
+/// just falls back to the generic app preview.
+const CHARACTER_SHARE_CARDS = {
+    zeus: { name: "Zeus", vibe: "Olympian King", desc: "Regal, magnetic. He'll tell you what you need to hear.", image: "avatar_zeus_real.png" },
+    odysseus: { name: "Odysseus", vibe: "King of Ithaca", desc: "A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.", image: "avatar_odysseus_real.png" },
+    oedipus: { name: "Oedipus", vibe: "King of Thebes", desc: "A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.", image: "avatar_oedipus_real.png" },
+    penelope: { name: "Penelope", vibe: "Queen of Ithaca", desc: "Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.", image: "avatar_penelope_real.png" },
+    cupid: { name: "Cupid", vibe: "God of Desire", desc: "Mischievous and disarming, with an aim no mortal heart survives.", image: "avatar_cupid_real.png" },
+    badboy: { name: "Damon", vibe: "Bad Boy", desc: "Rebellious, passionate, and dangerous.", image: "avatar_badboy_real.png" },
+    poet: { name: "Liam", vibe: "The Poet", desc: "Words are his weapon, and he writes them for you.", image: "avatar_poet_real.png" },
+    surfer: { name: "Kai", vibe: "Surfer", desc: "Sun, salt, and endless chill vibes.", image: "custom_avatar_02.png" },
+};
+
+/// Records one campaign-link arrival. Fire-and-forget via ctx.waitUntil: a
+/// logging failure must never cost us the landing page itself.
+async function recordReferralVisit(env, visit) {
+    if (!env.CHAT_LOGS_DB) return;
+    try {
+        await env.CHAT_LOGS_DB.prepare(`
+            INSERT INTO referral_visits (
+                id, character_id, source, utm_medium, utm_campaign,
+                referer, user_agent, known_character
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+            crypto.randomUUID(),
+            visit.characterId || null,
+            visit.source || null,
+            visit.utmMedium || null,
+            visit.utmCampaign || null,
+            visit.referer || null,
+            (visit.userAgent || "").slice(0, 400) || null,
+            visit.known ? 1 : 0
+        ).run();
+    } catch (error) {
+        console.error(JSON.stringify({ event: "referral_visit_log_failed", error: error.message }));
+    }
+}
+
+function escapeHtmlAttribute(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+/// Classifies where a visitor came from. Instagram and Facebook render links
+/// in their own in-app browser, which identifies itself in the user-agent —
+/// that is the only signal for a link posted without utm parameters, since
+/// Instagram strips the referrer.
+function detectTrafficSource(request, url) {
+    const utm = url.searchParams.get("utm_source");
+    if (utm) return utm.toLowerCase().slice(0, 60);
+
+    const ua = request.headers.get("User-Agent") || "";
+    if (/Instagram/i.test(ua)) return "instagram";
+    if (/FBAN|FBAV/i.test(ua)) return "facebook";
+
+    const referer = request.headers.get("Referer") || "";
+    if (referer) {
+        try {
+            return new URL(referer).hostname.replace(/^www\./, "").slice(0, 60);
+        } catch (_) {}
+    }
+    return "direct";
+}
+
+/// Serves a /c/<id> campaign landing: records the arrival, then returns the
+/// app shell with character-specific Open Graph tags injected.
+///
+/// This exists because the crawler that builds a link preview never runs the
+/// Flutter app — it reads the raw HTML. Without this every character link
+/// would preview identically.
+async function serveCharacterLanding(request, env, url, ctx) {
+    const characterId = url.pathname.split("/")[2]?.trim().toLowerCase() || "";
+    const card = CHARACTER_SHARE_CARDS[characterId];
+
+    // Record the arrival even for unknown ids — a typo'd campaign link is
+    // worth seeing in the numbers. Never let logging break the page.
+    ctx.waitUntil(
+        recordReferralVisit(env, {
+            characterId,
+            source: detectTrafficSource(request, url),
+            utmMedium: url.searchParams.get("utm_medium"),
+            utmCampaign: url.searchParams.get("utm_campaign"),
+            referer: request.headers.get("Referer"),
+            userAgent: request.headers.get("User-Agent"),
+            known: Boolean(card),
+        }).catch(() => {})
+    );
+
+    // Hand unknown characters to the normal app shell; the Flutter route
+    // sends them to the dashboard.
+    // Fetch "/" rather than "/index.html": the assets handler canonicalises
+    // /index.html to / with a 307, which would be returned instead of the HTML.
+    const assetResponse = await env.ASSETS.fetch(new URL("/", url.origin));
+    if (!card || !assetResponse.ok) return assetResponse;
+
+    const title = `${card.name} — ${card.vibe}`;
+    const imageUrl = `${url.origin}/assets/assets/images/${card.image}`;
+    const pageUrl = `${url.origin}/c/${characterId}`;
+    const tags = [
+        `<meta property="og:type" content="website">`,
+        `<meta property="og:site_name" content="MyMate">`,
+        `<meta property="og:title" content="${escapeHtmlAttribute(title)}">`,
+        `<meta property="og:description" content="${escapeHtmlAttribute(card.desc)}">`,
+        `<meta property="og:image" content="${escapeHtmlAttribute(imageUrl)}">`,
+        `<meta property="og:url" content="${escapeHtmlAttribute(pageUrl)}">`,
+        `<meta name="twitter:card" content="summary_large_image">`,
+        `<meta name="twitter:title" content="${escapeHtmlAttribute(title)}">`,
+        `<meta name="twitter:description" content="${escapeHtmlAttribute(card.desc)}">`,
+        `<meta name="twitter:image" content="${escapeHtmlAttribute(imageUrl)}">`,
+    ].join("\n  ");
+
+    const html = (await assetResponse.text()).replace("</head>", `  ${tags}\n</head>`);
+    return new Response(html, {
+        headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            // Short edge cache: long enough to absorb a crawler storm when a
+            // post goes out, short enough that fixing copy does not need a purge.
+            "Cache-Control": "public, max-age=300",
+        },
+    });
+}
+
 const CHARACTER_PERSONAS = {
     // Moved off the Inworld path. The lore and style below are carried over
     // from his old INWORLD_CHARACTERS entry so his voice does not change with
