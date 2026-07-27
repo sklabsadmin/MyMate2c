@@ -535,16 +535,35 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   void _openChat(Map<String, dynamic> character, {String? initialMessage}) {
     final characterId = character['id'] as String?;
+    final openerParam = (initialMessage != null && initialMessage.isNotEmpty)
+        ? 'initialMessage=${Uri.encodeComponent(initialMessage)}'
+        : '';
+
+    // Built-in characters go through the short /c/<id> route. It carries the
+    // same information, but the address bar then reflects the conversation:
+    // a reload keeps you in it instead of dropping you back here, and the URL
+    // can be copied to someone else.
+    //
+    // go(), not push(): the chat lives in a different branch of the nav-bar
+    // shell, and pushing across branches leaves the shell's location — and so
+    // the URL — on the branch you started from. That is why opening a chat
+    // used to leave the address bar showing /dashboard. The chat's back arrow
+    // already falls back to go('/dashboard') when there is nothing to pop.
+    if (characterId != null && characterById(characterId) != null) {
+      context.go('/c/$characterId${openerParam.isEmpty ? '' : '?$openerParam'}');
+      return;
+    }
+
+    // User-created characters aren't in the shared roster, so nothing could
+    // resolve /c/<id> for them — they keep the long self-describing form.
     final characterIdParam = (characterId != null && characterId.isNotEmpty)
         ? '&characterId=${Uri.encodeComponent(characterId)}'
-        : '';
-    final openerParam = (initialMessage != null && initialMessage.isNotEmpty)
-        ? '&initialMessage=${Uri.encodeComponent(initialMessage)}'
         : '';
     context.push(
       '/chat/session?scenario=${Uri.encodeComponent('${character['name']} (${character['vibe']})')}'
       '&characterImage=${Uri.encodeComponent(character['image'])}'
-      '&isRoleplay=false$characterIdParam$openerParam',
+      '&isRoleplay=false$characterIdParam'
+      '${openerParam.isEmpty ? '' : '&$openerParam'}',
     );
   }
 

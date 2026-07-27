@@ -253,6 +253,11 @@ class _AIAppState extends ConsumerState<AIApp> {
                       characterImage: character['image'] as String?,
                       isRoleplay: false,
                       characterId: character['id'] as String?,
+                      // Carried so the profile cards' starter questions still
+                      // send their opening line now that they route through
+                      // here rather than /chat/session.
+                      initialMessage:
+                          state.uri.queryParameters['initialMessage'],
                     );
                   },
                 ),
