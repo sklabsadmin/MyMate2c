@@ -20,6 +20,34 @@ import 'features/paywall/presentation/paywall_screen.dart';
 import 'features/settings/presentation/settings_screen.dart';
 import 'core/config/app_config.dart';
 
+/// Shown for any route the router doesn't recognise. Redirects to the
+/// dashboard on the first frame so a bad link lands somewhere useful instead
+/// of on an error page.
+class _RouteNotFoundRedirect extends StatefulWidget {
+  const _RouteNotFoundRedirect();
+
+  @override
+  State<_RouteNotFoundRedirect> createState() => _RouteNotFoundRedirectState();
+}
+
+class _RouteNotFoundRedirectState extends State<_RouteNotFoundRedirect> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.go('/dashboard');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(child: CircularProgressIndicator(color: Colors.pinkAccent)),
+    );
+  }
+}
+
 // Placeholder screens - will be implemented later
 class PlaceholderScreen extends StatelessWidget {
   final String title;
@@ -159,6 +187,11 @@ class _AIAppState extends ConsumerState<AIApp> {
           ? '/wip'
           : (widget.onboardingCompleted ? '/dashboard' : '/'),
       navigatorKey: _rootNavigatorKey,
+      // With real path URLs, an unknown path (a mistyped campaign link like
+      // /c/zeuss) reaches the router instead of being ignored as a hash
+      // fragment. Send those to the dashboard rather than showing GoRouter's
+      // raw error screen to someone arriving from a social post.
+      errorBuilder: (context, state) => const _RouteNotFoundRedirect(),
       // Deep links (and reloads on a sub-route) would otherwise skip the
       // gate entirely, so bounce them back to it until it has been passed.
       redirect: (context, state) {

@@ -64,7 +64,7 @@ export default {
         if (request.method === "GET" && url.pathname === "/auth/logout") {
             // Redirect back to the origin the request came in on (workers.dev
             // or a custom domain) so the user stays on the domain they're using.
-            return redirectResponse(`${url.origin}/#/settings`, [
+            return redirectResponse(`${url.origin}/settings`, [
                 expiredCookie("mymate_session", request),
             ]);
         }
@@ -414,14 +414,14 @@ async function finishInstagramAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_ig_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?instagram=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
 
     const [expectedState, returnTo] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?instagram=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -459,13 +459,13 @@ async function finishInstagramAuth(request, env, url) {
             exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/#/settings?instagram=connected`, [
+        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?instagram=connected`, [
             expiredCookie("mymate_ig_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "instagram_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?instagram=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -505,14 +505,14 @@ async function finishGoogleAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_google_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
 
     const [expectedState, returnTo, anonId] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
@@ -563,13 +563,13 @@ async function finishGoogleAuth(request, env, url) {
             anonId: anonId || null,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/#/settings?google=connected`, [
+        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?google=connected`, [
             expiredCookie("mymate_google_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "google_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/#/settings?google=failed`, [
+        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
@@ -676,7 +676,7 @@ function safeReturnTo(value, env, fallbackQuery = "instagram=connected", request
             allowedOrigins.add(new URL(request.url).origin);
         } catch (_) {}
     }
-    const fallback = `${request ? new URL(request.url).origin : getAppOrigin(env)}/#/settings?${fallbackQuery}`;
+    const fallback = `${request ? new URL(request.url).origin : getAppOrigin(env)}/settings?${fallbackQuery}`;
     if (!value) return fallback;
     try {
         const url = new URL(value);

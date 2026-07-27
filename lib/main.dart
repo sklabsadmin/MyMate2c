@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
 // import 'src/core/services/revenue_cat_service.dart'; // RevenueCat disabled
@@ -13,6 +14,14 @@ Future<void> main() async {
   // Use a guarded zone to capture uncaught async errors.
   await runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // Real path URLs (/settings) instead of hash URLs (/#/settings). The
+    // fragment is never sent to the server, so hash routing makes it
+    // impossible to serve per-character link previews or see which page was
+    // requested — both of which the Instagram campaign links depend on.
+    // Requires the server to serve index.html for unknown paths; wrangler.jsonc
+    // already does via not_found_handling: "single-page-application".
+    usePathUrlStrategy();
 
     // Capture Flutter framework errors.
     FlutterError.onError = (FlutterErrorDetails details) {
