@@ -84,6 +84,24 @@ export default {
             });
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/referrals") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminReferralsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/referrals") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                return jsonResponse(await summariseReferralVisits(env, url.searchParams));
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/api/admin/logs") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -1880,6 +1898,129 @@ async function buildExportText(env, params) {
 }
 
 
+/// Campaign-link numbers for /admin/referrals.
+///
+/// The conversion figure is the point of this: visits counts everyone who
+/// opened a link, conversations counts the distinct chats logged for that
+/// character over the same window, so a post that drives arrivals but no
+/// conversation is visible as such.
+async function summariseReferralVisits(env, searchParams) {
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", days: 0, bySource: [], byCharacter: [], recent: [] };
+    }
+    const days = Math.min(Math.max(parseInt(searchParams.get("days") || "7", 10) || 7, 1), 90);
+    const since = `-${days} days`;
+
+    const bySource = await env.CHAT_LOGS_DB.prepare(`
+        SELECT source, COUNT(*) AS visits
+        FROM referral_visits
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY source ORDER BY visits DESC
+    `).bind(since).all();
+
+    const byCharacter = await env.CHAT_LOGS_DB.prepare(`
+        SELECT v.character_id AS character_id,
+               COUNT(*) AS visits,
+               SUM(CASE WHEN v.known_character = 0 THEN 1 ELSE 0 END) AS unknown_hits,
+               (SELECT COUNT(DISTINCT l.chat_id) FROM conversation_logs l
+                 WHERE l.created_at >= datetime('now', ?)
+                   AND lower(l.scenario) LIKE lower(v.character_id) || '%') AS conversations
+        FROM referral_visits v
+        WHERE v.created_at >= datetime('now', ?)
+        GROUP BY v.character_id ORDER BY visits DESC
+    `).bind(since, since).all();
+
+    const recent = await env.CHAT_LOGS_DB.prepare(`
+        SELECT created_at, character_id, source, utm_medium, utm_campaign, known_character
+        FROM referral_visits ORDER BY created_at DESC LIMIT 100
+    `).all();
+
+    return {
+        days,
+        totalVisits: (bySource.results || []).reduce((n, r) => n + r.visits, 0),
+        bySource: bySource.results || [],
+        byCharacter: byCharacter.results || [],
+        recent: recent.results || [],
+    };
+}
+
+function adminReferralsPageHtml() {
+    return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>MyMate - Campaign Links</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
+  header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; }
+  a { color: #8ab4ff; }
+  select, button { background: #1c1c24; border: 1px solid #33333d; color: #e6e6ea; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  main { padding: 16px 24px; max-width: 1100px; margin: 0 auto; }
+  h2 { font-size: 14px; color: #9a9aa5; text-transform: uppercase; letter-spacing: .06em; margin: 28px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #22222a; }
+  th { color: #9a9aa5; font-weight: 600; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: #6f6f7a; }
+  .warn { color: #ffb454; }
+  .big { font-size: 26px; font-weight: 600; }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Campaign Links</h1>
+  <a href="/admin/logs">Chat logs &rarr;</a>
+  <select id="days" onchange="load()">
+    <option value="1">Last 24 hours</option>
+    <option value="7" selected>Last 7 days</option>
+    <option value="30">Last 30 days</option>
+    <option value="90">Last 90 days</option>
+  </select>
+</header>
+<main>
+  <div class="big" id="total">-</div>
+  <div class="muted">link arrivals in the selected window</div>
+
+  <h2>By source</h2>
+  <div class="wrap"><table id="src"><thead><tr><th>Source</th><th class="num">Visits</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>By character</h2>
+  <div class="wrap"><table id="chr"><thead><tr><th>Character</th><th class="num">Visits</th><th class="num">Conversations</th><th class="num">Bad links</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Recent arrivals</h2>
+  <div class="wrap"><table id="rec"><thead><tr><th>When (UTC)</th><th>Character</th><th>Source</th><th>Medium</th><th>Campaign</th></tr></thead><tbody></tbody></table></div>
+</main>
+<script>
+const esc = s => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
+async function load() {
+  const days = document.getElementById('days').value;
+  const res = await fetch('/api/admin/referrals?days=' + days);
+  const d = await res.json();
+  if (d.error) { document.getElementById('total').textContent = d.error; return; }
+  document.getElementById('total').textContent = d.totalVisits ?? 0;
+  document.querySelector('#src tbody').innerHTML = (d.bySource || [])
+    .map(r => '<tr><td>' + esc(r.source || 'unknown') + '</td><td class="num">' + r.visits + '</td></tr>').join('')
+    || '<tr><td colspan="2" class="muted">No visits yet.</td></tr>';
+  document.querySelector('#chr tbody').innerHTML = (d.byCharacter || [])
+    .map(r => '<tr><td>' + esc(r.character_id || '(none)') + '</td><td class="num">' + r.visits +
+      '</td><td class="num">' + (r.conversations ?? 0) + '</td><td class="num ' + (r.unknown_hits ? 'warn' : 'muted') + '">' +
+      (r.unknown_hits || 0) + '</td></tr>').join('')
+    || '<tr><td colspan="4" class="muted">No visits yet.</td></tr>';
+  document.querySelector('#rec tbody').innerHTML = (d.recent || [])
+    .map(r => '<tr><td class="muted">' + esc(r.created_at) + '</td><td>' + esc(r.character_id || '-') +
+      (r.known_character === 0 ? ' <span class="warn">(unknown)</span>' : '') +
+      '</td><td>' + esc(r.source || '-') + '</td><td>' + esc(r.utm_medium || '-') + '</td><td>' + esc(r.utm_campaign || '-') + '</td></tr>').join('')
+    || '<tr><td colspan="5" class="muted">No visits yet.</td></tr>';
+}
+load();
+</script>
+</body>
+</html>`;
+}
+
 function adminLogsPageHtml() {
     return `<!doctype html>
 <html>
@@ -1925,6 +2066,7 @@ function adminLogsPageHtml() {
 <body>
 <header>
   <h1>Chat Logs</h1>
+  <a href="/admin/referrals">Campaign links &rarr;</a>
   <span id="list-controls" style="display: contents;">
     <input id="f-character" placeholder="character">
     <input id="f-user" placeholder="user_id">
