@@ -6,6 +6,7 @@ import 'core/theme/app_theme.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/services/background_chat_service.dart';
+import 'core/data/characters.dart';
 
 import 'features/onboarding/presentation/onboarding_screen.dart';
 
@@ -197,6 +198,10 @@ class _AIAppState extends ConsumerState<AIApp> {
       redirect: (context, state) {
         if (!AppConfig.showMaintenanceGate) return null;
         if (AppConfig.maintenanceGateBypassed) return null;
+        // Campaign deep links bypass the gate: paid or posted traffic that
+        // lands on a holding page is wasted, and the whole point of /c/<id>
+        // is that it goes straight to a conversation.
+        if (state.uri.path.startsWith('/c/')) return null;
         return state.uri.path == '/wip' ? null : '/wip';
       },
       routes: [
@@ -222,6 +227,35 @@ class _AIAppState extends ConsumerState<AIApp> {
             StatefulShellBranch(
               navigatorKey: _shellNavigatorChatKey,
               routes: [
+                // Campaign deep link: /c/zeus drops straight into that
+                // character's chat. Lives in the chat branch so the visitor
+                // still gets the nav bar, and the URL stays /c/zeus rather
+                // than being rewritten to the long /chat/session query form —
+                // it has to survive being pasted into an Instagram post.
+                //
+                // The scenario string is built exactly as the dashboard builds
+                // it, because scenario doubles as the chat id: any other
+                // format would give deep-linked visitors a separate history
+                // from the same character opened via a card.
+                GoRoute(
+                  path: '/c/:characterId',
+                  builder: (context, state) {
+                    final id = state.pathParameters['characterId']
+                        ?.trim()
+                        .toLowerCase();
+                    final character = characterById(id);
+                    // Unknown id (typo'd or retired character): send them to
+                    // the dashboard rather than an error screen.
+                    if (character == null) return const _RouteNotFoundRedirect();
+                    return ChatScreen(
+                      scenario:
+                          '${character['name']} (${character['vibe']})',
+                      characterImage: character['image'] as String?,
+                      isRoleplay: false,
+                      characterId: character['id'] as String?,
+                    );
+                  },
+                ),
                 GoRoute(
                   path: '/chat',
                   builder: (context, state) => const RecentChatsScreen(),
