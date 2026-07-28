@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
@@ -56,10 +55,7 @@ Future<void> main() async {
     // Initialize Local Notifications
     await NotificationService().init();
 
-    final prefs = await SharedPreferences.getInstance();
-    final bool onboardingCompleted = prefs.getBool('onboarding_complete') ?? false;
-
-    runApp(ProviderScope(child: AIApp(onboardingCompleted: onboardingCompleted)));
+    runApp(const ProviderScope(child: AIApp()));
   }, (error, stack) async {
     // Log uncaught errors from the zone.
     print('Uncaught zone error: $error');

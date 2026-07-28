@@ -82,7 +82,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final Uri emailLaunchUri = Uri(
       scheme: 'mailto',
       path: _supportEmail,
-      query: 'subject=Mythos Companion Support Request',
+      query: 'subject=Mythos Live Support Request',
     );
 
     // canLaunchUrl reports false for mailto: on some browsers even when the

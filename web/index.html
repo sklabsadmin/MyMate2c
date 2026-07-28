@@ -16,24 +16,55 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="Mythos Companion — Chat with the heroes and gods of Greek myth.">
+  <meta name="description" content="Mythos Live — Chat with the heroes and gods of Greek myth.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="Mythos">
+  <meta name="apple-mobile-web-app-title" content="Mythos Live">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png">
 
-  <title>Mythos Companion</title>
+  <title>Mythos Live</title>
   <link rel="manifest" href="manifest.json">
   
   
   <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
   
   
+  
+  
+  
+  
+  <!-- Custom splash additions (tagline, animation, minimum dwell).
+       NOTE: `dart run flutter_native_splash:create` rewrites the splash blocks
+       and will delete this. Re-apply after regenerating. -->
+  <style id="splash-extras">
+    #splash img { animation: mythos-rise 900ms ease-out both; }
+    @keyframes mythos-rise {
+      from { opacity: 0; transform: translate(-50%, -46%) scale(.96); }
+      to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
+    #splash-tagline {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 12vh; margin: 0; width: 90%; text-align: center;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(15px, 4.2vw, 20px); letter-spacing: .02em;
+      color: #6B4B7A; opacity: 0; animation: mythos-fade 900ms ease-out 500ms both;
+    }
+    #splash-tagline .dots span { opacity: 0; animation: mythos-dot 1.4s infinite; }
+    #splash-tagline .dots span:nth-child(2) { animation-delay: .2s; }
+    #splash-tagline .dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes mythos-fade { to { opacity: 1; } }
+    @keyframes mythos-dot { 0%,60%,100% { opacity: 0; } 30% { opacity: 1; } }
+    body.mythos-leaving #splash,
+    body.mythos-leaving #splash-tagline { transition: opacity 420ms ease; opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      #splash img, #splash-tagline, #splash-tagline .dots span { animation: none; opacity: 1; }
+    }
+  </style>
   
   
   <style id="splash-screen-style">
@@ -44,7 +75,7 @@
     body {
       margin: 0;
       min-height: 100%;
-      background-color: #000000;
+      background-color: #FFFFFF;
           background-size: 100% 100%;
     }
 
@@ -95,10 +126,22 @@
     }
   </style>
   <script id="splash-screen-script">
+    // Hold the splash for 2s even when Flutter boots instantly, so the
+    // tagline can be read rather than flashing past, then fade to the app.
+    // NOTE: flutter_native_splash:create rewrites this block — re-apply after
+    // regenerating the splash, or the minimum dwell silently disappears.
+    var __mythosStart = Date.now();
     function removeSplashFromWeb() {
-      document.getElementById("splash")?.remove();
-      document.getElementById("splash-branding")?.remove();
-      document.body.style.background = "transparent";
+      var wait = Math.max(0, 2000 - (Date.now() - __mythosStart));
+      setTimeout(function () {
+        document.body.classList.add("mythos-leaving");
+        setTimeout(function () {
+          document.getElementById("splash")?.remove();
+          document.getElementById("splash-tagline")?.remove();
+          document.getElementById("splash-branding")?.remove();
+          document.body.style.background = "transparent";
+        }, 420);
+      }, wait);
     }
   </script>
 </head>
@@ -108,6 +151,9 @@
       <source srcset="splash/img/dark-1x.png 1x, splash/img/dark-2x.png 2x, splash/img/dark-3x.png 3x, splash/img/dark-4x.png 4x" media="(prefers-color-scheme: dark)">
       <img class="center" aria-hidden="true" src="splash/img/light-1x.png" alt="">
   </picture>
+  
+  <p id="splash-tagline">Connecting you with the ancient past<span class="dots"><span>.</span><span>.</span><span>.</span></span></p>
+  
   
   
   

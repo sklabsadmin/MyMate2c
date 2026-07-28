@@ -37,7 +37,11 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
 
   void _enterApp() {
     AppConfig.maintenanceGateBypassed = true;
-    if (mounted) context.go('/dashboard');
+    // Resume whatever they originally asked for — a /c/<character> link should
+    // still reach that character once past the gate, not the dashboard.
+    final destination = AppConfig.gatedDestination ?? '/dashboard';
+    AppConfig.gatedDestination = null;
+    if (mounted) context.go(destination);
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -108,14 +112,28 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                             ),
                           ),
                         ),
-                        const SizedBox(height: 40),
+                        const SizedBox(height: 28),
                         Text(
-                          'The Greek Interactive Experience',
+                          'Welcome to Mythos Live!',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.displayLarge?.copyWith(
-                            fontSize: 26,
+                            fontSize: 30,
                             color: Colors.white,
-                            height: 1.25,
+                            height: 1.2,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        // Deliberately not displayLarge: that carries the
+                        // display face's bold weight, and only the product
+                        // name should be bold here.
+                        Text(
+                          'The Interactive Greek Experience',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w400,
+                            color: Colors.white.withValues(alpha: 0.92),
+                            height: 1.35,
                           ),
                         ),
                         const SizedBox(height: 20),

@@ -79,8 +79,12 @@ flutter_launcher_icons:
   adaptive_icon_foreground: "assets/images/app_icon.png"
 
 flutter_native_splash:
-  color: "#000000"
-  image: assets/images/splash_logo.png
+  # Cream, not black: the logo lockup is drawn on cream, so a black splash
+  # showed it as a pale slab. The web splash fades out to the app's black.
+  color: "#FFFFFF"
+  # The full lockup including the wordmark. The previous medallion-only crop
+  # clipped the bottom of the circle.
+  image: brand/splash_full.png
   android: true
   ios: true
 

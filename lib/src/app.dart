@@ -8,7 +8,6 @@ import 'core/services/storage_service.dart';
 import 'core/services/background_chat_service.dart';
 import 'core/data/characters.dart';
 
-import 'features/onboarding/presentation/onboarding_screen.dart';
 
 import 'features/character/presentation/create_character_screen.dart';
 import 'features/chat/presentation/chat_screen.dart';
@@ -81,9 +80,7 @@ final _shellNavigatorProfileKey = GlobalKey<NavigatorState>(
 // Router is now defined dynamically in AIApp to handle Onboarding redirection
 
 class AIApp extends ConsumerStatefulWidget {
-  final bool onboardingCompleted;
-
-  const AIApp({super.key, required this.onboardingCompleted});
+  const AIApp({super.key});
 
   @override
   ConsumerState<AIApp> createState() => _AIAppState();
@@ -182,9 +179,9 @@ class _AIAppState extends ConsumerState<AIApp> {
       // The holding page comes before everything, including onboarding, so
       // the first thing a visitor sees while the gate is on is the notice
       // rather than a work-in-progress build.
-      initialLocation: AppConfig.showMaintenanceGate
-          ? '/wip'
-          : (widget.onboardingCompleted ? '/dashboard' : '/'),
+      // Onboarding was a single tap-through with no setup behind it, so there
+      // is no first-run path any more: everyone starts on the dashboard.
+      initialLocation: AppConfig.showMaintenanceGate ? '/wip' : '/dashboard',
       navigatorKey: _rootNavigatorKey,
       // With real path URLs, an unknown path (a mistyped campaign link like
       // /c/zeuss) reaches the router instead of being ignored as a hash
@@ -196,11 +193,13 @@ class _AIAppState extends ConsumerState<AIApp> {
       redirect: (context, state) {
         if (!AppConfig.showMaintenanceGate) return null;
         if (AppConfig.maintenanceGateBypassed) return null;
-        // Campaign deep links bypass the gate: paid or posted traffic that
-        // lands on a holding page is wasted, and the whole point of /c/<id>
-        // is that it goes straight to a conversation.
-        if (state.uri.path.startsWith('/c/')) return null;
-        return state.uri.path == '/wip' ? null : '/wip';
+        if (state.uri.path == '/wip') return null;
+        // Everything is gated, campaign links included: while the holding page
+        // is up it is the first thing every visitor sees. Remember where they
+        // were going so passing the gate resumes that journey rather than
+        // dumping them on the dashboard.
+        AppConfig.gatedDestination = state.uri.toString();
+        return '/wip';
       },
       routes: [
         GoRoute(
@@ -304,9 +303,12 @@ class _AIAppState extends ConsumerState<AIApp> {
             ),
           ],
         ),
+        // Kept as a redirect rather than deleted: '/' is what people type, and
+        // it is still the app's canonical entry point. OnboardingScreen itself
+        // is left in the tree (unreferenced) so restoring it is one route.
         GoRoute(
           path: '/',
-          builder: (context, state) => const OnboardingScreen(),
+          redirect: (context, state) => '/dashboard',
         ),
         GoRoute(
           path: '/create-character',
@@ -327,7 +329,7 @@ class _AIAppState extends ConsumerState<AIApp> {
     );
 
     return MaterialApp.router(
-      title: 'Mythos Companion',
+      title: 'Mythos Live',
       theme: AppTheme.romanticTheme,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
