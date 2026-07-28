@@ -24,7 +24,13 @@
   <meta name="apple-mobile-web-app-title" content="Mythos Live">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
 
-  <!-- Favicon -->
+  <!-- Favicon. Several sizes rather than one: the medallion has fine detail
+       (the meander border, the ship) that turns to mush when a browser
+       downscales a large icon to a 16px tab. Each size is rendered from the
+       1254px source instead. favicon.png stays as the unsized fallback. -->
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="favicon-48.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/Icon-192.png">
   <link rel="icon" type="image/png" href="favicon.png">
 
   <title>Mythos Live</title>
@@ -38,35 +44,45 @@
   
   
   
-  <!-- Custom splash additions (tagline, animation, minimum dwell).
-       NOTE: `dart run flutter_native_splash:create` rewrites the splash blocks
-       and will delete this. Re-apply after regenerating. -->
+  
+  
+  
+  
+  
+  
+  
+  
+  <!-- Custom splash. Regenerated away by flutter_native_splash:create —
+       re-apply with: python3 tool/patch_splash.py -->
   <style id="splash-extras">
-    #splash img { animation: mythos-rise 900ms ease-out both; }
+    #mythos-backdrop { position: fixed; inset: 0; background: #FCECE5; z-index: 9998; }
+    /* z-index must sit on the img: #splash is a <picture>, which is not
+       positioned, so a z-index there does nothing. .center makes the img
+       absolute. */
+    #splash img { animation: mythos-rise 900ms ease-out both; z-index: 9999; }
     @keyframes mythos-rise {
       from { opacity: 0; transform: translate(-50%, -46%) scale(.96); }
       to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     }
     #splash-tagline {
-      position: absolute; left: 50%; transform: translateX(-50%);
-      bottom: 12vh; margin: 0; width: 90%; text-align: center;
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: 11vh; margin: 0; width: 92%; text-align: center; z-index: 9999;
       font-family: Georgia, "Times New Roman", serif;
-      font-size: clamp(15px, 4.2vw, 20px); letter-spacing: .02em;
-      color: #6B4B7A; opacity: 0; animation: mythos-fade 900ms ease-out 500ms both;
+      font-size: clamp(15px, 4.2vw, 19px); letter-spacing: .02em;
+      color: #6B4B7A; opacity: 0; animation: mythos-fade 900ms ease-out 600ms both;
     }
     #splash-tagline .dots span { opacity: 0; animation: mythos-dot 1.4s infinite; }
     #splash-tagline .dots span:nth-child(2) { animation-delay: .2s; }
     #splash-tagline .dots span:nth-child(3) { animation-delay: .4s; }
     @keyframes mythos-fade { to { opacity: 1; } }
     @keyframes mythos-dot { 0%,60%,100% { opacity: 0; } 30% { opacity: 1; } }
+    body.mythos-leaving #mythos-backdrop,
     body.mythos-leaving #splash,
     body.mythos-leaving #splash-tagline { transition: opacity 420ms ease; opacity: 0; }
     @media (prefers-reduced-motion: reduce) {
       #splash img, #splash-tagline, #splash-tagline .dots span { animation: none; opacity: 1; }
     }
   </style>
-  
-  
   <style id="splash-screen-style">
     html {
       height: 100%
@@ -75,7 +91,7 @@
     body {
       margin: 0;
       min-height: 100%;
-      background-color: #FFFFFF;
+      background-color: #FCECE5;
           background-size: 100% 100%;
     }
 
@@ -126,32 +142,179 @@
     }
   </style>
   <script id="splash-screen-script">
-    // Hold the splash for 2s even when Flutter boots instantly, so the
-    // tagline can be read rather than flashing past, then fade to the app.
-    // NOTE: flutter_native_splash:create rewrites this block — re-apply after
-    // regenerating the splash, or the minimum dwell silently disappears.
-    var __mythosStart = Date.now();
-    function removeSplashFromWeb() {
-      var wait = Math.max(0, 2000 - (Date.now() - __mythosStart));
-      setTimeout(function () {
-        document.body.classList.add("mythos-leaving");
-        setTimeout(function () {
-          document.getElementById("splash")?.remove();
-          document.getElementById("splash-tagline")?.remove();
-          document.getElementById("splash-branding")?.remove();
-          document.body.style.background = "transparent";
-        }, 420);
-      }, wait);
+    // The app never calls FlutterNativeSplash.remove(), so the generated
+    // removeSplashFromWeb() never fires. We layer the splash above Flutter
+    // and dismiss it ourselves.
+    var MYTHOS_FIRST_RUN_MS = 3000;
+    var MYTHOS_RETURN_MS = 1500;
+
+    function mythosDwellMs() {
+      try {
+        var seen = window.localStorage.getItem("mythos_splash_seen");
+        window.localStorage.setItem("mythos_splash_seen", "1");
+        return seen ? MYTHOS_RETURN_MS : MYTHOS_FIRST_RUN_MS;
+      } catch (e) {
+        return MYTHOS_RETURN_MS;   // private mode: prefer the short dwell
+      }
     }
+
+    function mythosDismissSplash() {
+      document.body.classList.add("mythos-leaving");
+      setTimeout(function () {
+        var ids = ["mythos-backdrop", "splash", "splash-tagline", "splash-branding"];
+        for (var i = 0; i < ids.length; i++) {
+          var el = document.getElementById(ids[i]);
+          if (el) el.remove();
+        }
+        document.body.style.background = "transparent";
+      }, 420);
+    }
+
+    // Longest we will ever hold someone behind the splash waiting for
+    // Flutter. Past this we drop it regardless — a stuck bundle should show
+    // whatever the app managed rather than an indefinite logo.
+    var MYTHOS_READY_CAP_MS = 15000;
+
+    // Resolves when Flutter has actually put a frame on screen. Three
+    // detectors, because no single one is reliable across Flutter versions:
+    // the flutter-first-frame event, the view element appearing, and a hard
+    // cap. First to fire wins; the rest become no-ops.
+    function mythosOnFlutterReady(cb) {
+      var fired = false, observer = null;
+      function fire() {
+        if (fired) return;
+        fired = true;
+        try { if (observer) observer.disconnect(); } catch (e) {}
+        cb();
+      }
+      var sel = "flt-glass-pane, flutter-view, flt-scene-host";
+      if (document.querySelector(sel)) return fire();
+      window.addEventListener("flutter-first-frame", fire);
+      try {
+        observer = new MutationObserver(function () {
+          if (document.querySelector(sel)) fire();
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (e) {}
+      setTimeout(fire, MYTHOS_READY_CAP_MS);
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      var img = document.querySelector("#splash img");
+      var dwell = mythosDwellMs();
+
+      // The splash now lifts on the LATER of two things: the dwell, and
+      // Flutter actually being ready. It used to be the dwell alone, so on a
+      // slow connection — the ~3.7MB critical path is ~7s on 4G — the logo
+      // vanished at 3s and left the visitor on a blank page for seconds. That
+      // reads as a dead site, and in the logs it is indistinguishable from
+      // junk ad traffic.
+      var dwellDone = false, ready = false;
+      function maybeDismiss() { if (dwellDone && ready) mythosDismissSplash(); }
+
+      // Measured from when the logo paints, not when this parses.
+      var start = function () {
+        setTimeout(function () { dwellDone = true; maybeDismiss(); }, dwell);
+      };
+      if (!img || img.complete) { start(); }
+      else {
+        img.addEventListener("load", start);
+        img.addEventListener("error", start);
+      }
+
+      mythosOnFlutterReady(function () {
+        ready = true;
+        // How long the visitor actually waited for a usable app — the number
+        // that separates "left during load" from "saw the app and left".
+        try {
+          if (window.mythosVisitBeacon) window.mythosVisitBeacon("app_ready");
+        } catch (e) {}
+        maybeDismiss();
+      });
+    });
+
+    function removeSplashFromWeb() {}
+  </script>
+  <!-- Arrival/exit beacon.
+       Runs here, in the document head, rather than inside the Flutter app:
+       main.dart.js is ~3MB, and a visitor arriving from an Instagram in-app
+       browser on mobile data can easily give up before it finishes. Anything
+       that waits for Flutter therefore misses exactly the people we most need
+       to count — which is why ~1000 reported ad clicks showed up as single
+       digits in the logs.
+
+       The paired "leave" beacon carries a duration, which is what separates
+       "bounced while loading" from "actually looked around". -->
+  <script>
+  (function () {
+    var ARRIVED_AT = Date.now();
+    // One id per page load, kept so the leave event can be paired with its
+    // arrival. sessionStorage rather than a fresh id each time, so a beacon
+    // retried by the browser does not look like a second visitor.
+    var visitId;
+    try {
+      visitId = sessionStorage.getItem('mythos_visit_id');
+      if (!visitId) {
+        visitId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+        sessionStorage.setItem('mythos_visit_id', visitId);
+      }
+    } catch (e) {
+      visitId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    }
+
+    function send(event, extra) {
+      var body = JSON.stringify(Object.assign({
+        visitId: visitId,
+        event: event,
+        path: location.pathname,
+        query: location.search,
+        referer: document.referrer || ''
+      }, extra || {}));
+      try {
+        // sendBeacon survives the page being torn down, which a fetch() does
+        // not — that is the whole reason the leave event is measurable at all.
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/visit', new Blob([body], { type: 'application/json' }));
+          return;
+        }
+      } catch (e) {}
+      try {
+        fetch('/api/visit', { method: 'POST', body: body, keepalive: true });
+      } catch (e) {}
+    }
+
+    // Exposed so the splash script can report app_ready at the moment Flutter
+    // paints its first frame. Takes the elapsed time from arrival, which is
+    // the real "time to usable app" for this visitor on their real connection.
+    window.mythosVisitBeacon = function (event) {
+      send(event, { durationMs: Date.now() - ARRIVED_AT });
+    };
+
+    send('arrive');
+
+    var left = false;
+    function leave() {
+      if (left) return;
+      left = true;
+      send('leave', { durationMs: Date.now() - ARRIVED_AT });
+    }
+    // pagehide is the one that fires reliably on mobile Safari and inside
+    // in-app browsers; visibilitychange catches tab-switching and app
+    // backgrounding. Both funnel through the same once-only guard.
+    window.addEventListener('pagehide', leave);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') leave();
+    });
+  })();
   </script>
 </head>
 <body>
+  <div id="mythos-backdrop"></div>
   <picture id="splash">
       <source srcset="splash/img/light-1x.png 1x, splash/img/light-2x.png 2x, splash/img/light-3x.png 3x, splash/img/light-4x.png 4x" media="(prefers-color-scheme: light)">
       <source srcset="splash/img/dark-1x.png 1x, splash/img/dark-2x.png 2x, splash/img/dark-3x.png 3x, splash/img/dark-4x.png 4x" media="(prefers-color-scheme: dark)">
       <img class="center" aria-hidden="true" src="splash/img/light-1x.png" alt="">
   </picture>
-  
   <p id="splash-tagline">Connecting you with the ancient past<span class="dots"><span>.</span><span>.</span><span>.</span></span></p>
   
   

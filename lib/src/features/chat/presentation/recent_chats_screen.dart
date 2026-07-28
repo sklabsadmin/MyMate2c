@@ -64,7 +64,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Messages'),
+        title: const Text('Conversations'),
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: false,
@@ -157,12 +157,12 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
           Icon(Icons.chat_bubble_outline, size: 64, color: Colors.white.withOpacity(0.3)),
           const SizedBox(height: 16),
           Text(
-            "No messages yet",
+            "No conversations yet",
             style: theme.textTheme.titleLarge?.copyWith(color: Colors.white70),
           ),
           const SizedBox(height: 8),
           Text(
-            "Start talking to someone from the Dashboard!",
+            "Start talking to someone from Personalities!",
             style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white38),
           ),
           const SizedBox(height: 24),
@@ -172,7 +172,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
               backgroundColor: theme.primaryColor,
               foregroundColor: Colors.white,
             ),
-            child: const Text("Go to Dashboard"),
+            child: const Text("Go to Personalities"),
           ),
         ],
       ),

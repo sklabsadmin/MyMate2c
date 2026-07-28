@@ -131,15 +131,11 @@ class StorageService {
 
   Future<void> saveMessages(List<ChatMessage> messages, {String chatId = 'default'}) async {
     final prefs = await SharedPreferences.getInstance();
-    final List<String> encoded = messages.map((msg) {
-      return jsonEncode({
-        'id': msg.id,
-        'text': msg.text,
-        'isUser': msg.isUser,
-        'isSystem': msg.isSystem, // Save system flag
-        'timestamp': msg.timestamp.toIso8601String(),
-      });
-    }).toList();
+    // Uses the model's own toJson/fromJson rather than repeating the field
+    // list here — this was hand-rolled and silently dropped any field added
+    // to ChatMessage later, which is exactly what happened with imageAsset.
+    final List<String> encoded =
+        messages.map((msg) => jsonEncode(msg.toJson())).toList();
     await prefs.setStringList('chat_history_$chatId', encoded);
   }
 
@@ -149,16 +145,9 @@ class StorageService {
     
     if (encoded == null) return [];
 
-    return encoded.map((str) {
-      final Map<String, dynamic> data = jsonDecode(str);
-      return ChatMessage(
-        id: data['id'],
-        text: data['text'],
-        isUser: data['isUser'],
-        isSystem: data['isSystem'] ?? false, // Load system flag
-        timestamp: DateTime.parse(data['timestamp']),
-      );
-    }).toList();
+    return encoded
+        .map((str) => ChatMessage.fromJson(jsonDecode(str) as Map<String, dynamic>))
+        .toList();
   }
 
   // --- Recent Chats Logic ---

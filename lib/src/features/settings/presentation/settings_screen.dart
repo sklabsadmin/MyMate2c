@@ -158,7 +158,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final url = AppConfig.apiUrl('/auth/logout');
     if (url.isEmpty) return;
     // Same-tab navigation: the worker clears the session cookie and redirects
-    // back, so the app reloads signed out.
+    // to /signed-out, so the app reloads signed out on a page that says so.
     await launchUrl(Uri.parse(url), webOnlyWindowName: '_self');
   }
 
@@ -306,7 +306,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               context,
               icon: Icons.mail_outline,
               title: 'Contact Support',
-              subtitle: 'We are here to help',
+              subtitle: 'We are here to help you with Mythos, connect with us!',
               onTap: _sendEmail,
             ),
 
@@ -467,7 +467,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ),
       child: Column(
         children: [
-          _buildInfoRow('Version', version),
+          _buildInfoRow('Mythos Live Version', version),
         ],
       ),
     );

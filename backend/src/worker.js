@@ -68,10 +68,41 @@ export default {
             });
         }
 
+        // Arrival/exit beacon from web/index.html. Deliberately unsigned: it
+        // fires while the splash is still up, long before the Flutter bundle
+        // (and therefore the HMAC code) has loaded — signing it would defeat
+        // the entire point, which is counting people who never get that far.
+        //
+        // Nothing here is trusted. Country and colo come from Cloudflare, the
+        // body is length-capped, and the worst a forged call can do is add a
+        // row, which is the same thing a page reload does.
+        if (request.method === "POST" && url.pathname === "/api/visit") {
+            // Read the body BEFORE returning. ctx.waitUntil keeps the worker
+            // alive but not the request stream, so a recorder that awaited
+            // request.text() after the response had gone out silently got
+            // nothing — every beacon returned 204 and wrote no row.
+            const rawBody = await request.text();
+            ctx.waitUntil(recordSiteVisit(rawBody, request, env).catch(() => {}));
+            // 204 with no body: sendBeacon ignores the response, and this keeps
+            // the request off the critical path for first paint.
+            return new Response(null, { status: 204, headers: corsHeaders(request) });
+        }
+
         if (request.method === "GET" && url.pathname === "/auth/logout") {
             // Redirect back to the origin the request came in on (workers.dev
             // or a custom domain) so the user stays on the domain they're using.
-            return redirectResponse(`${url.origin}/settings`, [
+            // Land on the dedicated signed-out page rather than back in
+            // Settings, which looked identical to the screen the user had just
+            // been on and so never confirmed anything had happened.
+            // Only honour an explicit return_to; otherwise land on the
+            // signed-out page. safeReturnTo always yields a /settings URL when
+            // given nothing, so it is only consulted when there is a value to
+            // validate.
+            const requested = url.searchParams.get("return_to");
+            const after = requested
+                ? safeReturnTo(requested, env, "signed_out=1", request)
+                : `${url.origin}/signed-out`;
+            return redirectResponse(after, [
                 expiredCookie("mymate_session", request),
             ]);
         }
@@ -89,6 +120,71 @@ export default {
             if (authError) return authError;
             return new Response(adminReferralsPageHtml(), {
                 headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/admin/visits") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminVisitsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/visits") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const days = Math.min(Math.max(parseInt(url.searchParams.get("days") || "7", 10) || 7, 1), 90);
+            const since = `-${days} days`;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            // One row per visit: the arrival, plus the dwell time from its
+            // matching leave. A visit with no leave row is someone who closed
+            // the tab in a way the browser never reported — counted, but with
+            // an unknown duration rather than a zero, which would drag the
+            // averages down and hide the real bounce rate.
+            const bySource = await db.prepare(`
+                SELECT a.source AS source,
+                       COUNT(*) AS visits,
+                       SUM(CASE WHEN l.duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS with_duration,
+                       SUM(CASE WHEN l.duration_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
+                       SUM(CASE WHEN r.visit_id IS NOT NULL THEN 1 ELSE 0 END) AS saw_app,
+                       CAST(AVG(r.duration_ms) AS INTEGER) AS avg_load_ms,
+                       CAST(AVG(l.duration_ms) AS INTEGER) AS avg_ms
+                FROM site_visits a
+                LEFT JOIN site_visits l
+                       ON l.visit_id = a.visit_id AND l.event = 'leave'
+                LEFT JOIN site_visits r
+                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
+                WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY a.source ORDER BY visits DESC
+            `).bind(since).all();
+
+            const byDay = await db.prepare(`
+                SELECT date(created_at) AS day, COUNT(*) AS visits
+                FROM site_visits
+                WHERE event = 'arrive' AND created_at >= datetime('now', ?)
+                GROUP BY day ORDER BY day DESC
+            `).bind(since).all();
+
+            const recent = await db.prepare(`
+                SELECT a.created_at, a.path, a.query, a.source, a.utm_medium,
+                       a.utm_campaign, a.country, a.referer, l.duration_ms,
+                       r.duration_ms AS load_ms
+                FROM site_visits a
+                LEFT JOIN site_visits l
+                       ON l.visit_id = a.visit_id AND l.event = 'leave'
+                LEFT JOIN site_visits r
+                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
+                WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
+                ORDER BY a.created_at DESC LIMIT 200
+            `).bind(since).all();
+
+            return jsonResponse({
+                bySource: bySource.results || [],
+                byDay: byDay.results || [],
+                recent: recent.results || [],
             });
         }
 
@@ -1189,6 +1285,81 @@ const CHARACTER_SHARE_CARDS = {
     surfer: { name: "Kai", vibe: "Surfer", desc: "Sun, salt, and endless chill vibes.", image: "custom_avatar_02.jpg" },
 };
 
+/// Records one arrival or exit from the splash-screen beacon.
+///
+/// Fire-and-forget: a logging failure must never be visible to the visitor,
+/// and the caller already returns 204 without waiting.
+async function recordSiteVisit(raw, request, env) {
+    if (!env.CHAT_LOGS_DB) return;
+
+    // Cap the body so a malformed or hostile beacon cannot cost us anything.
+    if (!raw || raw.length > 2000) return;
+    let payload;
+    try {
+        payload = JSON.parse(raw);
+    } catch (_) {
+        return;
+    }
+
+    // arrive -> splash shown; app_ready -> Flutter painted its first frame
+    // (duration = real time-to-usable-app); leave -> page hidden/closed.
+    const event = ["arrive", "app_ready", "leave"].includes(payload.event)
+        ? payload.event
+        : "arrive";
+    const visitId = String(payload.visitId || "").slice(0, 64);
+    if (!visitId) return;
+
+    const url = new URL(request.url);
+    const path = String(payload.path || "").slice(0, 200) || "/";
+    const query = String(payload.query || "").slice(0, 300);
+    const referer = String(payload.referer || "").slice(0, 400);
+
+    // detectTrafficSource wants a request-like object; build one from the
+    // beacon's referrer plus this request's real User-Agent, rather than
+    // constructing a Request (Referer is a forbidden header to set on one, and
+    // the throw was invisible because the caller swallows errors).
+    const params = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query);
+    let source = "direct";
+    try {
+        const fakeUrl = new URL(path + (query || ""), url.origin);
+        const ua = request.headers.get("User-Agent") || "";
+        source = detectTrafficSource(
+            { headers: { get: (name) => (/^referer$/i.test(name) ? referer : /^user-agent$/i.test(name) ? ua : null) } },
+            fakeUrl
+        );
+    } catch (error) {
+        console.error(JSON.stringify({ event: "site_visit_source_failed", error: error.message }));
+    }
+
+    const duration = Number(payload.durationMs);
+
+    try {
+        await env.CHAT_LOGS_DB.prepare(`
+            INSERT INTO site_visits (
+                id, visit_id, event, path, query, source,
+                utm_medium, utm_campaign, referer, user_agent,
+                country, colo, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+            crypto.randomUUID(),
+            visitId,
+            event,
+            path,
+            query || null,
+            source || null,
+            params.get("utm_medium"),
+            params.get("utm_campaign"),
+            referer || null,
+            (request.headers.get("User-Agent") || "").slice(0, 400) || null,
+            request.cf?.country || null,
+            request.cf?.colo || null,
+            Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null
+        ).run();
+    } catch (error) {
+        console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
+    }
+}
+
 /// Records one campaign-link arrival. Fire-and-forget via ctx.waitUntil: a
 /// logging failure must never cost us the landing page itself.
 async function recordReferralVisit(env, visit) {
@@ -1971,6 +2142,91 @@ async function summariseReferralVisits(env, searchParams) {
         byCharacter: byCharacter.results || [],
         recent: recent.results || [],
     };
+}
+
+
+function adminVisitsPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — Site visits</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #14101a; color: #eee; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #999; margin: 0 0 20px; }
+  select { background: #241d2e; color: #eee; border: 1px solid #443; padding: 6px 10px;
+           border-radius: 6px; margin-bottom: 18px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 28px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #2c2438; }
+  th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 15px; color: #b39ddb; margin: 26px 0 8px; }
+  .muted { color: #777; }
+  .wrap { overflow-x: auto; }
+</style></head><body>
+<h1>Site visits</h1>
+<p class="sub">Every arrival, logged from the splash screen before the app loads —
+   not just /c/ campaign links.</p>
+<select id="days" onchange="load()">
+  <option value="1">Last 24 hours</option>
+  <option value="7" selected>Last 7 days</option>
+  <option value="30">Last 30 days</option>
+  <option value="90">Last 90 days</option>
+</select>
+<div id="out">Loading…</div>
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function dur(ms) {
+  if (ms === null || ms === undefined) return '<span class="muted">—</span>';
+  return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
+}
+async function load() {
+  const days = document.getElementById('days').value;
+  const out = document.getElementById('out');
+  out.textContent = 'Loading…';
+  const res = await fetch('/api/admin/visits?days=' + days);
+  if (!res.ok) { out.textContent = 'Error ' + res.status; return; }
+  const d = await res.json();
+  let h = '';
+
+  h += '<h2>By source</h2><div class="wrap"><table><tr><th>Source</th><th>Visits</th>' +
+       '<th>Saw the app</th><th>Gave up loading</th><th>Avg load</th>' +
+       '<th>Left under 3s</th><th>Avg dwell</th></tr>';
+  for (const r of d.bySource) {
+    const gaveUp = r.visits - (r.saw_app || 0);
+    h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.visits +
+         '</td><td class="num">' + (r.saw_app || 0) +
+         '</td><td class="num">' + gaveUp +
+         '</td><td class="num">' + dur(r.avg_load_ms) +
+         '</td><td class="num">' + (r.bounced_under_3s || 0) +
+         '</td><td class="num">' + dur(r.avg_ms) + '</td></tr>';
+  }
+  if (!d.bySource.length) h += '<tr><td colspan="7" class="muted">No visits yet.</td></tr>';
+  h += '</table></div>';
+
+  h += '<h2>By day</h2><div class="wrap"><table><tr><th>Day</th><th>Visits</th></tr>';
+  for (const r of d.byDay) h += '<tr><td>' + esc(r.day) + '</td><td class="num">' + r.visits + '</td></tr>';
+  h += '</table></div>';
+
+  h += '<h2>Recent arrivals</h2><div class="wrap"><table><tr><th>When (UTC)</th><th>Path</th>' +
+       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th></tr>';
+  for (const r of d.recent) {
+    h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
+         '</td><td>' + esc(r.source) + '</td><td>' +
+         esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
+         '</td><td>' + esc(r.country) + '</td><td class="num">' + dur(r.load_ms) +
+         '</td><td class="num">' + dur(r.duration_ms) + '</td></tr>';
+  }
+  if (!d.recent.length) h += '<tr><td colspan="7" class="muted">Nothing yet.</td></tr>';
+  h += '</table></div>';
+  out.innerHTML = h;
+}
+load();
+</script></body></html>`;
 }
 
 function adminReferralsPageHtml() {

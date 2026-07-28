@@ -7,6 +7,7 @@ import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/services/background_chat_service.dart';
 import 'core/data/characters.dart';
+import 'features/auth/presentation/signed_out_screen.dart';
 
 
 import 'features/character/presentation/create_character_screen.dart';
@@ -309,6 +310,13 @@ class _AIAppState extends ConsumerState<AIApp> {
         GoRoute(
           path: '/',
           redirect: (context, state) => '/dashboard',
+        ),
+        // Outside the shell on purpose: no bottom nav, so sign-out lands on a
+        // page you have to leave deliberately.
+        GoRoute(
+          path: '/signed-out',
+          parentNavigatorKey: _rootNavigatorKey,
+          builder: (context, state) => const SignedOutScreen(),
         ),
         GoRoute(
           path: '/create-character',

@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -60,7 +61,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           height: 34,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(color: theme.primaryColor.withOpacity(0.6), width: 2),
+            border: Border.all(
+              color: theme.primaryColor.withOpacity(0.6),
+              width: 2,
+            ),
           ),
           child: ClipOval(
             child: Image.network(
@@ -71,7 +75,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               errorBuilder: (_, _, _) => Container(
                 color: Colors.white.withOpacity(0.1),
                 alignment: Alignment.center,
-                child: const Icon(Icons.person, size: 18, color: Colors.white70),
+                child: const Icon(
+                  Icons.person,
+                  size: 18,
+                  color: Colors.white70,
+                ),
               ),
             ),
           ),
@@ -88,9 +96,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   ///   17:00 – 21:59  Good Evening
   ///   22:00 – 04:59  Still awake?
   ///
-  /// No trailing commas: these used to run into the viewer's name on the next
-  /// line ("Good Afternoon, Clever Creature"). That line is gone, so a comma
-  /// would now point at nothing.
+  /// Each is prefixed with "Welcome, " by the caller, so the bands are
+  /// written to read naturally after it — including the late one, where
+  /// "Welcome, Still awake?" still scans.
   ///
   /// The late band exists because the naive version greeted someone at 2am
   /// with "Good Morning" — technically true, but it reads as a bug. "Still
@@ -104,6 +112,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return 'Good Evening';
   }
 
+  /// One per tab, so a mouse wheel anywhere on the page can drive whichever
+  /// grid is currently showing. Three covers the optional custom tab; the
+  /// spare is simply never attached.
+  final List<ScrollController> _gridControllers = List.generate(
+    3,
+    (_) => ScrollController(),
+  );
+
+  /// Which tab the wheel should scroll. Kept in sync from the TabController
+  /// below rather than read on demand, because the pointer handler sits above
+  /// the DefaultTabController and cannot look it up.
+  int _activeTab = 0;
+
+  /// The TabController we have already subscribed to, so rebuilds do not stack
+  /// up duplicate listeners.
+  TabController? _syncedTabs;
+
   @override
   void initState() {
     super.initState();
@@ -113,6 +138,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         precacheImage(AssetImage(character['image'] as String), context);
       }
     });
+  }
+
+  @override
+  void dispose() {
+    for (final c in _gridControllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Sends a mouse-wheel notch to the visible grid regardless of what the
+  /// pointer happens to be over.
+  ///
+  /// Flutter routes wheel events by pointer position, so the wheel did
+  /// nothing unless the cursor was over the grid itself — over the greeting,
+  /// the heading, the tab bar, or the empty surround beside the capped column,
+  /// the page simply refused to move. On a desktop mouse that reads as broken.
+  ///
+  /// Ignores the event when the grid is short enough not to scroll (no
+  /// clients, or nothing to scroll to), so it never fights a non-scrolling
+  /// tab.
+  void _handleWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final controller = _gridControllers[_activeTab];
+    if (!controller.hasClients) return;
+    final position = controller.position;
+    if (position.maxScrollExtent <= 0) return;
+    controller.jumpTo(
+      (position.pixels + event.scrollDelta.dy).clamp(
+        0.0,
+        position.maxScrollExtent,
+      ),
+    );
   }
 
   @override
@@ -126,199 +184,252 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final level = 1 + (score ~/ 10);
 
     return Scaffold(
-      body: Stack(
-        children: [
-           // Background
-           Container(
-             decoration: BoxDecoration(
-               gradient: LinearGradient(
-                 begin: Alignment.topLeft,
-                 end: Alignment.bottomRight,
-                 colors: [
-                   theme.scaffoldBackgroundColor,
-                   Colors.black,
-                   theme.primaryColor.withOpacity(0.1),
-                 ],
-               ),
-             ),
-           ),
-           
-           SafeArea(
-             child: Padding(
-               // No bottom padding: the character grid runs to the edge of
-               // the body so its clipped last row meets the nav bar directly.
-               // Padding there left a band of background between the fade and
-               // the bar, which read as the grid floating short of the bottom.
-               padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
-               child: Column(
-                 crossAxisAlignment: CrossAxisAlignment.start,
-                 children: [
-                   // Header
-                   Row(
-                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                     children: [
+      // Wraps the entire page, not just the grid, so the wheel works over the
+      // greeting, the heading, the tab bar and the surround beside the capped
+      // column — see _handleWheel.
+      body: Listener(
+        onPointerSignal: _handleWheel,
+        child: Stack(
+          children: [
+            // Background
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    theme.scaffoldBackgroundColor,
+                    Colors.black,
+                    theme.primaryColor.withOpacity(0.1),
+                  ],
+                ),
+              ),
+            ),
+
+            SafeArea(
+              child: Padding(
+                // No bottom padding: the character grid runs to the edge of
+                // the body so its clipped last row meets the nav bar directly.
+                // Padding there left a band of background between the fade and
+                // the bar, which read as the grid floating short of the bottom.
+                padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _timeOfDayGreeting(),
-                              style: theme.textTheme.bodyLarge?.copyWith(
+                              'Welcome, ${_timeOfDayGreeting()}',
+                              style: theme.textTheme.titleMedium?.copyWith(
                                 color: Colors.white70,
                               ),
                             ),
                           ],
                         ),
-                         // Relationship Level Indicator AND Settings
-                         Row(
-                           children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                   Row(
-                                     children: [
-                                       Icon(Icons.favorite, size: 14, color: theme.primaryColor),
-                                       const SizedBox(width: 4),
-                                       Text(
-                                         'Level $level',
-                                         style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold, color: Colors.white),
-                                       ),
-                                     ],
-                                   ),
-                                   const SizedBox(height: 4),
-                                   // Progress Bar
-                                   Container(
-                                     width: 80,
-                                     height: 4,
-                                     decoration: BoxDecoration(
-                                       color: Colors.white.withOpacity(0.1),
-                                       borderRadius: BorderRadius.circular(2),
-                                     ),
-                                     alignment: Alignment.centerLeft,
-                                     child: FractionallySizedBox(
-                                       widthFactor: (score % 10) / 10.0, // Mock progress for level
-                                       child: Container(
-                                         decoration: BoxDecoration(
-                                           color: theme.primaryColor,
-                                           borderRadius: BorderRadius.circular(2),
-                                         ),
-                                       ),
-                                     ),
-                                   ),
-                                ],
+                        // Relationship Level Indicator AND Settings
+                        Row(
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.favorite,
+                                      size: 14,
+                                      color: theme.primaryColor,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'Level $level',
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                // Progress Bar
+                                Container(
+                                  width: 80,
+                                  height: 4,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                  alignment: Alignment.centerLeft,
+                                  child: FractionallySizedBox(
+                                    widthFactor:
+                                        (score % 10) /
+                                        10.0, // Mock progress for level
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: theme.primaryColor,
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            // Google account avatar, once linked. Sits before
+                            // the settings gear so the gear stays the
+                            // rightmost control it has always been.
+                            _googleAvatar(theme),
+                            const SizedBox(width: 16),
+                            GestureDetector(
+                              onTap: () => context.push('/settings'),
+                              child: Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.1),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Colors.white.withOpacity(0.2),
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.settings,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
                               ),
-                             // Google account avatar, once linked. Sits before
-                             // the settings gear so the gear stays the
-                             // rightmost control it has always been.
-                             _googleAvatar(theme),
-                             const SizedBox(width: 16),
-                             GestureDetector(
-                               onTap: () => context.push('/settings'),
-                               child: Container(
-                                 padding: const EdgeInsets.all(8),
-                                 decoration: BoxDecoration(
-                                   color: Colors.white.withOpacity(0.1),
-                                   shape: BoxShape.circle,
-                                   border: Border.all(color: Colors.white.withOpacity(0.2)),
-                                 ),
-                                 child: const Icon(Icons.settings, color: Colors.white, size: 20),
-                               ),
-                             ),
-                           ],
-                         ),
-                     ],
-                   ),
-                   const SizedBox(height: 32),
-                   
-                   Text(
-                      'Select your ChatMate',
-                      style: theme.textTheme.headlineSmall?.copyWith(
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+
+                    Text(
+                      // "Personality", not "character", to match the nav
+                      // label this tab is reached by.
+                      'Choose a Personality to Explore',
+                      // Deliberately a step down from headlineSmall:
+                      // the ask was for this line to sit a little
+                      // smaller than a full heading.
+                      style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.normal,
                       ),
-                   ),
-                   const SizedBox(height: 16),
+                    ),
+                    const SizedBox(height: 16),
 
-                   // One tab per character group, Greek first. Custom
-                   // characters get their own trailing tab so they never
-                   // mix into the built-in groups.
-                   Expanded(
-                     child: DefaultTabController(
-                       length: AppConfig.enableCustomCharacters ? 3 : 2,
-                       child: Column(
-                         crossAxisAlignment: CrossAxisAlignment.start,
-                         children: [
-                           // Styled as a filled segmented control rather than
-                           // underlined text: on first open the Greek tab is
-                           // selected, and the unselected segments need to
-                           // read clearly as "there is more here", not as
-                           // decoration above the grid.
-                           Container(
-                             padding: const EdgeInsets.all(3),
-                             decoration: BoxDecoration(
-                               color: Colors.white.withOpacity(0.07),
-                               borderRadius: BorderRadius.circular(22),
-                               border: Border.all(
-                                 color: Colors.white.withOpacity(0.12),
-                               ),
-                             ),
-                             child: TabBar(
-                               labelColor: Colors.white,
-                               unselectedLabelColor: Colors.white70,
-                               dividerColor: Colors.transparent,
-                               indicatorSize: TabBarIndicatorSize.tab,
-                               splashBorderRadius: BorderRadius.circular(18),
-                               indicator: BoxDecoration(
-                                 color: theme.primaryColor,
-                                 borderRadius: BorderRadius.circular(18),
-                               ),
-                               labelPadding: EdgeInsets.zero,
-                               labelStyle: const TextStyle(
-                                 fontSize: 12,
-                                 fontWeight: FontWeight.bold,
-                                 letterSpacing: 1.1,
-                               ),
-                               unselectedLabelStyle: const TextStyle(
-                                 fontSize: 12,
-                                 fontWeight: FontWeight.w600,
-                                 letterSpacing: 1.1,
-                               ),
-                               tabs: [
-                                 _buildTab(AppConfig.greekSectionTitle),
-                                 _buildTab(AppConfig.modernSectionTitle),
-                                 if (AppConfig.enableCustomCharacters)
-                                   _buildTab('Yours'),
-                               ],
-                             ),
-                           ),
-                           const SizedBox(height: 10),
-                           Expanded(
-                             child: TabBarView(
-                               children: [
-                                 _buildCharacterGrid(
-                                   _charactersForGroup(AppConfig.greekCharacterIds),
-                                   theme,
-                                 ),
-                                 _buildCharacterGrid(
-                                   _charactersForGroup(AppConfig.modernCharacterIds),
-                                   theme,
-                                 ),
-                                 if (AppConfig.enableCustomCharacters)
-                                   _buildCharacterGrid(
-                                     customChars,
-                                     theme,
-                                     trailingCreateCard: true,
-                                   ),
-                               ],
-                             ),
-                           ),
-                         ],
-                       ),
-                     ),
-                   ),
-                 ],
-               ),
-             ),
-           ),
-        ],
+                    // One tab per character group, Greek first. Custom
+                    // characters get their own trailing tab so they never
+                    // mix into the built-in groups.
+                    Expanded(
+                      child: DefaultTabController(
+                        length: AppConfig.enableCustomCharacters ? 3 : 2,
+                        // Keeps _activeTab in step so the wheel drives whichever
+                        // grid is on screen. Covers swipes as well as taps,
+                        // which onTap alone would miss.
+                        child: Builder(
+                          builder: (context) {
+                            final tabs = DefaultTabController.of(context);
+                            if (_syncedTabs != tabs) {
+                              _syncedTabs = tabs;
+                              tabs.addListener(() {
+                                if (!mounted) return;
+                                if (tabs.index != _activeTab) {
+                                  setState(() => _activeTab = tabs.index);
+                                }
+                              });
+                            }
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Styled as a filled segmented control rather than
+                                // underlined text: on first open the Greek tab is
+                                // selected, and the unselected segments need to
+                                // read clearly as "there is more here", not as
+                                // decoration above the grid.
+                                Container(
+                                  padding: const EdgeInsets.all(3),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.07),
+                                    borderRadius: BorderRadius.circular(22),
+                                    border: Border.all(
+                                      color: Colors.white.withOpacity(0.12),
+                                    ),
+                                  ),
+                                  child: TabBar(
+                                    labelColor: Colors.white,
+                                    unselectedLabelColor: Colors.white70,
+                                    dividerColor: Colors.transparent,
+                                    indicatorSize: TabBarIndicatorSize.tab,
+                                    splashBorderRadius: BorderRadius.circular(
+                                      18,
+                                    ),
+                                    indicator: BoxDecoration(
+                                      color: theme.primaryColor,
+                                      borderRadius: BorderRadius.circular(18),
+                                    ),
+                                    labelPadding: EdgeInsets.zero,
+                                    labelStyle: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 1.1,
+                                    ),
+                                    unselectedLabelStyle: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 1.1,
+                                    ),
+                                    tabs: [
+                                      _buildTab(AppConfig.greekSectionTitle),
+                                      _buildTab(AppConfig.modernSectionTitle),
+                                      if (AppConfig.enableCustomCharacters)
+                                        _buildTab('Yours'),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Expanded(
+                                  child: TabBarView(
+                                    children: [
+                                      _buildCharacterGrid(
+                                        _charactersForGroup(
+                                          AppConfig.greekCharacterIds,
+                                        ),
+                                        theme,
+                                        controller: _gridControllers[0],
+                                      ),
+                                      _buildCharacterGrid(
+                                        _charactersForGroup(
+                                          AppConfig.modernCharacterIds,
+                                        ),
+                                        theme,
+                                        controller: _gridControllers[1],
+                                      ),
+                                      if (AppConfig.enableCustomCharacters)
+                                        _buildCharacterGrid(
+                                          customChars,
+                                          theme,
+                                          trailingCreateCard: true,
+                                          controller: _gridControllers[2],
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -329,10 +440,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// 12pt. The config values stay in normal case so they read naturally in
   /// code.
   Widget _buildTab(String title) {
-    return Tab(
-      height: 22,
-      child: Text(title.toUpperCase()),
-    );
+    return Tab(height: 22, child: Text(title.toUpperCase()));
   }
 
   /// The card grid for one tab. Empty groups show a short placeholder
@@ -341,6 +449,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     List<Map<String, dynamic>> characters,
     ThemeData theme, {
     bool trailingCreateCard = false,
+    ScrollController? controller,
   }) {
     if (characters.isEmpty && !trailingCreateCard) {
       return Center(
@@ -393,8 +502,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             final available = constraints.maxHeight;
             final cardWidth = (constraints.maxWidth - spacing) / 2;
 
-            final fitHeight =
-                (available - (2 * spacing)) / minRowsVisible;
+            final fitHeight = (available - (2 * spacing)) / minRowsVisible;
             final cardHeight = fitHeight.clamp(
               cardWidth * squattestRatio,
               cardWidth / tallestRatio,
@@ -437,9 +545,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 child: Stack(
                   children: [
                     GridView.builder(
+                      controller: controller,
                       padding: EdgeInsets.zero,
-                      gridDelegate:
-                          SliverGridDelegateWithFixedCrossAxisCount(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
                         childAspectRatio: aspectRatio,
                         crossAxisSpacing: spacing,
@@ -550,7 +658,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     // used to leave the address bar showing /dashboard. The chat's back arrow
     // already falls back to go('/dashboard') when there is nothing to pop.
     if (characterId != null && characterById(characterId) != null) {
-      context.go('/c/$characterId${openerParam.isEmpty ? '' : '?$openerParam'}');
+      context.go(
+        '/c/$characterId${openerParam.isEmpty ? '' : '?$openerParam'}',
+      );
       return;
     }
 
@@ -567,14 +677,24 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildCharacterCard(Map<String, dynamic> character, ThemeData theme, {required bool compact}) {
+  Widget _buildCharacterCard(
+    Map<String, dynamic> character,
+    ThemeData theme, {
+    required bool compact,
+  }) {
     final isCustom = character['isCustom'] == true;
     final hasProfile = profileForCharacter(character['id'] as String?) != null;
 
     return _HoverRegion(
       builder: (hovering) => Stack(
         children: [
-          _buildCardBody(character, theme, compact: compact, isCustom: isCustom),
+          _buildCardBody(
+            character,
+            theme,
+            compact: compact,
+            isCustom: isCustom,
+            hovering: hovering,
+          ),
           // Profile affordance. Always rendered when a profile exists — not
           // hover-only — because touch devices have no hover state and would
           // otherwise never see it. Pointer devices get a stronger version
@@ -598,42 +718,71 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     ThemeData theme, {
     required bool compact,
     required bool isCustom,
+    bool hovering = false,
   }) {
+    // Each character's own accent colour, so the glow reads as *that*
+    // character lighting up rather than a generic UI highlight.
+    final accent = (character['color'] as Color?) ?? theme.primaryColor;
     return GestureDetector(
       onTap: () => _openChat(character),
-      onLongPress: isCustom ? () {
-        // Show delete dialog for custom characters
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Delete Custom Character?'),
-            content: Text('Are you sure you want to delete ${character['name']}?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () async {
-                  await ref.read(customCharactersProvider.notifier).deleteCharacter(character['id']);
-                  // No need to setState, provider will update UI
-                  if (context.mounted) Navigator.pop(context);
-                },
-                child: const Text('Delete', style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          ),
-        );
-      } : null,
-      child: Container(
+      onLongPress: isCustom
+          ? () {
+              // Show delete dialog for custom characters
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Delete Custom Character?'),
+                  content: Text(
+                    'Are you sure you want to delete ${character['name']}?',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel'),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        await ref
+                            .read(customCharactersProvider.notifier)
+                            .deleteCharacter(character['id']);
+                        // No need to setState, provider will update UI
+                        if (context.mounted) Navigator.pop(context);
+                      },
+                      child: const Text(
+                        'Delete',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOut,
         decoration: BoxDecoration(
           color: theme.colorScheme.surface.withOpacity(0.5),
           borderRadius: BorderRadius.circular(compact ? 14 : 20),
-          border: Border.all(color: theme.primaryColor.withOpacity(0.3)),
+          border: Border.all(
+            color: hovering
+                ? accent.withValues(alpha: 0.95)
+                : theme.primaryColor.withOpacity(0.3),
+            width: hovering ? 2 : 1,
+          ),
+          boxShadow: hovering
+              ? [
+                  BoxShadow(
+                    color: accent.withValues(alpha: 0.55),
+                    blurRadius: 24,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : null,
           image: DecorationImage(
-             image: AssetImage(character['image']),
-             fit: BoxFit.cover,
-             // Removed opacity to make image clear
+            image: AssetImage(character['image']),
+            fit: BoxFit.cover,
+            // Removed opacity to make image clear
           ),
         ),
         child: Container(
@@ -643,10 +792,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               stops: const [0.5, 1.0], // Gradient starts halfway down
-              colors: [
-                Colors.transparent,
-                Colors.black.withOpacity(0.9),
-              ],
+              colors: [Colors.transparent, Colors.black.withOpacity(0.9)],
             ),
           ),
           padding: EdgeInsets.all(compact ? 6 : 12),
@@ -661,17 +807,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     Text(
                       character['name'],
                       style: compact
-                          ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold)
+                          ? theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            )
                           : theme.textTheme.titleMedium,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       character['vibe'],
-                      style: (compact ? theme.textTheme.bodySmall : theme.textTheme.bodyMedium)?.copyWith(
-                        color: theme.colorScheme.secondary,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style:
+                          (compact
+                                  ? theme.textTheme.bodySmall
+                                  : theme.textTheme.bodyMedium)
+                              ?.copyWith(
+                                color: theme.colorScheme.secondary,
+                                fontWeight: FontWeight.bold,
+                              ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -679,7 +831,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       const SizedBox(height: 4),
                       Text(
                         character['desc'],
-                        style: theme.textTheme.bodyMedium?.copyWith(fontSize: 10, color: Colors.white70),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 10,
+                          color: Colors.white70,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -691,7 +846,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 Align(
                   alignment: Alignment.topRight,
                   child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8, vertical: compact ? 2 : 4),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: compact ? 6 : 8,
+                      vertical: compact ? 2 : 4,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.pink.withOpacity(0.9),
                       borderRadius: BorderRadius.circular(compact ? 10 : 12),
@@ -719,8 +877,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return GestureDetector(
       onTap: () {
         if (!isPremium) {
-           context.push('/paywall');
-           return;
+          context.push('/paywall');
+          return;
         }
         context.push('/create-character');
       },
@@ -728,7 +886,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.05),
           borderRadius: BorderRadius.circular(compact ? 14 : 20),
-          border: Border.all(color: Colors.white.withOpacity(0.2), style: BorderStyle.solid),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.2),
+            style: BorderStyle.solid,
+          ),
         ),
         child: Stack(
           children: [
@@ -742,12 +903,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       shape: BoxShape.circle,
                       color: theme.primaryColor.withOpacity(0.2),
                     ),
-                    child: Icon(Icons.add, color: theme.primaryColor, size: compact ? 20 : 32),
+                    child: Icon(
+                      Icons.add,
+                      color: theme.primaryColor,
+                      size: compact ? 20 : 32,
+                    ),
                   ),
                   SizedBox(height: compact ? 6 : 12),
                   Text(
                     'Create Custom',
-                    style: compact ? theme.textTheme.bodySmall : theme.textTheme.titleMedium,
+                    style: compact
+                        ? theme.textTheme.bodySmall
+                        : theme.textTheme.titleMedium,
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -763,7 +930,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     color: Colors.black54,
                     shape: BoxShape.circle,
                   ),
-                  child: Icon(Icons.lock, color: Colors.amber, size: compact ? 12 : 16),
+                  child: Icon(
+                    Icons.lock,
+                    color: Colors.amber,
+                    size: compact ? 12 : 16,
+                  ),
                 ),
               ),
           ],
@@ -771,8 +942,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       ),
     );
   }
-
-
 }
 
 /// Tracks pointer hover so a child can render a stronger affordance on
@@ -840,11 +1009,7 @@ class _ProfileBadge extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.person_outline,
-                size: 14,
-                color: Colors.white,
-              ),
+              const Icon(Icons.person_outline, size: 14, color: Colors.white),
               // The label only appears on hover; on a phone the icon alone
               // has to carry it, which is why the dot is always present.
               if (highlighted) ...[

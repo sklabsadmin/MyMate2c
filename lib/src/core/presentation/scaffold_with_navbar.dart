@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../config/app_config.dart';
+
 class ScaffoldWithNavBar extends StatelessWidget {
   const ScaffoldWithNavBar({
     required this.navigationShell,
@@ -20,7 +22,34 @@ class ScaffoldWithNavBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    
+
+    // Cap and centre the entire shell — body AND nav bar together, so they
+    // stay the same width as each other. The MediaQuery override is what
+    // makes this safe: descendants sizing themselves off
+    // MediaQuery.size.width (the chat bubbles' 0.62/0.75 caps) would
+    // otherwise measure the whole window and overflow the column.
+    return ColoredBox(
+      color: theme.scaffoldBackgroundColor,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: AppConfig.maxShellWidth),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final media = MediaQuery.of(context);
+              return MediaQuery(
+                data: media.copyWith(
+                  size: Size(constraints.maxWidth, media.size.height),
+                ),
+                child: _buildShell(context, theme),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShell(BuildContext context, ThemeData theme) {
     return Scaffold(
       body: navigationShell,
       bottomNavigationBar: Container(
@@ -50,12 +79,12 @@ class ScaffoldWithNavBar extends StatelessWidget {
               NavigationDestination(
                 icon: Icon(Icons.dashboard_outlined),
                 selectedIcon: Icon(Icons.dashboard, color: Color(0xFFD81B60)),
-                label: 'Dashboard',
+                label: 'Personalities',
               ),
               NavigationDestination(
                 icon: Icon(Icons.chat_bubble_outline),
                 selectedIcon: Icon(Icons.chat_bubble, color: Color(0xFFD81B60)),
-                label: 'Chats',
+                label: 'Conversations',
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

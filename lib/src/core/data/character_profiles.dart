@@ -138,13 +138,6 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
     verse: 'I aim for the chest.\nIt was never a mistake.',
   ),
 
-  // The three Modern-tab characters. Keyed by id ('badboy'/'poet'/'surfer'),
-  // not display name, like every entry above.
-  //
-  // Written from each one's CHARACTER_PERSONAS entry in worker.js rather than
-  // from scratch, so the card and the prompt say the same thing: Damon's
-  // motorcycles, Liam's notebooks, Kai's swell forecasts and his patience with
-  // people all appear in both. Edit one, edit the other.
   'hector': CharacterProfile(
     age: '31',
     tags: ['Duty', 'Courage', 'Family', 'Troy'],
@@ -170,7 +163,7 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
         'Then he took my husband.\n'
         'I begged Hector to stay behind the walls. He kissed our boy, and he '
         'went.\n'
-        'I am not made of sorrow. I am what is left standing after it.\n'
+        'I am not made of sorrow. I am what is left standing after.\n'
         'Whatever you are carrying, you can set it down here.',
     asks: [
       'How do you keep going after losing everything?',
@@ -179,6 +172,13 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
     ],
     verse: 'I asked him to stay.\nI would ask again.',
   ),
+  // The three Modern-tab characters. Keyed by id ('badboy'/'poet'/'surfer'),
+  // not display name, like every entry above.
+  //
+  // Written from each one's CHARACTER_PERSONAS entry in worker.js rather than
+  // from scratch, so the card and the prompt say the same thing: Damon's
+  // motorcycles, Liam's notebooks, Kai's swell forecasts and his patience with
+  // people all appear in both. Edit one, edit the other.
   'badboy': CharacterProfile(
     age: '31',
     tags: ['Rides', 'No filter', 'Loyal once earned'],

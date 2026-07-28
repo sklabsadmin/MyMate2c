@@ -520,6 +520,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Get Personalized "Playful & Flirty" Sequence
     final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
 
+    // The character "sends" their portrait first, so a new conversation opens
+    // with a face rather than a wall of text. New chats only — this goes into
+    // history like any other message, so returning users keep it at the top
+    // without it being back-filled into conversations that predate it.
+    final portrait = widget.characterImage;
+    if (portrait != null && portrait.isNotEmpty) {
+      _addMessage(
+        ChatMessage(
+          id: 'portrait_${DateTime.now().millisecondsSinceEpoch}',
+          text: 'A photo of $_characterDisplayName',
+          isUser: false,
+          timestamp: DateTime.now(),
+          imageAsset: portrait,
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+    }
+
     // 0. Initial Connection Message
     if (widget.scenario != null) {
       _addMessage(
@@ -1249,6 +1268,40 @@ class _ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isUser = message.isUser;
+
+    // A portrait the character "sent". Rendered as the image itself in a
+    // rounded frame rather than inside a text bubble, so it reads as a shared
+    // photo. message.text stays as the semantics label.
+    final imageAsset = message.imageAsset;
+    if (imageAsset != null) {
+      return Align(
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.62,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(20),
+              topRight: const Radius.circular(20),
+              bottomLeft: Radius.circular(isUser ? 20 : 4),
+              bottomRight: Radius.circular(isUser ? 4 : 20),
+            ),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Semantics(
+            label: message.text,
+            image: true,
+            child: AspectRatio(
+              aspectRatio: 1,
+              child: Image.asset(imageAsset, fit: BoxFit.cover),
+            ),
+          ),
+        ),
+      );
+    }
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,

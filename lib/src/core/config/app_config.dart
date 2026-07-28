@@ -18,7 +18,7 @@ class AppConfig {
   /// everything working normally. Anyone who knows the trick — or who reads the
   /// shipped JavaScript — gets in, which is the point. It filters the casual,
   /// nothing more, so don't rely on it to hide anything sensitive.
-  static const bool showMaintenanceGate = true;
+  static const bool showMaintenanceGate = false;
 
   /// Set once the user has tabbed past the gate. Deliberately in-memory only:
   /// a reload shows the holding page again, which is the desired behaviour for
@@ -45,13 +45,13 @@ class AppConfig {
   /// character itself, and which engine the worker picks for it, is
   /// unaffected.
   static const List<String> greekCharacterIds = [
-    'zeus',
     'odysseus',
-    'oedipus',
     'penelope',
-    'cupid',
-    'hector',
     'andromache',
+    'zeus',
+    'hector',
+    'cupid',
+    'oedipus',
   ];
 
   static const List<String> modernCharacterIds = [
@@ -88,6 +88,17 @@ class AppConfig {
   /// on-device; welcome messages and failed/"trouble thinking" replies do
   /// not count. Signing in removes the limit entirely.
   static const int freeRepliesPerCharacter = 20;
+
+  /// The app is designed as a portrait, phone-shaped experience — two card
+  /// columns, one chat column. Left unconstrained, a desktop window stretches
+  /// the header and nav bar to the full width while the grid stays centred at
+  /// its own cap, which reads as a layout bug rather than a wide layout.
+  ///
+  /// So the whole shell is capped and centred at this width and the rest of
+  /// the window becomes surround. Resizing still does whatever the user wants;
+  /// this only decides how it opens. Comfortably above the grid's own 560 cap
+  /// so the grid, not this, stays the thing deciding card size.
+  static const double maxShellWidth = 640;
 
   /// The model to use.
   static const String openAiModel = 'gpt-4o-mini';

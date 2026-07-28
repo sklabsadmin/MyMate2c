@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -61,10 +62,18 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
       onKeyEvent: _onKey,
       autofocus: true,
       child: Scaffold(
-        body: GestureDetector(
-          // Touch devices have no Tab key, so a long press on the artwork is
-          // the equivalent way in.
-          onLongPress: _enterApp,
+        // Flutter's default long-press is 500ms, which is short enough to
+        // fire on an ordinary tap-and-hold; 1.2s makes it deliberate.
+        body: RawGestureDetector(
+          gestures: {
+            LongPressGestureRecognizer:
+                GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+              () => LongPressGestureRecognizer(
+                duration: const Duration(milliseconds: 1200),
+              ),
+              (instance) => instance.onLongPress = _enterApp,
+            ),
+          },
           child: Container(
             width: double.infinity,
             height: double.infinity,
@@ -138,7 +147,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                         ),
                         const SizedBox(height: 20),
                         Text(
-                          'is undergoing a personality change.',
+                          'We are undergoing a few personality changes.',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color: Colors.white70,
@@ -147,7 +156,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          'Please come back again tomorrow.',
+                          'Please come back again later!',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color: Colors.white70,

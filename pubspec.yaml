@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.49.4+54
+version: 1.5.55+55
 
 environment:
   sdk: ^3.10.0
@@ -81,10 +81,13 @@ flutter_launcher_icons:
 flutter_native_splash:
   # Cream, not black: the logo lockup is drawn on cream, so a black splash
   # showed it as a pale slab. The web splash fades out to the app's black.
-  color: "#FFFFFF"
+  # Sampled from the logo's own background so the artwork edge is seamless.
+  color: "#FCECE5"
   # The full lockup including the wordmark. The previous medallion-only crop
   # clipped the bottom of the circle.
-  image: brand/splash_full.png
+  # The full Mythos Live lockup. Its own wordmark is correct now, so the
+  # HTML wordmark that used to sit under the splash has been removed.
+  image: brand/mythoslive_splash.png
   android: true
   ios: true
 
