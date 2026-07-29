@@ -34,6 +34,10 @@
     "run_worker_first": [
       "/api/*",
       "/auth/*",
+      // Both forms: "/admin/*" does not match "/admin" itself, which meant the
+      // index page was served as a static asset and skipped the auth check
+      // entirely.
+      "/admin",
       "/admin/*",
       // Campaign links: the worker must see these to log the arrival and
       // serve the character's share card. Without this the asset handler

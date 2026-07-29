@@ -107,6 +107,14 @@ export default {
             ]);
         }
 
+        if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminIndexPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
         if (request.method === "GET" && url.pathname === "/admin/logs") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -121,6 +129,46 @@ export default {
             return new Response(adminReferralsPageHtml(), {
                 headers: { "Content-Type": "text/html; charset=utf-8" },
             });
+        }
+
+        // Transcripts for one visit. Joined via app_user_id, which only the
+        // in-app funnel events carry — a visit that never sent a message has
+        // no id and therefore nothing to show, which is the correct answer
+        // rather than an error.
+        if (request.method === "GET" && url.pathname === "/api/admin/visit-chat") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const visitId = (url.searchParams.get("visit_id") || "").slice(0, 64);
+            if (!visitId) return jsonResponse({ error: "visit_id required" }, { status: 400 });
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            const ids = await db.prepare(`
+                SELECT DISTINCT app_user_id FROM site_visits
+                WHERE visit_id = ? AND app_user_id IS NOT NULL
+            `).bind(visitId).all();
+            const userIds = (ids.results || []).map((r) => r.app_user_id);
+            if (!userIds.length) return jsonResponse({ userIds: [], messages: [] });
+
+            // Bounded by the visit window so a returning device does not drag
+            // in every conversation it has ever had.
+            const window = await db.prepare(`
+                SELECT MIN(created_at) AS started, MAX(created_at) AS ended
+                FROM site_visits WHERE visit_id = ?
+            `).bind(visitId).first();
+
+            const placeholders = userIds.map(() => "?").join(",");
+            const msgs = await db.prepare(`
+                SELECT created_at, character_id, scenario, user_message,
+                       assistant_message, status, error
+                FROM conversation_logs
+                WHERE user_id IN (${placeholders})
+                  AND created_at >= datetime(?, '-2 minutes')
+                  AND created_at <= datetime(?, '+2 hours')
+                ORDER BY created_at
+            `).bind(...userIds, window.started, window.ended).all();
+
+            return jsonResponse({ userIds, messages: msgs.results || [] });
         }
 
         if (request.method === "GET" && url.pathname === "/admin/visits") {
@@ -169,9 +217,12 @@ export default {
             `).bind(since).all();
 
             const recent = await db.prepare(`
-                SELECT a.created_at, a.path, a.query, a.source, a.utm_medium,
+                SELECT a.visit_id, a.created_at, a.path, a.query, a.source, a.utm_medium,
                        a.utm_campaign, a.country, a.referer, l.duration_ms,
-                       r.duration_ms AS load_ms
+                       r.duration_ms AS load_ms,
+                       (SELECT COUNT(*) FROM site_visits m
+                         WHERE m.visit_id = a.visit_id
+                           AND m.event IN ('first_message','login_gate')) AS messaged
                 FROM site_visits a
                 LEFT JOIN site_visits l
                        ON l.visit_id = a.visit_id AND l.event = 'leave'
@@ -1340,6 +1391,9 @@ async function recordSiteVisit(raw, request, env) {
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
+    // Only the in-app events carry this; the splash beacon runs before Flutter
+    // exists, so arrive/leave rows have it NULL by design.
+    const appUserId = String(payload.appUserId || "").slice(0, 120) || null;
     const visitId = String(payload.visitId || "").slice(0, 64);
     if (!visitId) return;
 
@@ -1372,8 +1426,8 @@ async function recordSiteVisit(raw, request, env) {
             INSERT INTO site_visits (
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
-                country, colo, duration_ms, detail
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                country, colo, duration_ms, detail, app_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1388,7 +1442,8 @@ async function recordSiteVisit(raw, request, env) {
             request.cf?.country || null,
             request.cf?.colo || null,
             Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null,
-            detail
+            detail,
+            appUserId
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -2180,6 +2235,58 @@ async function summariseReferralVisits(env, searchParams) {
 }
 
 
+
+/// Landing page for the admin tools. They accumulated one at a time and there
+/// was no way to find them except remembering the URLs.
+function adminIndexPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — Admin</title>
+<style>
+  body { font: 15px -apple-system, system-ui, sans-serif; margin: 0; padding: 40px 24px;
+         background: #14101a; color: #eee; }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p.sub { color: #999; margin: 0 0 28px; font-size: 14px; }
+  a.card { display: block; text-decoration: none; color: inherit;
+           background: #1d1726; border: 1px solid #2c2438; border-radius: 12px;
+           padding: 16px 18px; margin-bottom: 12px; transition: border-color .15s, background .15s; }
+  a.card:hover { border-color: #7e57c2; background: #241d2e; }
+  .t { font-weight: 600; color: #fff; margin-bottom: 3px; }
+  .t .em { color: #b39ddb; font-size: 12px; font-weight: 400; margin-left: 8px; }
+  .d { color: #999; font-size: 13px; line-height: 1.45; }
+  footer { color: #666; font-size: 12px; margin-top: 26px; line-height: 1.6; }
+</style></head><body><div class="wrap">
+<h1>Mythos Live — Admin</h1>
+<p class="sub">Everything here is behind the same password.</p>
+
+<a class="card" href="/admin/visits">
+  <div class="t">Visits <span class="em">start here</span></div>
+  <div class="d">Every arrival, logged from the splash screen before the app loads.
+     Funnel from arrival through to the login gate, load and dwell times, and
+     traffic by source.</div>
+</a>
+
+<a class="card" href="/admin/referrals">
+  <div class="t">Campaigns <span class="em">/c/ links only</span></div>
+  <div class="d">Server-side record of character link hits. Fires even with no
+     JavaScript, so it catches visitors Visits cannot — but it also counts
+     Meta&rsquo;s link-preview crawler, so it reads high.</div>
+</a>
+
+<a class="card" href="/admin/logs">
+  <div class="t">Chat logs</div>
+  <div class="d">Conversation transcripts by user and character.</div>
+</a>
+
+<footer>
+  Visits vs Campaigns: Visits needs a real browser running JavaScript, so it is
+  the closer proxy for actual people. Campaigns is recorded by the worker itself
+  and includes bots. A big gap between them is usually crawlers, not lost users.
+</footer>
+</div></body></html>`;
+}
+
 function adminVisitsPageHtml() {
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2199,7 +2306,10 @@ function adminVisitsPageHtml() {
   h2 { font-size: 15px; color: #b39ddb; margin: 26px 0 8px; }
   .muted { color: #777; }
   .wrap { overflow-x: auto; }
+  a.drill { color: #b39ddb; }
+  tr.chat td { background: #191322; }
 </style></head><body>
+<p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a></p>
 <h1>Site visits</h1>
 <p class="sub">Every arrival, logged from the splash screen before the app loads —
    not just /c/ campaign links.</p>
@@ -2277,17 +2387,57 @@ async function load() {
   h += '</table></div>';
 
   h += '<h2>Recent arrivals</h2><div class="wrap"><table><tr><th>When (UTC)</th><th>Path</th>' +
-       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th></tr>';
+       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th><th>Chat</th></tr>';
   for (const r of d.recent) {
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num">' + dur(r.load_ms) +
-         '</td><td class="num">' + dur(r.duration_ms) + '</td></tr>';
+         '</td><td class="num">' + dur(r.duration_ms) + '</td><td>' +
+         (r.messaged
+           ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
+           : '<span class="muted">—</span>') +
+         '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
+         '" style="display:none"><td colspan="8"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="7" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="8" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
+
+  // Expand a visit into its transcript in place, rather than navigating away
+  // and losing the list position.
+  out.querySelectorAll('a.drill').forEach(function (a) {
+    a.addEventListener('click', async function (ev) {
+      ev.preventDefault();
+      const vid = a.getAttribute('data-v');
+      const row = document.getElementById('chat-' + vid);
+      if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+      row.style.display = '';
+      const cell = row.firstElementChild;
+      cell.innerHTML = '<span class="muted">Loading…</span>';
+      const res = await fetch('/api/admin/visit-chat?visit_id=' + encodeURIComponent(vid));
+      if (!res.ok) { cell.innerHTML = '<span class="muted">Error ' + res.status + '</span>'; return; }
+      const data = await res.json();
+      if (!data.messages.length) {
+        cell.innerHTML = '<span class="muted">No messages recorded for this visit.</span>';
+        return;
+      }
+      let c = '<div style="padding:6px 0 10px">';
+      for (const m of data.messages) {
+        c += '<div style="margin:0 0 12px;padding-left:10px;border-left:2px solid #7e57c2">' +
+             '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
+             esc(m.created_at) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
+             (m.status && m.status !== 'ok' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
+             '</div>' +
+             '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
+             '<div class="muted"><b>Reply:</b> ' + esc(m.assistant_message) + '</div>' +
+             (m.error ? '<div style="color:#e57373">' + esc(m.error) + '</div>' : '') +
+             '</div>';
+      }
+      c += '</div>';
+      cell.innerHTML = c;
+    });
+  });
 }
 load();
 </script></body></html>`;

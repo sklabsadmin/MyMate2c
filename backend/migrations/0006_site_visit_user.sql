@@ -1,0 +1,11 @@
+-- Links a browser visit to the app's own user id.
+--
+-- site_visits is keyed by a per-page-load id from sessionStorage;
+-- conversation_logs is keyed by the user_id the Flutter app persists in
+-- SharedPreferences. Nothing joined the two, so there was no way to go from
+-- "this Instagram visitor bounced" to "here is what they actually said".
+--
+-- Sent by the in-app funnel events only. The splash beacon fires before
+-- Flutter exists and so cannot know this id — arrive/leave rows will always
+-- have it NULL, and that is expected.
+ALTER TABLE site_visits ADD COLUMN app_user_id TEXT;

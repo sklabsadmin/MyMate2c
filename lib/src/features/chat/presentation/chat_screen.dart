@@ -772,7 +772,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
       // Funnel: the conversion bottleneck — 31 people have chatted and 3
       // have signed in, and until now the drop-off was invisible.
-      logFunnelEvent('login_gate', detail: widget.characterId);
+      SharedPreferences.getInstance().then((prefs) {
+        logFunnelEvent(
+          'login_gate',
+          detail: widget.characterId,
+          appUserId: prefs.getString('user_id'),
+        );
+      });
       _showLoginGate();
       return;
     }
@@ -781,7 +787,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // the step between opening a character and hitting the login gate.
     if (!_sentFirstMessage) {
       _sentFirstMessage = true;
-      logFunnelEvent('first_message', detail: widget.characterId);
+      // Same id the chat API sends as x-user-id, so this row joins straight
+      // onto conversation_logs.
+      SharedPreferences.getInstance().then((prefs) {
+        logFunnelEvent(
+          'first_message',
+          detail: widget.characterId,
+          appUserId: prefs.getString('user_id'),
+        );
+      });
     }
 
     _textController.clear();
