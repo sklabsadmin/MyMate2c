@@ -181,10 +181,35 @@ export default {
                 ORDER BY a.created_at DESC LIMIT 200
             `).bind(since).all();
 
+            // The funnel, per source. Each step counts DISTINCT visits that
+            // reached it, so a chatty visitor sending 20 messages still counts
+            // once and cannot inflate a step above the one before it.
+            const funnel = await db.prepare(`
+                SELECT a.source AS source,
+                       COUNT(DISTINCT a.visit_id) AS arrived,
+                       COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS loaded,
+                       COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
+                       COUNT(DISTINCT CASE WHEN e.event='first_message' THEN e.visit_id END) AS messaged,
+                       COUNT(DISTINCT CASE WHEN e.event='login_gate'    THEN e.visit_id END) AS gated
+                FROM site_visits a
+                LEFT JOIN site_visits e ON e.visit_id = a.visit_id
+                WHERE a.event='arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY a.source ORDER BY arrived DESC
+            `).bind(since).all();
+
+            const characters = await db.prepare(`
+                SELECT detail AS character_id, event, COUNT(*) AS n
+                FROM site_visits
+                WHERE detail IS NOT NULL AND created_at >= datetime('now', ?)
+                GROUP BY detail, event ORDER BY n DESC
+            `).bind(since).all();
+
             return jsonResponse({
                 bySource: bySource.results || [],
                 byDay: byDay.results || [],
                 recent: recent.results || [],
+                funnel: funnel.results || [],
+                characters: characters.results || [],
             });
         }
 
@@ -1301,11 +1326,20 @@ async function recordSiteVisit(raw, request, env) {
         return;
     }
 
-    // arrive -> splash shown; app_ready -> Flutter painted its first frame
-    // (duration = real time-to-usable-app); leave -> page hidden/closed.
-    const event = ["arrive", "app_ready", "leave"].includes(payload.event)
-        ? payload.event
-        : "arrive";
+    // The funnel, in order:
+    //   arrive        splash shown, before the bundle downloads
+    //   app_ready     Flutter painted its first frame (duration = time to
+    //                 usable app)
+    //   character_tap opened a character (detail = character id)
+    //   first_message sent their first message (detail = character id)
+    //   login_gate    hit the free-reply limit (detail = character id)
+    //   leave         page hidden/closed (duration = dwell)
+    const ALLOWED_EVENTS = [
+        "arrive", "app_ready", "character_tap",
+        "first_message", "login_gate", "leave",
+    ];
+    const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
+    const detail = String(payload.detail || "").slice(0, 80) || null;
     const visitId = String(payload.visitId || "").slice(0, 64);
     if (!visitId) return;
 
@@ -1338,8 +1372,8 @@ async function recordSiteVisit(raw, request, env) {
             INSERT INTO site_visits (
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
-                country, colo, duration_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                country, colo, duration_ms, detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1353,7 +1387,8 @@ async function recordSiteVisit(raw, request, env) {
             (request.headers.get("User-Agent") || "").slice(0, 400) || null,
             request.cf?.country || null,
             request.cf?.colo || null,
-            Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null
+            Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null,
+            detail
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -2192,6 +2227,35 @@ async function load() {
   if (!res.ok) { out.textContent = 'Error ' + res.status; return; }
   const d = await res.json();
   let h = '';
+
+  h += '<h2>Funnel</h2><p class="muted" style="margin:0 0 8px">' +
+       'Distinct visits reaching each step. The biggest drop is where you are ' +
+       'losing people.</p><div class="wrap"><table><tr><th>Source</th>' +
+       '<th>Arrived</th><th>App loaded</th><th>Opened a character</th>' +
+       '<th>Sent a message</th><th>Hit login gate</th></tr>';
+  for (const r of d.funnel || []) {
+    function pct(n) {
+      return r.arrived ? ' <span class="muted">(' + Math.round(100*n/r.arrived) + '%)</span>' : '';
+    }
+    h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.arrived +
+         '</td><td class="num">' + r.loaded + pct(r.loaded) +
+         '</td><td class="num">' + r.tapped + pct(r.tapped) +
+         '</td><td class="num">' + r.messaged + pct(r.messaged) +
+         '</td><td class="num">' + r.gated + pct(r.gated) + '</td></tr>';
+  }
+  if (!(d.funnel || []).length) h += '<tr><td colspan="6" class="muted">No data yet.</td></tr>';
+  h += '</table></div>';
+
+  const chars = d.characters || [];
+  if (chars.length) {
+    h += '<h2>By character</h2><div class="wrap"><table><tr><th>Character</th>' +
+         '<th>Event</th><th>Count</th></tr>';
+    for (const r of chars) {
+      h += '<tr><td>' + esc(r.character_id) + '</td><td>' + esc(r.event) +
+           '</td><td class="num">' + r.n + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
 
   h += '<h2>By source</h2><div class="wrap"><table><tr><th>Source</th><th>Visits</th>' +
        '<th>Saw the app</th><th>Gave up loading</th><th>Avg load</th>' +

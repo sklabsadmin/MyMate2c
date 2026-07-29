@@ -208,8 +208,11 @@ BEACON = r'''  <!-- Arrival/exit beacon.
     // Exposed so the splash script can report app_ready at the moment Flutter
     // paints its first frame. Takes the elapsed time from arrival, which is
     // the real "time to usable app" for this visitor on their real connection.
-    window.mythosVisitBeacon = function (event) {
-      send(event, { durationMs: Date.now() - ARRIVED_AT });
+    window.mythosVisitBeacon = function (event, detail) {
+      send(event, {
+        durationMs: Date.now() - ARRIVED_AT,
+        detail: detail || undefined
+      });
     };
 
     send('arrive');

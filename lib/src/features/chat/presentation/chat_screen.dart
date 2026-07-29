@@ -11,6 +11,7 @@ import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/analytics.dart';
 import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../character/presentation/character_profile_screen.dart';
@@ -78,6 +79,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
+
+  /// Guards the one-shot first_message funnel event.
+  bool _sentFirstMessage = false;
 
   String get _chatId => widget.scenario ?? 'default';
 
@@ -766,8 +770,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // unaffected until they each hit their own limit.
     final authed = ref.read(authProvider).value?.authenticated ?? false;
     if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+      // Funnel: the conversion bottleneck — 31 people have chatted and 3
+      // have signed in, and until now the drop-off was invisible.
+      logFunnelEvent('login_gate', detail: widget.characterId);
       _showLoginGate();
       return;
+    }
+
+    // Funnel: fired once per visit, on the first message actually sent —
+    // the step between opening a character and hitting the login gate.
+    if (!_sentFirstMessage) {
+      _sentFirstMessage = true;
+      logFunnelEvent('first_message', detail: widget.characterId);
     }
 
     _textController.clear();

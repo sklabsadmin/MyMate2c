@@ -8,6 +8,7 @@ import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
+import '../../../core/services/analytics.dart';
 import '../../character/presentation/character_profile_screen.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -642,6 +643,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   void _openChat(Map<String, dynamic> character, {String? initialMessage}) {
+    // Funnel: how many arrivals get as far as opening anyone at all. Most
+    // visitors who reach a working app leave within 3s, and this is what says
+    // whether they engaged with a character first or bounced off the grid.
+    logFunnelEvent('character_tap', detail: character['id'] as String?);
     final characterId = character['id'] as String?;
     final openerParam = (initialMessage != null && initialMessage.isNotEmpty)
         ? 'initialMessage=${Uri.encodeComponent(initialMessage)}'
