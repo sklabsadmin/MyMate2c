@@ -383,6 +383,7 @@ export default {
                 ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
+            const synthetic = isSyntheticTest(request);
 
             // Signature checking is on unless REQUIRE_SIGNATURE is explicitly
             // "false". It exists to stop strangers spending our OpenAI credits
@@ -458,6 +459,7 @@ export default {
                 await persistConversationLog(env, {
                     id: requestId,
                     userId,
+                    synthetic,
                     chatId,
                     scenario: metadata.scenario,
                     language: metadata.language,
@@ -487,6 +489,7 @@ export default {
                     await persistConversationLog(env, {
                         id: requestId,
                         userId,
+                        synthetic,
                         chatId,
                         scenario: metadata.scenario,
                         language: metadata.language,
@@ -573,6 +576,7 @@ export default {
             await persistConversationLog(env, {
                 id: requestId,
                 userId,
+                synthetic,
                 chatId,
                 scenario: metadata.scenario,
                 language: metadata.language,
@@ -1092,6 +1096,7 @@ function base64UrlDecode(value) {
 }
 
 async function persistConversationLog(env, entry) {
+    if (entry.synthetic) return;
     if (!env.CHAT_LOGS_DB) {
         if (env.REQUIRE_CHAT_LOGS === "true") {
             throw new Error("CHAT_LOGS_DB binding is required when REQUIRE_CHAT_LOGS=true");
@@ -1388,6 +1393,7 @@ const CHARACTER_SHARE_CARDS = {
 /// and the caller already returns 204 without waiting.
 async function recordSiteVisit(raw, request, env) {
     if (!env.CHAT_LOGS_DB) return;
+    if (isSyntheticTest(request)) return;
 
     // Cap the body so a malformed or hostile beacon cannot cost us anything.
     if (!raw || raw.length > 2000) return;
@@ -1504,6 +1510,21 @@ function escapeHtmlAttribute(value) {
         .replace(/"/g, "&quot;");
 }
 
+/// True for manual verification calls (deploy checks, signature testing,
+/// diagnostics) against a live deployment — never for real traffic, since
+/// nothing in the app sets this header.
+///
+/// Before this existed, verification traffic invented one-off user/visit ids
+/// (diag_*, qa-*, deploycheck, sigtest, ...) with no way to tell them apart
+/// from real users afterwards, which is most of why 30 days of
+/// conversation_logs held only ~6-8 distinct real users. Send this header
+/// instead of a new made-up id; the three logging call sites below skip the
+/// DB write entirely rather than writing a row that then needs filtering out
+/// of every report.
+function isSyntheticTest(request) {
+    return request.headers.get("x-synthetic-test") === "1";
+}
+
 /// Classifies where a visitor came from. Instagram and Facebook render links
 /// in their own in-app browser, which identifies itself in the user-agent —
 /// that is the only signal for a link posted without utm parameters, since
@@ -1513,7 +1534,11 @@ function detectTrafficSource(request, url) {
     if (utm) return utm.toLowerCase().slice(0, 60);
 
     const ua = request.headers.get("User-Agent") || "";
-    if (/Instagram/i.test(ua)) return "instagram";
+    // "ig", not "instagram": the profile-bio link is tagged
+    // ?utm_source=ig, and a link opened in Instagram's own in-app browser
+    // should land in that same bucket rather than splitting Instagram
+    // traffic into two rows depending on which browser happened to open it.
+    if (/Instagram/i.test(ua)) return "ig";
     if (/FBAN|FBAV/i.test(ua)) return "facebook";
 
     const referer = request.headers.get("Referer") || "";
@@ -1570,17 +1595,19 @@ async function serveCharacterLanding(request, env, url, ctx) {
 
     // Record the arrival even for unknown ids — a typo'd campaign link is
     // worth seeing in the numbers. Never let logging break the page.
-    ctx.waitUntil(
-        recordReferralVisit(env, {
-            characterId,
-            source: detectTrafficSource(request, url),
-            utmMedium: url.searchParams.get("utm_medium"),
-            utmCampaign: url.searchParams.get("utm_campaign"),
-            referer: request.headers.get("Referer"),
-            userAgent: request.headers.get("User-Agent"),
-            known: Boolean(card),
-        }).catch(() => {})
-    );
+    if (!isSyntheticTest(request)) {
+        ctx.waitUntil(
+            recordReferralVisit(env, {
+                characterId,
+                source: detectTrafficSource(request, url),
+                utmMedium: url.searchParams.get("utm_medium"),
+                utmCampaign: url.searchParams.get("utm_campaign"),
+                referer: request.headers.get("Referer"),
+                userAgent: request.headers.get("User-Agent"),
+                known: Boolean(card),
+            }).catch(() => {})
+        );
+    }
 
     // Hand unknown characters to the normal app shell; the Flutter route
     // sends them to the dashboard.
