@@ -248,19 +248,25 @@
   <script>
   (function () {
     var ARRIVED_AT = Date.now();
-    // One id per page load, kept so the leave event can be paired with its
-    // arrival. sessionStorage rather than a fresh id each time, so a beacon
-    // retried by the browser does not look like a second visitor.
-    var visitId;
-    try {
-      visitId = sessionStorage.getItem('mythos_visit_id');
-      if (!visitId) {
-        visitId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
-        sessionStorage.setItem('mythos_visit_id', visitId);
-      }
-    } catch (e) {
-      visitId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-    }
+    // One id per page load. This script only runs on a real page load, never
+    // on an in-app route change, so a plain variable gives exactly the
+    // semantics migration 0004 describes: "a reload starts a new visit but an
+    // in-page route change does not."
+    //
+    // It used to be read from sessionStorage first, which broke that — session
+    // storage survives a reload, so a reload reused the id and wrote a SECOND
+    // arrive and leave under it. The admin joins then multiplied those rows
+    // together (2 arrives x 2 leaves = 4), inflating visit counts and skewing
+    // every dwell and load average. sessionStorage was there so a browser-
+    // retried beacon would not look like a second visitor, but it never
+    // actually did that: each row is inserted with its own fresh UUID, so
+    // nothing deduplicated on visit id anyway.
+    var visitId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+
+    // Read by the Flutter app so /api/chat requests can be tagged with the
+    // visit they belong to (x-visit-id) — that join is what makes "how many
+    // messages did this session send before quitting" answerable.
+    window.mythosVisitId = visitId;
 
     function send(event, extra) {
       var body = JSON.stringify(Object.assign({
@@ -286,15 +292,18 @@
     // Exposed so the splash script can report app_ready at the moment Flutter
     // paints its first frame. Takes the elapsed time from arrival, which is
     // the real "time to usable app" for this visitor on their real connection.
-    window.mythosVisitBeacon = function (event, detail, appUserId) {
+    window.mythosVisitBeacon = function (event, detail, appUserId, failureReason) {
       send(event, {
         durationMs: Date.now() - ARRIVED_AT,
         detail: detail || undefined,
-        appUserId: appUserId || undefined
+        appUserId: appUserId || undefined,
+        failureReason: failureReason || undefined
       });
     };
 
-    send('arrive');
+    // Viewport width is only meaningful at arrival: it is what the visitor
+    // actually saw, before any rotation or window resize.
+    send('arrive', { viewportW: window.innerWidth || undefined });
 
     var left = false;
     function leave() {

@@ -854,6 +854,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           .read(storageServiceProvider)
           .incrementReplyCount(_characterKey);
       if (mounted) setState(() => _replyCount = next);
+    } else {
+      // Funnel: the user sent something and got nothing usable back. A
+      // 'network' reason means the request never reached the worker, so this
+      // event is the ONLY record that the send happened at all — without it a
+      // failed send looks identical to never having typed.
+      final reason = _aiService!.lastFailureReason;
+      SharedPreferences.getInstance().then((prefs) {
+        logFunnelEvent(
+          'send_failed',
+          detail: widget.characterId,
+          appUserId: prefs.getString('user_id'),
+          failureReason: reason,
+        );
+      });
     }
 
     if (!mounted) return;

@@ -384,6 +384,9 @@ export default {
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
             const synthetic = isSyntheticTest(request);
+            // Which browser visit this message belongs to. Absent on mobile
+            // (no page load) and on any client predating the header.
+            const visitId = (request.headers.get("x-visit-id") || "").slice(0, 64) || null;
 
             // Signature checking is on unless REQUIRE_SIGNATURE is explicitly
             // "false". It exists to stop strangers spending our OpenAI credits
@@ -460,6 +463,7 @@ export default {
                     id: requestId,
                     userId,
                     synthetic,
+                    visitId,
                     chatId,
                     scenario: metadata.scenario,
                     language: metadata.language,
@@ -490,6 +494,7 @@ export default {
                         id: requestId,
                         userId,
                         synthetic,
+                        visitId,
                         chatId,
                         scenario: metadata.scenario,
                         language: metadata.language,
@@ -525,6 +530,11 @@ export default {
             // sees vendor names or technical detail; responseData.error
             // stays a generic, user-faceable message.
             let technicalError = null;
+            // Wall-clock cost of the reply itself, which is what the user waits
+            // through. Measured around the engine call only — auth, validation
+            // and rate limiting are already done by here, so this is the number
+            // to correlate against someone leaving mid-conversation.
+            const replyStartedAt = Date.now();
 
             if (inworldCharacter) {
                 // Inworld generates the in-character reply, then OpenAI does a
@@ -570,6 +580,8 @@ export default {
                 responseOk = openAiResponse.ok;
             }
 
+            const replyLatencyMs = Date.now() - replyStartedAt;
+
             // Pass back the response
             const assistantMessage = extractAssistantMessage(responseData);
 
@@ -577,6 +589,8 @@ export default {
                 id: requestId,
                 userId,
                 synthetic,
+                visitId,
+                latencyMs: replyLatencyMs,
                 chatId,
                 scenario: metadata.scenario,
                 language: metadata.language,
@@ -840,7 +854,7 @@ function corsHeaders(request) {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id",
+        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id",
         "Vary": "Origin",
     };
 }
@@ -1134,8 +1148,10 @@ async function persistConversationLog(env, entry) {
             prompt_tokens,
             completion_tokens,
             total_tokens,
-            client_timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            client_timestamp,
+            visit_id,
+            latency_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
         entry.id,
         new Date().toISOString(),
@@ -1154,7 +1170,9 @@ async function persistConversationLog(env, entry) {
         numberOrNull(usage.prompt_tokens),
         numberOrNull(usage.completion_tokens),
         numberOrNull(usage.total_tokens),
-        entry.clientTimestamp
+        entry.clientTimestamp,
+        stringOrNull(entry.visitId),
+        numberOrNull(entry.latencyMs)
     ).run();
 }
 
@@ -1411,10 +1429,13 @@ async function recordSiteVisit(raw, request, env) {
     //   character_tap opened a character (detail = character id)
     //   first_message sent their first message (detail = character id)
     //   login_gate    hit the free-reply limit (detail = character id)
+    //   send_failed   sent a message and got nothing usable back
+    //                 (failure_reason says why; "network" means the request
+    //                 never reached us, so no conversation_logs row exists)
     //   leave         page hidden/closed (duration = dwell)
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap",
-        "first_message", "login_gate", "leave",
+        "first_message", "login_gate", "send_failed", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -1447,14 +1468,20 @@ async function recordSiteVisit(raw, request, env) {
     }
 
     const duration = Number(payload.durationMs);
+    // Only meaningful on send_failed; null everywhere else. Kept out of
+    // `detail` on purpose — that column means "which character" for every
+    // other event.
+    const failureReason = String(payload.failureReason || "").slice(0, 60) || null;
+    const viewportW = Number(payload.viewportW);
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
             INSERT INTO site_visits (
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
-                country, colo, duration_ms, detail, app_user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                country, colo, duration_ms, detail, app_user_id,
+                viewport_w, failure_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1470,7 +1497,9 @@ async function recordSiteVisit(raw, request, env) {
             request.cf?.colo || null,
             Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null,
             detail,
-            appUserId
+            appUserId,
+            Number.isFinite(viewportW) && viewportW > 0 ? Math.round(viewportW) : null,
+            failureReason
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
