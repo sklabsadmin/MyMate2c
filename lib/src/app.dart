@@ -238,9 +238,18 @@ class _AIAppState extends ConsumerState<AIApp> {
                 GoRoute(
                   path: '/c/:characterId',
                   builder: (context, state) {
-                    final id = state.pathParameters['characterId']
+                    // Leading id characters only. A share link pasted onto the
+                    // line above another URL arrives as /c/hector%0ahttps:,
+                    // which read literally matches no character and lands the
+                    // visitor on the dashboard instead of the chat they were
+                    // sent to. The worker recovers the same id for the Open
+                    // Graph tags — extractCharacterId() in worker.js.
+                    final raw = state.pathParameters['characterId']
                         ?.trim()
                         .toLowerCase();
+                    final id = raw == null
+                        ? null
+                        : RegExp(r'^[a-z0-9_-]+').stringMatch(raw);
                     final character = characterById(id);
                     // Unknown id (typo'd or retired character): send them to
                     // the dashboard rather than an error screen.

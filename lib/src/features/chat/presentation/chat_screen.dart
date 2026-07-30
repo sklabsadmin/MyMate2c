@@ -117,6 +117,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           .read(activeChatProvider.notifier)
           .setActive(widget.scenario ?? 'Unknown', _currentVibe);
 
+      // Funnel: a character is open. Fired here rather than from the dashboard
+      // card tap, because a /c/<id> campaign link opens this screen directly
+      // (app.dart's '/c/:characterId' route) and never touches a card — so
+      // reporting it there made "opened a character" read 0% for exactly the
+      // traffic the campaign links bring in, no matter how well they converted.
+      //
+      // initState runs once per screen, so this needs no one-shot guard of its
+      // own, and the funnel counts distinct visits anyway.
+      SharedPreferences.getInstance().then((prefs) {
+        logFunnelEvent(
+          'character_tap',
+          detail: widget.characterId,
+          appUserId: prefs.getString('user_id'),
+        );
+      });
+
       // An opener tapped on the profile card before entering the chat. Sent
       // through _handleSend so it behaves exactly like a typed message —
       // same reply gate, history and logging.

@@ -16,6 +16,17 @@ export default {
         // handler so the arrival is recorded and the character's Open Graph
         // tags are injected before any crawler sees the page.
         if (request.method === "GET" && url.pathname.startsWith("/c/")) {
+            // index.html's icon/manifest hrefs are relative, resolved against
+            // <base href="/">. Social crawlers routinely ignore <base> and
+            // resolve them against the path instead, so previewing /c/zeus
+            // fires off /c/favicon.png and /c/icons/Icon-192.png. Those used to
+            // land in the referral log as characters named "favicon.png" and
+            // "icons" — 5 of 75 arrivals in the last 7 days. Send them to the
+            // real asset instead of logging a phantom campaign visit.
+            const asset = assetPathUnderCampaignLink(url.pathname);
+            if (asset) {
+                return Response.redirect(new URL(asset, url.origin).toString(), 301);
+            }
             return serveCharacterLanding(request, env, url, ctx);
         }
 
@@ -1514,6 +1525,39 @@ function detectTrafficSource(request, url) {
     return "direct";
 }
 
+/// Static assets requested underneath a /c/ link, which are never campaign
+/// arrivals. Returns the correct root-relative path, or null if this really is
+/// a character link.
+///
+/// Matched on the extension rather than "has a second path segment", because a
+/// mangled share link (see extractCharacterId) can carry a whole second URL —
+/// slashes and all — after the character id.
+const CAMPAIGN_ASSET_EXTENSION = /\.(?:png|jpe?g|ico|svg|webp|json|js|css|map|txt|woff2?)$/i;
+
+function assetPathUnderCampaignLink(pathname) {
+    if (!CAMPAIGN_ASSET_EXTENSION.test(pathname)) return null;
+    return pathname.slice(2) || "/";
+}
+
+/// Pulls the character id out of a /c/ path, ignoring anything glued onto it.
+///
+/// A share link pasted directly above another URL arrives with the newline
+/// percent-encoded into the path — /c/hector%0ahttps: — which used to be read
+/// literally, miss every character, and dump the visitor on the dashboard with
+/// no idea who they had come to see. Taking the leading id characters recovers
+/// the intended character instead of losing the arrival.
+function extractCharacterId(pathname) {
+    const firstSegment = pathname.slice(3).split("/")[0];
+    let decoded = firstSegment;
+    try {
+        decoded = decodeURIComponent(firstSegment);
+    } catch (_) {
+        // Malformed percent-encoding: fall back to the raw segment, which the
+        // charset match below will clean up anyway.
+    }
+    return (decoded.match(/^[a-z0-9_-]+/i) || [""])[0].toLowerCase();
+}
+
 /// Serves a /c/<id> campaign landing: records the arrival, then returns the
 /// app shell with character-specific Open Graph tags injected.
 ///
@@ -1521,7 +1565,7 @@ function detectTrafficSource(request, url) {
 /// Flutter app — it reads the raw HTML. Without this every character link
 /// would preview identically.
 async function serveCharacterLanding(request, env, url, ctx) {
-    const characterId = url.pathname.split("/")[2]?.trim().toLowerCase() || "";
+    const characterId = extractCharacterId(url.pathname);
     const card = CHARACTER_SHARE_CARDS[characterId];
 
     // Record the arrival even for unknown ids — a typo'd campaign link is
