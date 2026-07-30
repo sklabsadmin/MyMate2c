@@ -162,6 +162,14 @@ const List<Map<String, dynamic>> kCharacters = [
       'color': const Color(0xFF6A4C93),
     },
     {
+      'id': 'calypso',
+      'name': 'Calypso',
+      'vibe': 'Nymph of Ogygia',
+      'desc': 'Kept Odysseus seven years, offered him immortality, and let him go anyway.',
+      'image': 'assets/images/avatar_calypso_real.jpg',
+      'color': const Color(0xFF2E7D8F),
+    },
+    {
       'id': 'cupid',
       'name': 'Cupid',
       'vibe': 'God of Desire',

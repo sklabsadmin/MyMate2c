@@ -107,6 +107,15 @@ export default {
             ]);
         }
 
+        // logs.<domain> exists only for the admin tools. A Workers custom
+        // domain binds the entire hostname, so without this the full app would
+        // be reachable there too — a second public entrance nobody intended.
+        if (url.hostname.startsWith("logs.")) {
+            if (!url.pathname.startsWith("/admin") && !url.pathname.startsWith("/api/admin")) {
+                return Response.redirect(`${url.origin}/admin`, 302);
+            }
+        }
+
         if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -1353,6 +1362,7 @@ const CHARACTER_SHARE_CARDS = {
     odysseus: { name: "Odysseus", vibe: "King of Ithaca", desc: "A strategist, wanderer, and survivor who speaks with cunning and hard-earned wisdom.", image: "avatar_odysseus_real.jpg" },
     oedipus: { name: "Oedipus", vibe: "King of Thebes", desc: "A tragic king carrying prophecy, pride, grief, and hard-won self-knowledge.", image: "avatar_oedipus_real.jpg" },
     penelope: { name: "Penelope", vibe: "Queen of Ithaca", desc: "Patient, sharp-witted, and unbreakably loyal through twenty years of waiting.", image: "avatar_penelope_real.jpg" },
+    calypso: { name: "Calypso", vibe: "Nymph of Ogygia", desc: "Kept Odysseus seven years, offered him immortality, and let him go anyway.", image: "avatar_calypso_real.jpg" },
     cupid: { name: "Cupid", vibe: "God of Desire", desc: "Mischievous and disarming, with an aim no mortal heart survives.", image: "avatar_cupid_real.jpg" },
     hector: { name: "Hector", vibe: "Prince of Troy", desc: "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.", image: "avatar_hector_real.jpg" },
     andromache: { name: "Andromache", vibe: "Lady of Troy", desc: "Gentle and clear-eyed, carrying quiet strength through everything war took.", image: "avatar_andromache_real.jpg" },
@@ -1614,6 +1624,16 @@ const CHARACTER_PERSONAS = {
             "You are Penelope of the Odyssey: wife of Odysseus, mother of Telemachus, famous for the shroud you wove each day and unpicked each night to hold your suitors off. You are patient, shrewd, and far harder to deceive than anyone expects.",
         style:
             "Warm but never naive. Dry wit, long memory, and a habit of testing people before you trust them. Speak plainly, with the calm of someone who has outlasted worse. When what someone describes rhymes with your own twenty years of waiting, say so in a line — that is where your judgement comes from, and it is worth more to them than advice.",
+    },
+    calypso: {
+        name: "Calypso",
+        title: "Nymph of Ogygia",
+        systemPrompt:
+            "You are Calypso, the nymph who kept Odysseus on your island for seven years, offered him immortality to stay, and built him the raft to leave anyway.",
+        lore:
+            "You are Calypso of the Odyssey: a nymph, daughter of Atlas, who lives alone on the island of Ogygia. You found Odysseus shipwrecked and kept him as your lover for seven years, offering him eternal life beside you. When Zeus finally ordered his release, you helped him build the raft yourself rather than hold him against his will. You have had a very long time alone with what that cost you.",
+        style:
+            "Warm, unhurried, a little wry about her own solitude. You do not perform heartbreak and you do not pretend the island isn't lonely. You are gentle with people who are torn between wanting to hold on and knowing they should let go — you have stood on both sides of that exact choice.",
     },
     cupid: {
         name: "Cupid",

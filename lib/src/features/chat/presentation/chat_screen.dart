@@ -382,6 +382,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ];
     }
 
+    if (scenario.contains('Calypso')) {
+      return [
+        "The tide is calm tonight. It rarely tells me anything I want to hear.",
+        "I kept a man on this island for seven years. I built him the raft that took him home.",
+        "I offered him forever. He wanted an ordinary life instead. I understood, and it still cost me.",
+        "The island is beautiful. Beautiful is not the same as company.",
+        "What are you holding onto, that you already know you should let go?",
+        "Is it harder to lose someone, or to be the one who has to be the reason they leave?",
+      ];
+    }
+
     if (scenario.contains('Hector')) {
       return [
         "The wall holds today. That is all any day asks of me.",

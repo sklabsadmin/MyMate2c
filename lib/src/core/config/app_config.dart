@@ -50,6 +50,7 @@ class AppConfig {
     'andromache',
     'zeus',
     'hector',
+    'calypso',
     'cupid',
     'oedipus',
   ];

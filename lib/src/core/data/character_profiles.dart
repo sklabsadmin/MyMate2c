@@ -138,6 +138,24 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
     verse: 'I aim for the chest.\nIt was never a mistake.',
   ),
 
+  'calypso': CharacterProfile(
+    age: 'ageless',
+    tags: ['Solitude', 'Longing', 'Letting go'],
+    about: 'I kept a man on my island for seven years.\n'
+        'I offered him a home, my company, even immortality — and every '
+        'morning he sat on the shore and looked at the water instead.\n'
+        'In the end I built him a raft myself and let him go, because '
+        'wanting to keep someone is not the same as it being right.\n'
+        'I have had a very long time alone with that.\n'
+        'Tell me what you are holding on to.',
+    asks: [
+      'Why did you let him go, if you could have kept him?',
+      'Does being alone get easier, or do you just get used to it?',
+      "What's it like wanting someone who wants somewhere else?",
+    ],
+    verse: 'I could have kept him.\n'
+        'I gave him the raft instead.',
+  ),
   'hector': CharacterProfile(
     age: '31',
     tags: ['Duty', 'Courage', 'Family', 'Troy'],

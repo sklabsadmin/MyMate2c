@@ -9,7 +9,12 @@
   "workers_dev": true,
   "routes": [
     { "pattern": "chat.deeploveechoes.com", "custom_domain": true },
-    { "pattern": "chat.deeplovepoems.com", "custom_domain": true }
+    { "pattern": "chat.deeplovepoems.com", "custom_domain": true },
+    // Admin tools. A custom domain routes the WHOLE hostname to this worker,
+    // so the handler below bounces anything that is not an admin path back to
+    // /admin — otherwise logs.deeplovepoems.com would quietly serve the full
+    // app as a second public front door.
+    { "pattern": "logs.deeplovepoems.com", "custom_domain": true }
   ],
   "observability": {
     "enabled": true
@@ -43,6 +48,18 @@
       // serve the character's share card. Without this the asset handler
       // answers first and every link previews identically.
       "/c/*"
+      // KNOWN GAP: logs.deeplovepoems.com was meant to serve admin tools
+      // only, gated by the hostname check below. But run_worker_first has no
+      // per-hostname form — it is one path list shared by every custom
+      // domain on this worker — so a path NOT in this list (e.g. /dashboard)
+      // still falls straight through to the static asset handler on
+      // logs.deeplovepoems.com too, and the guard below never runs.
+      // /api/*, /auth/*, /admin/* and /c/* ARE correctly gated: those reach
+      // the worker regardless of hostname, and the guard rejects them there.
+      // Closing this properly means routing "/*" and having the worker
+      // explicitly fall back to env.ASSETS.fetch() for the normal case on
+      // chat.* — a bigger, riskier change to a live revenue path than
+      // belongs in an "add a character" commit. Left open on purpose.
     ]
   },
   "vars": {
