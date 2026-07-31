@@ -23,10 +23,20 @@ What it adds, none of which the package supports:
 import io, re, sys
 
 INDEX = "web/index.html"
-BACKDROP = "#FCECE5"      # sampled from the logo's own field colour
+# Sampled from mythoslive_logoDark.png's own field colour, rgb(26,3,33) — the
+# art is RGB with no alpha, so matching this is what hides its square edges.
+BACKDROP = "#1A0520"
 APP_BG = "#1A0520"        # AppTheme.backgroundColor — what /c/ links load into
 TAGLINE = "Connecting you with the ancient past"
 READY_CAP_MS = 15000   # never hold anyone behind the splash longer than this
+
+# Regenerate these from brand/mythoslive_logoDark.png with tool/make_splash_logo.js
+PICTURE_SOURCES = (
+    '      <source type="image/webp" srcset="'
+    'splash/img/logodark-1x.webp 1x, splash/img/logodark-2x.webp 2x, '
+    'splash/img/logodark-3x.webp 3x, splash/img/logodark-4x.webp 4x">\n'
+    '      <img class="center" aria-hidden="true" src="splash/img/logodark-1x.png" alt="">\n'
+)
 
 CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create —
        re-apply with: python3 tool/patch_splash.py -->
@@ -35,22 +45,24 @@ CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create
     /* z-index must sit on the img: #splash is a <picture>, which is not
        positioned, so a z-index there does nothing. .center makes the img
        absolute. */
-    #splash img {{ animation: mythos-rise 900ms ease-out both; z-index: 9999; }}
-    @keyframes mythos-rise {{
-      from {{ opacity: 0; transform: translate(-50%, -46%) scale(.96); }}
-      to   {{ opacity: 1; transform: translate(-50%, -50%) scale(1); }}
-    }}
+    /* No entrance animation. The logo was fading and rising over 900ms, which
+       on a fast connection meant it was still animating in as the app became
+       ready — the first thing a visitor saw was motion that then vanished. It
+       is now simply present from the first frame. Capped so it reads as a logo
+       rather than filling a large desktop window. */
+    #splash img {{ z-index: 9999; width: min(62vw, 300px); height: auto; }}
     #splash-tagline {{
       position: fixed; left: 50%; transform: translateX(-50%);
       bottom: 11vh; margin: 0; width: 92%; text-align: center; z-index: 9999;
       font-family: Georgia, "Times New Roman", serif;
       font-size: clamp(15px, 4.2vw, 19px); letter-spacing: .02em;
-      color: #6B4B7A; opacity: 0; animation: mythos-fade 900ms ease-out 600ms both;
+      /* Light enough to read on the dark backdrop; the old #6B4B7A was picked
+         against cream and is near-invisible on {BACKDROP}. */
+      color: #C9B3D6;
     }}
     #splash-tagline .dots span {{ opacity: 0; animation: mythos-dot 1.4s infinite; }}
     #splash-tagline .dots span:nth-child(2) {{ animation-delay: .2s; }}
     #splash-tagline .dots span:nth-child(3) {{ animation-delay: .4s; }}
-    @keyframes mythos-fade {{ to {{ opacity: 1; }} }}
     @keyframes mythos-dot {{ 0%,60%,100% {{ opacity: 0; }} 30% {{ opacity: 1; }} }}
     /* pointer-events:none so the app is usable the instant the fade starts.
        These sit at z-index 9999 over Flutter, so without it the first 420ms
@@ -60,8 +72,9 @@ CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create
     body.mythos-leaving #splash-tagline {{
       transition: opacity 420ms ease; opacity: 0; pointer-events: none;
     }}
+    /* Only the loading dots animate now, so they are all this needs to stop. */
     @media (prefers-reduced-motion: reduce) {{
-      #splash img, #splash-tagline, #splash-tagline .dots span {{ animation: none; opacity: 1; }}
+      #splash-tagline .dots span {{ animation: none; opacity: 1; }}
     }}
     /* Direct character links: no splash, and the load gap is painted in the
        app's own background (AppTheme.backgroundColor) rather than the splash's
@@ -249,6 +262,16 @@ if n != 1:
 s = re.sub(r'\s*<div id="mythos-backdrop"></div>', '', s)
 s = re.sub(r'\s*<p id="splash-tagline">.*?</p>', '', s, flags=re.S)
 s = s.replace('  <picture id="splash">', '  <div id="mythos-backdrop"></div>\n  <picture id="splash">', 1)
+# flutter_native_splash regenerates <picture> pointing at its own light-/dark-
+# PNG exports. Swap in the WebP logo variants instead: the same art at roughly
+# a tenth of the bytes (79KB vs 886KB at 3x, on a splash whose entire job is to
+# appear fast), and a single dark logo rather than a light/dark pair, since the
+# backdrop is now dark regardless of the visitor's colour-scheme preference.
+s, n = re.subn(r'(  <picture id="splash">).*?(  </picture>)',
+               lambda m: m.group(1) + "\n" + PICTURE_SOURCES + m.group(2),
+               s, count=1, flags=re.S)
+if n != 1:
+    sys.exit("could not find the generated <picture id=\"splash\"> block")
 s = s.replace('  </picture>',
     '  </picture>\n  <p id="splash-tagline">' + TAGLINE +
     '<span class="dots"><span>.</span><span>.</span><span>.</span></span></p>', 1)
