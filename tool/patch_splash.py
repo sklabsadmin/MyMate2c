@@ -17,16 +17,15 @@ What it adds, none of which the package supports:
     removeSplashFromWeb() never fires and the splash was simply painted over
     the instant Flutter rendered — no dwell was possible.
   * a tagline with animated dots
-  * a dwell measured from when the logo actually paints (the image is
-    several hundred KB; timing from script-parse spent most of it blank)
-  * 3s on a first visit, 1.5s after, tracked in localStorage
+  * dismissal driven by Flutter's first paint, with no minimum dwell — the
+    splash lifts the instant the app is usable
 """
 import io, re, sys
 
 INDEX = "web/index.html"
 BACKDROP = "#FCECE5"      # sampled from the logo's own field colour
+APP_BG = "#1A0520"        # AppTheme.backgroundColor — what /c/ links load into
 TAGLINE = "Connecting you with the ancient past"
-FIRST_MS, RETURN_MS = 3000, 1500
 READY_CAP_MS = 15000   # never hold anyone behind the splash longer than this
 
 CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create —
@@ -53,32 +52,56 @@ CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create
     #splash-tagline .dots span:nth-child(3) {{ animation-delay: .4s; }}
     @keyframes mythos-fade {{ to {{ opacity: 1; }} }}
     @keyframes mythos-dot {{ 0%,60%,100% {{ opacity: 0; }} 30% {{ opacity: 1; }} }}
+    /* pointer-events:none so the app is usable the instant the fade starts.
+       These sit at z-index 9999 over Flutter, so without it the first 420ms
+       of every session silently swallowed taps on a screen that looks ready. */
     body.mythos-leaving #mythos-backdrop,
     body.mythos-leaving #splash,
-    body.mythos-leaving #splash-tagline {{ transition: opacity 420ms ease; opacity: 0; }}
+    body.mythos-leaving #splash-tagline {{
+      transition: opacity 420ms ease; opacity: 0; pointer-events: none;
+    }}
     @media (prefers-reduced-motion: reduce) {{
       #splash img, #splash-tagline, #splash-tagline .dots span {{ animation: none; opacity: 1; }}
     }}
+    /* Direct character links: no splash, and the load gap is painted in the
+       app's own background (AppTheme.backgroundColor) rather than the splash's
+       peach. Without this the visitor gets a light flash then a dark chat,
+       which reads as a glitch on exactly the journey we most want to feel
+       seamless. The class is set in <head>, so this applies before first paint. */
+    html.mythos-direct #mythos-backdrop,
+    html.mythos-direct #splash,
+    html.mythos-direct #splash-tagline {{ display: none; }}
+    html.mythos-direct, html.mythos-direct body {{ background: {APP_BG}; }}
   </style>
 '''
 
 SCRIPT = f'''  <script id="splash-screen-script">
+    // Direct character links get no splash at all.
+    //
+    // Someone tapping /c/odysseus came for Odysseus, not for a logo — a brand
+    // moment they did not ask for is pure friction on the one journey where
+    // intent is already known. Runs here in <head>, before the body paints, so
+    // the splash never appears rather than appearing and being torn down.
+    //
+    // Normal arrivals at / still get it: there the splash is doing real work,
+    // covering a ~3MB bundle load that would otherwise be a blank page.
+    if (location.pathname.indexOf("/c/") === 0) {{
+      document.documentElement.className += " mythos-direct";
+    }}
+
     // The app never calls FlutterNativeSplash.remove(), so the generated
     // removeSplashFromWeb() never fires. We layer the splash above Flutter
     // and dismiss it ourselves.
-    var MYTHOS_FIRST_RUN_MS = {FIRST_MS};
-    var MYTHOS_RETURN_MS = {RETURN_MS};
-
-    function mythosDwellMs() {{
-      try {{
-        var seen = window.localStorage.getItem("mythos_splash_seen");
-        window.localStorage.setItem("mythos_splash_seen", "1");
-        return seen ? MYTHOS_RETURN_MS : MYTHOS_FIRST_RUN_MS;
-      }} catch (e) {{
-        return MYTHOS_RETURN_MS;   // private mode: prefer the short dwell
-      }}
-    }}
-
+    // There is deliberately no minimum dwell. The splash lifts the moment
+    // Flutter paints, and not a millisecond later.
+    //
+    // It used to hold for 3000ms on a first visit (1500ms on a return), on
+    // top of waiting for Flutter. With app_ready averaging ~1.5s, that meant
+    // a first-time visitor sat looking at the logo for a second and a half
+    // AFTER the app was ready to use — and anyone who left before the 3s mark
+    // never saw the app at all, only the logo. Half of all Instagram arrivals
+    // left inside 3s. Someone following a /c/<character> link is here for a
+    // specific character, so any hold is pure cost.
     function mythosDismissSplash() {{
       document.body.classList.add("mythos-leaving");
       setTimeout(function () {{
@@ -121,36 +144,18 @@ SCRIPT = f'''  <script id="splash-screen-script">
     }}
 
     document.addEventListener("DOMContentLoaded", function () {{
-      var img = document.querySelector("#splash img");
-      var dwell = mythosDwellMs();
-
-      // The splash now lifts on the LATER of two things: the dwell, and
-      // Flutter actually being ready. It used to be the dwell alone, so on a
-      // slow connection — the ~3.7MB critical path is ~7s on 4G — the logo
-      // vanished at 3s and left the visitor on a blank page for seconds. That
-      // reads as a dead site, and in the logs it is indistinguishable from
-      // junk ad traffic.
-      var dwellDone = false, ready = false;
-      function maybeDismiss() {{ if (dwellDone && ready) mythosDismissSplash(); }}
-
-      // Measured from when the logo paints, not when this parses.
-      var start = function () {{
-        setTimeout(function () {{ dwellDone = true; maybeDismiss(); }}, dwell);
-      }};
-      if (!img || img.complete) {{ start(); }}
-      else {{
-        img.addEventListener("load", start);
-        img.addEventListener("error", start);
-      }}
-
+      // Readiness is the only gate. The splash still covers the whole load —
+      // it is dismissed by Flutter painting, not by a timer — so a slow
+      // connection never gets dropped onto a blank page, which was the
+      // original reason a dwell was introduced. It just no longer holds
+      // anyone back once the app is actually there.
       mythosOnFlutterReady(function () {{
-        ready = true;
         // How long the visitor actually waited for a usable app — the number
         // that separates "left during load" from "saw the app and left".
         try {{
           if (window.mythosVisitBeacon) window.mythosVisitBeacon("app_ready");
         }} catch (e) {{}}
-        maybeDismiss();
+        mythosDismissSplash();
       }});
     }});
 
@@ -254,4 +259,4 @@ if '</head>' not in s:
 s = s.replace('</head>', BEACON + '</head>', 1)
 
 io.open(INDEX, "w", encoding="utf-8").write(s)
-print(f"patched {INDEX}: backdrop {BACKDROP}, dwell {FIRST_MS}/{RETURN_MS}ms, visit beacon restored")
+print(f"patched {INDEX}: backdrop {BACKDROP}, no dwell (lifts on first paint), visit beacon restored")
