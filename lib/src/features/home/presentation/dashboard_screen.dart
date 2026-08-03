@@ -218,21 +218,31 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     // Header
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Welcome, ${_timeOfDayGreeting()}',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: Colors.white70,
-                              ),
+                        // Expanded, because the greeting is the only thing in
+                        // this row that can afford to give up width. Laid out
+                        // unconstrained it took its full intrinsic size and
+                        // pushed the tail of the row off the right edge, taking
+                        // the settings gear — the only route to sign-in,
+                        // support and legal — with it. That happened at 360pt
+                        // and narrower while signed out, and from 375pt once a
+                        // linked Google avatar added its 46px, i.e. on a normal
+                        // iPhone. Ellipsising the greeting is the graceful
+                        // degradation; losing the gear is not.
+                        Expanded(
+                          child: Text(
+                            'Welcome, ${_timeOfDayGreeting()}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: Colors.white70,
                             ),
-                          ],
+                          ),
                         ),
+                        const SizedBox(width: 12),
                         // Relationship Level Indicator AND Settings
                         Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.end,
