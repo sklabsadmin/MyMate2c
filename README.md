@@ -43,6 +43,19 @@ Follow these steps to get the app running on your local machine.
 - Set up an IDE (VS Code, Android Studio, or IntelliJ).
 - Install the [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) if you plan to deploy the backend.
 
+### 1b. Claude Code on the web (cloud VM)
+
+The remote container ships Node but no Flutter, so a bare session can't run
+the analyzer, the tests, or a web build. `.claude/hooks/session-start.sh`
+handles that automatically on session start: it installs a pinned Flutter SDK
+(3.44.8 / Dart 3.12.2) to `/opt/flutter`, precaches the web artifacts, and runs
+`flutter pub get` plus `npm ci`. Nothing to do by hand — but if you bump the
+Flutter version, update both `FLUTTER_VERSION` and `FLUTTER_SHA256` in that
+script (the checksum comes from Flutter's `releases_linux.json`).
+
+The hook is a no-op outside the remote environment, so local machines keep
+using their own Flutter install.
+
 ### 2. Install Dependencies
 Run the following command in the root of the Flutter project to install all Dart dependencies:
 ```bash
