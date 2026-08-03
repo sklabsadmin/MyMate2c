@@ -86,6 +86,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// One-shot guard for the input_typed funnel event.
   bool _loggedTyping = false;
 
+  /// Abandons the welcome sequence when the visitor speaks first.
+  ///
+  /// The sequence is a chain of awaited delays, so it is still pending while
+  /// the starter prompts are on screen inviting a tap. Without this, a tap a
+  /// second into the chat posts the visitor's message and then the character's
+  /// scripted greeting lands *after* it, and the sequence's own
+  /// `_isTyping = false` clears the indicator while the real reply is still
+  /// generating. Checked after every await in [_triggerWelcomeSequence].
+  bool _welcomeAbandoned = false;
+
+  /// Ceilings on the welcome sequence's simulated typing, in milliseconds.
+  static const int _openerTypingCapMs = 2200;
+  static const int _followUpTypingCapMs = 1200;
+
   static const List<String> _idlePrompts = [
     "So — what's on your mind?",
     "Still there?",
@@ -608,6 +622,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Get Personalized "Playful & Flirty" Sequence
     final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
 
+    // Fresh run (this also covers the reset/regenerate path, which re-enters
+    // here on an existing screen after the visitor has already spoken).
+    _welcomeAbandoned = false;
+
     // The character "sends" their portrait first, so a new conversation opens
     // with a face rather than a wall of text. New chats only — this goes into
     // history like any other message, so returning users keep it at the top
@@ -624,7 +642,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
       await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted) return;
+      if (!mounted || _welcomeAbandoned) return;
     }
 
     // 0. Initial Connection Message
@@ -641,6 +659,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
       await Future.delayed(const Duration(milliseconds: 1000));
+      if (!mounted || _welcomeAbandoned) return;
     }
 
     // One opening line, not the whole sequence — enough to set the tone
@@ -661,18 +680,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (question != null) lines.add(question);
     }
 
-    for (final text in lines) {
-      if (!mounted) return;
+    for (var i = 0; i < lines.length; i++) {
+      final text = lines[i];
+      if (!mounted || _welcomeAbandoned) return;
 
       // 1. Simulate Typing
       setState(() => _isTyping = true);
       _scrollToBottom();
 
-      // Random typing duration based on length
-      final typingDuration = 800 + (text.length * 30);
+      // Typing time scales with length but is capped. Uncapped, an opener plus
+      // the appended question ran 5.8s to the last bubble on a median line and
+      // 8.8s on the longest — the character was still visibly typing while the
+      // starter prompts sat there asking to be tapped. The caps bound it at
+      // 5.0s regardless of length. The question is a continuation of the same
+      // breath rather than a separately "written" line, so it gets the shorter
+      // cap: the pause reads as a beat, not as more composition.
+      final cap = i == 0 ? _openerTypingCapMs : _followUpTypingCapMs;
+      final typingDuration = min(800 + (text.length * 30), cap);
       await Future.delayed(Duration(milliseconds: typingDuration));
 
-      if (!mounted) return;
+      if (!mounted || _welcomeAbandoned) return;
 
       // 2. Stop Typing & Send Message
       setState(() => _isTyping = false);
@@ -904,6 +931,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _showLoginGate();
       return;
     }
+
+    // The visitor got there first, so drop whatever is left of the scripted
+    // welcome: its remaining lines would land after this message, and its
+    // typing indicator would fight with the one for the real reply. Set here
+    // rather than at the top of the method so a send stopped by the login
+    // gate above leaves the sequence running.
+    _welcomeAbandoned = true;
 
     // Funnel: fired once per visit, on the first message actually sent —
     // the step between opening a character and hitting the login gate.
