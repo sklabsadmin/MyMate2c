@@ -56,6 +56,20 @@ script (the checksum comes from Flutter's `releases_linux.json`).
 The hook is a no-op outside the remote environment, so local machines keep
 using their own Flutter install.
 
+### 1c. Running the app locally without any secrets
+
+`npm run preview:local` builds the web app and serves it together with the
+worker on `http://127.0.0.1:8788` via `wrangler dev --local` — no Cloudflare
+account, no `.env`, no production secrets. `npm run preview:shot` does the same
+and writes screenshots to `build/preview-shots/` instead of staying up, which is
+how an agent can confirm a UI change actually renders.
+
+The worker's HMAC check still applies, so the script writes a throwaway
+`APP_SECRET` into `.dev.vars` (gitignored) and builds the client with that same
+value. They only have to match each other. Chat replies and Google Sign-In still
+won't work locally — those need real upstream API keys — and local D1 starts
+empty.
+
 ### 2. Install Dependencies
 Run the following command in the root of the Flutter project to install all Dart dependencies:
 ```bash

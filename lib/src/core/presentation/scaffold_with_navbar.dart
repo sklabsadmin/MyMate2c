@@ -1,8 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../config/app_config.dart';
+import '../services/keyboard_inset.dart';
 
 class ScaffoldWithNavBar extends StatelessWidget {
   const ScaffoldWithNavBar({
@@ -36,11 +39,25 @@ class ScaffoldWithNavBar extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final media = MediaQuery.of(context);
-              return MediaQuery(
-                data: media.copyWith(
-                  size: Size(constraints.maxWidth, media.size.height),
-                ),
-                child: _buildShell(context, theme),
+              // iOS does not shrink the layout viewport for the keyboard, so
+              // Flutter web can report viewInsets.bottom as 0 while the
+              // keyboard is covering the bottom of the page — which leaves the
+              // chat composer underneath it, being typed into unseen. Take
+              // whichever figure is larger: on every platform that reports the
+              // keyboard properly this is the framework's own value and nothing
+              // changes, and it can never be added twice.
+              return ValueListenableBuilder<double>(
+                valueListenable: keyboardInset,
+                builder: (context, measured, _) {
+                  final bottom = math.max(media.viewInsets.bottom, measured);
+                  return MediaQuery(
+                    data: media.copyWith(
+                      size: Size(constraints.maxWidth, media.size.height),
+                      viewInsets: media.viewInsets.copyWith(bottom: bottom),
+                    ),
+                    child: _buildShell(context, theme),
+                  );
+                },
               );
             },
           ),
@@ -49,9 +66,49 @@ class ScaffoldWithNavBar extends StatelessWidget {
     );
   }
 
+  /// Opt-in readout of what the browser is telling us about the viewport,
+  /// shown only for ?vpdebug=1. A phone has no console to inspect, and these
+  /// four numbers are the whole diagnosis for "the keyboard covers the
+  /// composer": if `hidden` stays 0 while the keyboard is up, the browser is
+  /// not reporting it and no amount of Flutter-side layout will help.
+  Widget _viewportDebugBanner(BuildContext context) {
+    final report = keyboardInsetDebug();
+    final insets = MediaQuery.of(context).viewInsets.bottom;
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: 0,
+      child: IgnorePointer(
+        child: ColoredBox(
+          color: Colors.black87,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              '$report · viewInsets ${insets.toStringAsFixed(0)}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.greenAccent,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildShell(BuildContext context, ThemeData theme) {
+    final showDebug = Uri.base.queryParameters['vpdebug'] == '1';
     return Scaffold(
-      body: navigationShell,
+      body: showDebug
+          ? Stack(
+              children: [
+                navigationShell,
+                _viewportDebugBanner(context),
+              ],
+            )
+          : navigationShell,
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
            color: theme.scaffoldBackgroundColor, // Ensure blend
