@@ -71,4 +71,9 @@ android/app/key.properties
 .wrangler
 .dev.vars*
 !.dev.vars.example
-.claude/
+# Claude Code: the SessionStart hook has to be committed for web sessions to
+# pick it up. Personal/local settings stay out.
+.claude/*
+!.claude/hooks/
+!.claude/settings.json
+.claude/settings.local.json
