@@ -665,24 +665,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // here on an existing screen after the visitor has already spoken).
     _welcomeAbandoned = false;
 
-    // The character "sends" their portrait first, so a new conversation opens
-    // with a face rather than a wall of text. New chats only — this goes into
-    // history like any other message, so returning users keep it at the top
-    // without it being back-filled into conversations that predate it.
-    final portrait = widget.characterImage;
-    if (portrait != null && portrait.isNotEmpty) {
-      _addMessage(
-        ChatMessage(
-          id: 'portrait_${DateTime.now().millisecondsSinceEpoch}',
-          text: 'A photo of $_characterDisplayName',
-          isUser: false,
-          timestamp: DateTime.now(),
-          imageAsset: portrait,
-        ),
-      );
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted || _welcomeAbandoned) return;
-    }
+    // The portrait is no longer sent automatically. It used to open every new
+    // chat, but that gave it away before the visitor had any reason to want
+    // it; now it is a payoff for asking (see _wantsPhoto / _sendPortrait),
+    // with one of the starter prompts offering exactly that.
 
     // 0. Initial Connection Message — roleplay only.
     //
@@ -1052,6 +1038,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Increment Score
     ref.read(userScoreProvider.notifier).increment();
 
+    // A photo is a canned reply, not an AI one — the portrait used to be sent
+    // automatically at the start of every chat, which gave it away before the
+    // visitor had any reason to want it. Now it is a payoff for asking. Still
+    // behind the login gate above like any other message, but it costs no AI
+    // call and does not count against the free-reply allowance, since nothing
+    // was actually generated.
+    //
+    // Only short-circuits when this character actually has a portrait to
+    // give — every character in the roster does today, but if one ever does
+    // not, this falls through to the normal AI reply below instead of doing
+    // nothing, and "what do you look like?" still gets answered in character.
+    final portrait = widget.characterImage;
+    if (_wantsPhoto(text) && portrait != null && portrait.isNotEmpty) {
+      await _sendPortrait(portrait);
+      return;
+    }
+
     // Call Gemini API
     if (_aiService == null) return;
     final responseText = await _aiService!.sendMessage(text);
@@ -1117,6 +1120,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Reply finished — hand the caret back so the next message can just be
     // typed, and start counting down to a nudge if they go quiet.
+    _refocusInput();
+    _startIdleTimer();
+  }
+
+  /// Loose on purpose: this only ever gates a free, harmless canned reply
+  /// (the portrait), so a false positive costs nothing and a missed one just
+  /// falls through to the normal AI reply, where "what do you look like?"
+  /// still gets answered in character anyway.
+  static bool _wantsPhoto(String text) {
+    final t = text.toLowerCase();
+    return t.contains('look like') ||
+        t.contains('photo') ||
+        t.contains('picture') ||
+        t.contains(' pic ') ||
+        t.endsWith(' pic') ||
+        t.contains('selfie') ||
+        t.contains('see you');
+  }
+
+  /// The character "sends" their portrait, on request rather than
+  /// automatically. Paced like a real reply — a typing beat, then the image —
+  /// rather than appearing instantly, which would look like it was already
+  /// sitting there waiting.
+  Future<void> _sendPortrait(String portrait) async {
+    await Future.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
+
+    setState(() => _isTyping = false);
+    _addMessage(
+      ChatMessage(
+        id: 'portrait_${DateTime.now().millisecondsSinceEpoch}',
+        text: 'A photo of $_characterDisplayName',
+        isUser: false,
+        timestamp: DateTime.now(),
+        imageAsset: portrait,
+      ),
+    );
     _refocusInput();
     _startIdleTimer();
   }
@@ -1562,13 +1602,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// profile fall back to openers that suit any of them — the old hard-coded
   /// set ("Send me a photo 📸", "Roleplay: First Date 🍷") was dating-app copy
   /// that made no sense addressed to Hector or Andromache.
+  ///
+  /// "What do you look like?" is appended to every list rather than written
+  /// per character: it is the one prompt matched by _wantsPhoto, so tapping it
+  /// always resolves to the portrait rather than an AI reply — see
+  /// _handleSend.
   List<String> get _starterPrompts {
     final asks = profileForCharacter(widget.characterId)?.asks;
-    if (asks != null && asks.isNotEmpty) return asks;
+    if (asks != null && asks.isNotEmpty) {
+      return [...asks, 'What do you look like?'];
+    }
     return const [
       "Where should I start?",
       "Tell me something about yourself.",
       "I could use some advice.",
+      "What do you look like?",
     ];
   }
 
