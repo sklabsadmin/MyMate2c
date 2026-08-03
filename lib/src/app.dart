@@ -89,6 +89,9 @@ class AIApp extends ConsumerStatefulWidget {
 
 class _AIAppState extends ConsumerState<AIApp> {
   late final AppLifecycleListener _listener;
+  // Held so dispose() can stop the simulator's periodic timer without reading
+  // a provider off a container that may already be tearing down.
+  BackgroundChatSimulator? _simulator;
 
   @override
   void initState() {
@@ -98,12 +101,17 @@ class _AIAppState extends ConsumerState<AIApp> {
     );
      // Start Background Simulator
      WidgetsBinding.instance.addPostFrameCallback((_) {
-       ref.read(backgroundChatSimulatorProvider).start();
+       if (!mounted) return;
+       final simulator = ref.read(backgroundChatSimulatorProvider);
+       _simulator = simulator;
+       simulator.start();
      });
   }
 
   @override
   void dispose() {
+    // Its 45s periodic timer outlives the widget tree otherwise.
+    _simulator?.stop();
     _listener.dispose();
     super.dispose();
   }
@@ -225,6 +233,36 @@ class _AIAppState extends ConsumerState<AIApp> {
             StatefulShellBranch(
               navigatorKey: _shellNavigatorChatKey,
               routes: [
+                // Listed first so it is the branch's default location: the
+                // Chat tab navigates here when tapped. A parameterized route
+                // cannot be a branch default — go_router asserts on it.
+                GoRoute(
+                  path: '/chat',
+                  builder: (context, state) => const RecentChatsScreen(),
+                  routes: [
+                    GoRoute(
+                      path: 'session',
+                      builder: (context, state) {
+                        final scenario = state.uri.queryParameters['scenario'];
+                        final characterImage =
+                            state.uri.queryParameters['characterImage'];
+                        final isRoleplay =
+                            state.uri.queryParameters['isRoleplay'] == 'true';
+                        final characterId =
+                            state.uri.queryParameters['characterId'];
+
+                        return ChatScreen(
+                          scenario: scenario,
+                          characterImage: characterImage,
+                          isRoleplay: isRoleplay,
+                          characterId: characterId,
+                          initialMessage:
+                              state.uri.queryParameters['initialMessage'],
+                        );
+                      },
+                    ),
+                  ],
+                ),
                 // Campaign deep link: /c/zeus drops straight into that
                 // character's chat. Lives in the chat branch so the visitor
                 // still gets the nav bar, and the URL stays /c/zeus rather
@@ -267,33 +305,6 @@ class _AIAppState extends ConsumerState<AIApp> {
                           state.uri.queryParameters['initialMessage'],
                     );
                   },
-                ),
-                GoRoute(
-                  path: '/chat',
-                  builder: (context, state) => const RecentChatsScreen(),
-                  routes: [
-                    GoRoute(
-                      path: 'session',
-                      builder: (context, state) {
-                        final scenario = state.uri.queryParameters['scenario'];
-                        final characterImage =
-                            state.uri.queryParameters['characterImage'];
-                        final isRoleplay =
-                            state.uri.queryParameters['isRoleplay'] == 'true';
-                        final characterId =
-                            state.uri.queryParameters['characterId'];
-
-                        return ChatScreen(
-                          scenario: scenario,
-                          characterImage: characterImage,
-                          isRoleplay: isRoleplay,
-                          characterId: characterId,
-                          initialMessage:
-                              state.uri.queryParameters['initialMessage'],
-                        );
-                      },
-                    ),
-                  ],
                 ),
               ],
             ),
