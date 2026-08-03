@@ -260,6 +260,7 @@ export default {
                        COUNT(DISTINCT a.visit_id) AS arrived,
                        COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS loaded,
                        COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
+                       COUNT(DISTINCT CASE WHEN e.event IN ('input_typed','starter_tap') THEN e.visit_id END) AS engaged,
                        COUNT(DISTINCT CASE WHEN e.event='first_message' THEN e.visit_id END) AS messaged,
                        COUNT(DISTINCT CASE WHEN e.event='login_gate'    THEN e.visit_id END) AS gated
                 FROM site_visits a
@@ -1427,14 +1428,25 @@ async function recordSiteVisit(raw, request, env) {
     //   app_ready     Flutter painted its first frame (duration = time to
     //                 usable app)
     //   character_tap opened a character (detail = character id)
+    //   input_typed   typed the first character of a message, sent or not
+    //                 (detail = character id)
+    //   starter_tap   tapped one of the suggested openers instead of typing
+    //                 (detail = character id); always followed by a
+    //                 first_message for the same visit
     //   first_message sent their first message (detail = character id)
     //   login_gate    hit the free-reply limit (detail = character id)
     //   send_failed   sent a message and got nothing usable back
     //                 (failure_reason says why; "network" means the request
     //                 never reached us, so no conversation_logs row exists)
     //   leave         page hidden/closed (duration = dwell)
+    //
+    // input_typed and starter_tap split the character_tap -> first_message
+    // gap, which is where almost everyone is lost: they separate visitors who
+    // never realised they could reply from those who started a message and
+    // abandoned it, and they say which of the two routes into the
+    // conversation people actually take.
     const ALLOWED_EVENTS = [
-        "arrive", "app_ready", "character_tap",
+        "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
         "first_message", "login_gate", "send_failed", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";

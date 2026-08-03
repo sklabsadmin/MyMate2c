@@ -60,8 +60,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// sends, so someone who puts their phone down is not nagged indefinitely.
   Timer? _idleTimer;
   int _idleNudges = 0;
-  static const Duration _idleAfter = Duration(seconds: 20);
-  static const int _maxIdleNudges = 2;
+  static const Duration _idleAfter = Duration(seconds: 14);
+
+  /// Only one nudge before the first message: the starter prompts are on
+  /// screen at that point already asking to be tapped, and stacking three
+  /// unanswered questions from the character on top of them reads as
+  /// desperate rather than inviting. Two once the conversation is under way
+  /// and the prompts have gone.
+  int get _maxIdleNudges => _userHasSent ? 2 : 1;
+
+  /// True once this visitor has sent anything in this conversation, counting
+  /// earlier visits (loaded history is checked). While it is false the screen
+  /// works to get the first message out of them: the starter prompts are on
+  /// screen and the message box is highlighted. It flips permanently on the
+  /// first send, so a conversation already under way is not decorated with
+  /// beginner scaffolding.
+  bool _userHasSent = false;
+
+  /// Whether the message box currently holds anything, tracked so the send
+  /// button can look disabled when there is nothing to send and light up when
+  /// there is. Mirrored into state because a TextEditingController does not
+  /// rebuild the tree on its own.
+  bool _hasDraft = false;
+
+  /// One-shot guard for the input_typed funnel event.
+  bool _loggedTyping = false;
 
   static const List<String> _idlePrompts = [
     "So — what's on your mind?",
@@ -106,6 +129,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _textController.addListener(_onDraftChanged);
     _loadHistory();
     _loadReplyCount();
     // Refresh auth status in case the user just returned from an OAuth
@@ -149,9 +173,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Neither of these was being disposed before; the controller has leaked
     // on every chat close since the screen was written.
     _cancelIdleTimer();
+    _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _inputFocus.dispose();
     super.dispose();
+  }
+
+  /// Rebuilds only when the box crosses between empty and non-empty, not on
+  /// every keystroke.
+  void _onDraftChanged() {
+    final hasDraft = _textController.text.trim().isNotEmpty;
+    if (hasDraft != _hasDraft && mounted) {
+      setState(() => _hasDraft = hasDraft);
+    }
+  }
+
+  /// Funnel: the visitor typed their first character. Sits between
+  /// character_tap and first_message, which is where nearly everyone is lost,
+  /// and splits that gap in two: never realised they could reply, versus
+  /// started a message and abandoned it.
+  ///
+  /// Driven from the field's onChanged rather than the controller, because
+  /// only a real keystroke fires it — the starter prompts set the controller
+  /// directly and must not be counted as typing.
+  void _onUserTyped() {
+    if (_loggedTyping) return;
+    _loggedTyping = true;
+    SharedPreferences.getInstance().then((prefs) {
+      logFunnelEvent(
+        'input_typed',
+        detail: widget.characterId,
+        appUserId: prefs.getString('user_id'),
+      );
+    });
   }
 
   Future<void> _loadReplyCount() async {
@@ -187,6 +241,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (history.isNotEmpty) {
         setState(() {
           _messages.addAll(history);
+          // A conversation they have already spoken in doesn't need the
+          // first-message scaffolding put back in front of it on every return.
+          _userHasSent = history.any((m) => m.isUser);
         });
         _aiService = OpenAIService(
           history: history,
@@ -588,37 +645,72 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // One opening line, not the whole sequence — enough to set the tone
     // without flooding a brand-new chat. Picked at random rather than always
-    // taking the first, so the later lines (including the ones that ask the
-    // user a question) actually reach people instead of being dead weight.
+    // taking the first, so the later lines actually reach people instead of
+    // being dead weight.
+    //
+    // The opening is then always closed with a question aimed at the visitor.
+    // Most characters' lines are statements ("Ten years I sailed to get
+    // home."), and a statement gives someone who has just landed from a link
+    // nothing to answer — they read it and leave. Ending on a question makes
+    // the chat's next move obviously theirs.
     if (initialMessages.isEmpty) return;
-    final text = initialMessages[Random().nextInt(initialMessages.length)];
+    final opener = initialMessages[Random().nextInt(initialMessages.length)];
+    final lines = <String>[opener];
+    if (!_isQuestion(opener)) {
+      final question = _pickOpeningQuestion(initialMessages);
+      if (question != null) lines.add(question);
+    }
 
-    if (!mounted) return;
+    for (final text in lines) {
+      if (!mounted) return;
 
-    // 1. Simulate Typing
-    setState(() => _isTyping = true);
-    _scrollToBottom();
+      // 1. Simulate Typing
+      setState(() => _isTyping = true);
+      _scrollToBottom();
 
-    // Random typing duration based on length
-    final typingDuration = 800 + (text.length * 30);
-    await Future.delayed(Duration(milliseconds: typingDuration));
+      // Random typing duration based on length
+      final typingDuration = 800 + (text.length * 30);
+      await Future.delayed(Duration(milliseconds: typingDuration));
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    // 2. Stop Typing & Send Message
-    setState(() => _isTyping = false);
+      // 2. Stop Typing & Send Message
+      setState(() => _isTyping = false);
+
+      _addMessage(
+        ChatMessage(
+          id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
+          text: text,
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      );
+    }
 
     _refocusInput();
     _startIdleTimer();
-    _addMessage(
-      ChatMessage(
-        id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
-        text: text,
-        isUser: false,
-        timestamp: DateTime.now(),
-      ),
-    );
   }
+
+  static bool _isQuestion(String line) => line.trimRight().endsWith('?');
+
+  /// A closing question for the opening exchange: one of the character's own
+  /// question lines where they have them, otherwise a neutral invitation that
+  /// suits any of them.
+  String? _pickOpeningQuestion(List<String> candidates) {
+    final questions = candidates.where(_isQuestion).toList();
+    if (questions.isNotEmpty) {
+      return questions[Random().nextInt(questions.length)];
+    }
+    return _genericOpeningQuestions[
+        Random().nextInt(_genericOpeningQuestions.length)];
+  }
+
+  static const List<String> _genericOpeningQuestions = [
+    "So — what brings you here?",
+    "What's on your mind today?",
+    "Tell me something. Anything you like.",
+    "What would you like to talk about?",
+  ];
 
   void _addMessage(ChatMessage message) {
     setState(() {
@@ -727,6 +819,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     setState(() {
       _messages.clear();
+      // Back to a blank conversation, so the starter prompts belong on screen
+      // again exactly as they would for a first-time visitor.
+      _userHasSent = false;
       _aiService = OpenAIService(
         history: const [],
         scenario: widget.scenario,
@@ -835,7 +930,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
     );
 
-    setState(() => _isTyping = true);
+    setState(() {
+      _isTyping = true;
+      // They are in the conversation now: the starter prompts and the
+      // highlighted message box have done their job and step out of the way.
+      _userHasSent = true;
+    });
 
     // Increment Score
     ref.read(userScoreProvider.notifier).increment();
@@ -1180,20 +1280,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   },
                 ),
               ),
-              if (_messages.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    alignment: WrapAlignment.center,
-                    children: [
-                      _buildStarterChip(theme, "Tell me a secret 🤫"),
-                      _buildStarterChip(theme, "Send me a photo 📸"),
-                      _buildStarterChip(theme, "Roleplay: First Date 🍷"),
-                      _buildStarterChip(theme, "I had a bad day 😔"),
-                    ],
-                  ),
+              // Shown until the visitor sends their first message. Gated on
+              // "has never spoken here", NOT on an empty message list as it
+              // used to be: the welcome sequence posts a portrait and a
+              // connection notice within the first second of every new chat,
+              // so the list was empty only for that first second and these
+              // prompts were, in practice, never seen by anyone.
+              if (!_userHasSent)
+                _StarterPrompts(
+                  characterName: _characterDisplayName,
+                  prompts: _starterPrompts,
+                  onTap: _sendStarter,
                 ),
               _buildInputArea(theme),
             ],
@@ -1205,10 +1302,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _buildInputArea(ThemeData theme) {
     final authed = ref.watch(authProvider).value?.authenticated ?? false;
-    // Only signed-out users are gated, so only they see the counter.
-    final showCounter = !authed;
     final remaining =
         (AppConfig.freeRepliesPerCharacter - _replyCount).clamp(0, 9999);
+    // Only signed-out users are gated, so only they see the counter — and not
+    // before they have sent anything. "0/20 anonymous messages" was the first
+    // thing a visitor from a campaign link read above the message box, which
+    // announces a limit to someone who has not yet worked out that they are
+    // allowed to type at all.
+    final showCounter = !authed && _replyCount > 0;
     return SizedBox(
       height: showCounter ? 118 : 100,
       child: Stack(
@@ -1258,45 +1359,76 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     children: [
                       const SizedBox(width: 8),
                       Expanded(
-                        child: TextField(
-                          controller: _textController,
-                          autofocus: true,
-                          style: theme.textTheme.bodyLarge?.copyWith(
-                            color: Colors.white,
+                        // Until the visitor has sent something the box wears a
+                        // slow accent-coloured pulse. On a dark glass panel a
+                        // 10%-white field with a "Talk to me..." hint at 38%
+                        // opacity reads as decoration; this has to read as the
+                        // one thing on screen asking to be used.
+                        child: _PulsingHighlight(
+                          active: !_userHasSent,
+                          color: theme.primaryColor,
+                          borderRadius: BorderRadius.circular(24),
+                          child: TextField(
+                            controller: _textController,
+                            autofocus: true,
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              color: Colors.white,
+                            ),
+                            cursorColor: theme.secondaryHeaderColor,
+                            textInputAction: TextInputAction.send,
+                            decoration: InputDecoration(
+                              // Naming the character turns a vague invitation
+                              // into an instruction about who is listening.
+                              hintText: 'Message $_characterDisplayName…',
+                              hintStyle: theme.textTheme.bodyLarge?.copyWith(
+                                color: Colors.white70,
+                              ),
+                              prefixIcon: Icon(
+                                Icons.edit_outlined,
+                                size: 20,
+                                color: Colors.white.withOpacity(
+                                  _userHasSent ? 0.35 : 0.7,
+                                ),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 12,
+                              ),
+                              filled: true,
+                              fillColor: Colors.white.withOpacity(
+                                _userHasSent ? 0.10 : 0.16,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            focusNode: _inputFocus,
+                            onChanged: (_) => _onUserTyped(),
+                            onSubmitted: (_) => _handleSend(),
                           ),
-                          cursorColor: theme.secondaryHeaderColor,
-                          decoration: InputDecoration(
-                            hintText: 'Talk to me...',
-                            hintStyle: theme.textTheme.bodyLarge?.copyWith(
-                              color: Colors.white38,
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 12,
-                            ),
-                            filled: true,
-                            fillColor: Colors.white.withOpacity(0.1),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                          focusNode: _inputFocus,
-                          onSubmitted: (_) => _handleSend(),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Container(
+                      // Dimmed with nothing to send, so the lit state is a
+                      // signal rather than permanent furniture.
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: theme.primaryColor,
+                          color: _hasDraft
+                              ? theme.primaryColor
+                              : Colors.white.withOpacity(0.12),
                         ),
                         child: IconButton(
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.arrow_upward,
-                            color: Colors.white,
+                            color: Colors.white.withOpacity(
+                              _hasDraft ? 1.0 : 0.45,
+                            ),
                           ),
                           onPressed: _handleSend,
+                          tooltip: 'Send',
                         ),
                       ),
                     ],
@@ -1310,19 +1442,285 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget _buildStarterChip(ThemeData theme, String text) {
-    return ActionChip(
-      label: Text(text),
-      backgroundColor: Colors.white.withOpacity(0.1),
-      labelStyle: const TextStyle(color: Colors.white),
-      onPressed: () {
-        _textController.text = text;
-        _handleSend();
-      },
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: Colors.white.withOpacity(0.2)),
+  /// One-tap openers offered above the message box before the first send.
+  ///
+  /// Reuses the character's own profile-card "Ask Me About" questions, which
+  /// are already written in the user's voice for exactly this purpose, so
+  /// tapping one reads as something the visitor said. Characters with no
+  /// profile fall back to openers that suit any of them — the old hard-coded
+  /// set ("Send me a photo 📸", "Roleplay: First Date 🍷") was dating-app copy
+  /// that made no sense addressed to Hector or Andromache.
+  List<String> get _starterPrompts {
+    final asks = profileForCharacter(widget.characterId)?.asks;
+    if (asks != null && asks.isNotEmpty) return asks;
+    return const [
+      "Where should I start?",
+      "Tell me something about yourself.",
+      "I could use some advice.",
+    ];
+  }
+
+  /// Sends a tapped starter as though it had been typed, so it goes through
+  /// the same gate, history and logging as any other message.
+  void _sendStarter(String text) {
+    SharedPreferences.getInstance().then((prefs) {
+      logFunnelEvent(
+        'starter_tap',
+        detail: widget.characterId,
+        appUserId: prefs.getString('user_id'),
+      );
+    });
+    _textController.text = text;
+    _handleSend();
+  }
+}
+
+/// The strip of one-tap openers shown above the message box until the visitor
+/// has sent their first message.
+///
+/// Deliberately full-width rows rather than the small chips this replaced: the
+/// prompts are whole sentences, which a Wrap of chips broke across lines into
+/// something that no longer looked tappable, and the point of the strip is to
+/// answer "am I supposed to do something here?" before the visitor leaves.
+class _StarterPrompts extends StatefulWidget {
+  final String characterName;
+  final List<String> prompts;
+  final ValueChanged<String> onTap;
+
+  const _StarterPrompts({
+    required this.characterName,
+    required this.prompts,
+    required this.onTap,
+  });
+
+  @override
+  State<_StarterPrompts> createState() => _StarterPromptsState();
+}
+
+class _StarterPromptsState extends State<_StarterPrompts>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  /// Below this the screen is treated as short (an older 640-tall phone, or
+  /// anything with the keyboard up) and one prompt is dropped so the rest are
+  /// shown whole. A row cut in half by the panel edge looks broken, which is
+  /// the opposite of what the strip is for.
+  static const double _shortScreenHeight = 720;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+    // Held back a beat so the strip arrives after the opening line rather than
+    // alongside it — it reads as the answer to what the character just asked.
+    Future.delayed(const Duration(milliseconds: 900), () {
+      if (mounted) _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+
+    // Sized against the screen rather than a fixed number of pixels: the strip
+    // shares the column with the conversation, and a cap that fits an iPhone
+    // eats the whole of a shorter one. Scrollable underneath as a backstop for
+    // a prompt that wraps further than expected.
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final short = screenHeight < _shortScreenHeight;
+    final prompts =
+        short ? widget.prompts.take(2).toList() : widget.prompts.toList();
+
+    return FadeTransition(
+      opacity: fade,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.25),
+          end: Offset.zero,
+        ).animate(fade),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: screenHeight * 0.32),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.touch_app_outlined,
+                        size: 15,
+                        color: theme.primaryColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          'Tap to reply to ${widget.characterName}, '
+                          'or type your own',
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.lato(
+                            color: Colors.white.withOpacity(0.75),
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final prompt in prompts)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _StarterButton(
+                      label: prompt,
+                      onTap: () => widget.onTap(prompt),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
+    );
+  }
+}
+
+class _StarterButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _StarterButton({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: Colors.white.withOpacity(0.07),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: theme.primaryColor.withOpacity(0.55)),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: GoogleFonts.lato(
+                    color: Colors.white,
+                    fontSize: 14.5,
+                    height: 1.25,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Says "this gets sent", so the row is not mistaken for a label.
+              Icon(Icons.arrow_upward, size: 17, color: theme.primaryColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A slow accent glow around its child, used to draw the eye to the message
+/// box before the visitor has typed anything. Inert (and animating nothing)
+/// once [active] goes false.
+class _PulsingHighlight extends StatefulWidget {
+  final bool active;
+  final Color color;
+  final BorderRadius borderRadius;
+  final Widget child;
+
+  const _PulsingHighlight({
+    required this.active,
+    required this.color,
+    required this.borderRadius,
+    required this.child,
+  });
+
+  @override
+  State<_PulsingHighlight> createState() => _PulsingHighlightState();
+}
+
+class _PulsingHighlightState extends State<_PulsingHighlight>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
+    if (widget.active) _controller.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(_PulsingHighlight oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active == oldWidget.active) return;
+    if (widget.active) {
+      _controller.repeat(reverse: true);
+    } else {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) return widget.child;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      child: widget.child,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return Container(
+          decoration: BoxDecoration(
+            borderRadius: widget.borderRadius,
+            border: Border.all(
+              color: widget.color.withOpacity(0.35 + 0.45 * t),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: widget.color.withOpacity(0.12 + 0.20 * t),
+                blurRadius: 10 + 10 * t,
+              ),
+            ],
+          ),
+          child: child,
+        );
+      },
     );
   }
 }
