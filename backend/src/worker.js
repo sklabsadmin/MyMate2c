@@ -16,6 +16,17 @@ export default {
         // handler so the arrival is recorded and the character's Open Graph
         // tags are injected before any crawler sees the page.
         if (request.method === "GET" && url.pathname.startsWith("/c/")) {
+            // index.html's icon/manifest hrefs are relative, resolved against
+            // <base href="/">. Social crawlers routinely ignore <base> and
+            // resolve them against the path instead, so previewing /c/zeus
+            // fires off /c/favicon.png and /c/icons/Icon-192.png. Those used to
+            // land in the referral log as characters named "favicon.png" and
+            // "icons" — 5 of 75 arrivals in the last 7 days. Send them to the
+            // real asset instead of logging a phantom campaign visit.
+            const asset = assetPathUnderCampaignLink(url.pathname);
+            if (asset) {
+                return Response.redirect(new URL(asset, url.origin).toString(), 301);
+            }
             return serveCharacterLanding(request, env, url, ctx);
         }
 
@@ -373,6 +384,10 @@ export default {
                 ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
+            const synthetic = isSyntheticTest(request);
+            // Which browser visit this message belongs to. Absent on mobile
+            // (no page load) and on any client predating the header.
+            const visitId = (request.headers.get("x-visit-id") || "").slice(0, 64) || null;
 
             // Signature checking is on unless REQUIRE_SIGNATURE is explicitly
             // "false". It exists to stop strangers spending our OpenAI credits
@@ -448,6 +463,8 @@ export default {
                 await persistConversationLog(env, {
                     id: requestId,
                     userId,
+                    synthetic,
+                    visitId,
                     chatId,
                     scenario: metadata.scenario,
                     language: metadata.language,
@@ -477,6 +494,8 @@ export default {
                     await persistConversationLog(env, {
                         id: requestId,
                         userId,
+                        synthetic,
+                        visitId,
                         chatId,
                         scenario: metadata.scenario,
                         language: metadata.language,
@@ -512,6 +531,11 @@ export default {
             // sees vendor names or technical detail; responseData.error
             // stays a generic, user-faceable message.
             let technicalError = null;
+            // Wall-clock cost of the reply itself, which is what the user waits
+            // through. Measured around the engine call only — auth, validation
+            // and rate limiting are already done by here, so this is the number
+            // to correlate against someone leaving mid-conversation.
+            const replyStartedAt = Date.now();
 
             if (inworldCharacter) {
                 // Inworld generates the in-character reply, then OpenAI does a
@@ -557,12 +581,17 @@ export default {
                 responseOk = openAiResponse.ok;
             }
 
+            const replyLatencyMs = Date.now() - replyStartedAt;
+
             // Pass back the response
             const assistantMessage = extractAssistantMessage(responseData);
 
             await persistConversationLog(env, {
                 id: requestId,
                 userId,
+                synthetic,
+                visitId,
+                latencyMs: replyLatencyMs,
                 chatId,
                 scenario: metadata.scenario,
                 language: metadata.language,
@@ -826,7 +855,7 @@ function corsHeaders(request) {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id",
+        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id",
         "Vary": "Origin",
     };
 }
@@ -1082,6 +1111,7 @@ function base64UrlDecode(value) {
 }
 
 async function persistConversationLog(env, entry) {
+    if (entry.synthetic) return;
     if (!env.CHAT_LOGS_DB) {
         if (env.REQUIRE_CHAT_LOGS === "true") {
             throw new Error("CHAT_LOGS_DB binding is required when REQUIRE_CHAT_LOGS=true");
@@ -1119,8 +1149,10 @@ async function persistConversationLog(env, entry) {
             prompt_tokens,
             completion_tokens,
             total_tokens,
-            client_timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            client_timestamp,
+            visit_id,
+            latency_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
         entry.id,
         new Date().toISOString(),
@@ -1139,7 +1171,9 @@ async function persistConversationLog(env, entry) {
         numberOrNull(usage.prompt_tokens),
         numberOrNull(usage.completion_tokens),
         numberOrNull(usage.total_tokens),
-        entry.clientTimestamp
+        entry.clientTimestamp,
+        stringOrNull(entry.visitId),
+        numberOrNull(entry.latencyMs)
     ).run();
 }
 
@@ -1378,6 +1412,7 @@ const CHARACTER_SHARE_CARDS = {
 /// and the caller already returns 204 without waiting.
 async function recordSiteVisit(raw, request, env) {
     if (!env.CHAT_LOGS_DB) return;
+    if (isSyntheticTest(request)) return;
 
     // Cap the body so a malformed or hostile beacon cannot cost us anything.
     if (!raw || raw.length > 2000) return;
@@ -1400,6 +1435,9 @@ async function recordSiteVisit(raw, request, env) {
     //                 first_message for the same visit
     //   first_message sent their first message (detail = character id)
     //   login_gate    hit the free-reply limit (detail = character id)
+    //   send_failed   sent a message and got nothing usable back
+    //                 (failure_reason says why; "network" means the request
+    //                 never reached us, so no conversation_logs row exists)
     //   leave         page hidden/closed (duration = dwell)
     //
     // input_typed and starter_tap split the character_tap -> first_message gap,
@@ -1409,7 +1447,7 @@ async function recordSiteVisit(raw, request, env) {
     // conversation people actually take.
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
-        "first_message", "login_gate", "leave",
+        "first_message", "login_gate", "send_failed", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -1442,14 +1480,20 @@ async function recordSiteVisit(raw, request, env) {
     }
 
     const duration = Number(payload.durationMs);
+    // Only meaningful on send_failed; null everywhere else. Kept out of
+    // `detail` on purpose — that column means "which character" for every
+    // other event.
+    const failureReason = String(payload.failureReason || "").slice(0, 60) || null;
+    const viewportW = Number(payload.viewportW);
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
             INSERT INTO site_visits (
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
-                country, colo, duration_ms, detail, app_user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                country, colo, duration_ms, detail, app_user_id,
+                viewport_w, failure_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1465,7 +1509,9 @@ async function recordSiteVisit(raw, request, env) {
             request.cf?.colo || null,
             Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null,
             detail,
-            appUserId
+            appUserId,
+            Number.isFinite(viewportW) && viewportW > 0 ? Math.round(viewportW) : null,
+            failureReason
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -1505,6 +1551,21 @@ function escapeHtmlAttribute(value) {
         .replace(/"/g, "&quot;");
 }
 
+/// True for manual verification calls (deploy checks, signature testing,
+/// diagnostics) against a live deployment — never for real traffic, since
+/// nothing in the app sets this header.
+///
+/// Before this existed, verification traffic invented one-off user/visit ids
+/// (diag_*, qa-*, deploycheck, sigtest, ...) with no way to tell them apart
+/// from real users afterwards, which is most of why 30 days of
+/// conversation_logs held only ~6-8 distinct real users. Send this header
+/// instead of a new made-up id; the three logging call sites below skip the
+/// DB write entirely rather than writing a row that then needs filtering out
+/// of every report.
+function isSyntheticTest(request) {
+    return request.headers.get("x-synthetic-test") === "1";
+}
+
 /// Classifies where a visitor came from. Instagram and Facebook render links
 /// in their own in-app browser, which identifies itself in the user-agent —
 /// that is the only signal for a link posted without utm parameters, since
@@ -1514,7 +1575,11 @@ function detectTrafficSource(request, url) {
     if (utm) return utm.toLowerCase().slice(0, 60);
 
     const ua = request.headers.get("User-Agent") || "";
-    if (/Instagram/i.test(ua)) return "instagram";
+    // "ig", not "instagram": the profile-bio link is tagged
+    // ?utm_source=ig, and a link opened in Instagram's own in-app browser
+    // should land in that same bucket rather than splitting Instagram
+    // traffic into two rows depending on which browser happened to open it.
+    if (/Instagram/i.test(ua)) return "ig";
     if (/FBAN|FBAV/i.test(ua)) return "facebook";
 
     const referer = request.headers.get("Referer") || "";
@@ -1526,6 +1591,39 @@ function detectTrafficSource(request, url) {
     return "direct";
 }
 
+/// Static assets requested underneath a /c/ link, which are never campaign
+/// arrivals. Returns the correct root-relative path, or null if this really is
+/// a character link.
+///
+/// Matched on the extension rather than "has a second path segment", because a
+/// mangled share link (see extractCharacterId) can carry a whole second URL —
+/// slashes and all — after the character id.
+const CAMPAIGN_ASSET_EXTENSION = /\.(?:png|jpe?g|ico|svg|webp|json|js|css|map|txt|woff2?)$/i;
+
+function assetPathUnderCampaignLink(pathname) {
+    if (!CAMPAIGN_ASSET_EXTENSION.test(pathname)) return null;
+    return pathname.slice(2) || "/";
+}
+
+/// Pulls the character id out of a /c/ path, ignoring anything glued onto it.
+///
+/// A share link pasted directly above another URL arrives with the newline
+/// percent-encoded into the path — /c/hector%0ahttps: — which used to be read
+/// literally, miss every character, and dump the visitor on the dashboard with
+/// no idea who they had come to see. Taking the leading id characters recovers
+/// the intended character instead of losing the arrival.
+function extractCharacterId(pathname) {
+    const firstSegment = pathname.slice(3).split("/")[0];
+    let decoded = firstSegment;
+    try {
+        decoded = decodeURIComponent(firstSegment);
+    } catch (_) {
+        // Malformed percent-encoding: fall back to the raw segment, which the
+        // charset match below will clean up anyway.
+    }
+    return (decoded.match(/^[a-z0-9_-]+/i) || [""])[0].toLowerCase();
+}
+
 /// Serves a /c/<id> campaign landing: records the arrival, then returns the
 /// app shell with character-specific Open Graph tags injected.
 ///
@@ -1533,22 +1631,24 @@ function detectTrafficSource(request, url) {
 /// Flutter app — it reads the raw HTML. Without this every character link
 /// would preview identically.
 async function serveCharacterLanding(request, env, url, ctx) {
-    const characterId = url.pathname.split("/")[2]?.trim().toLowerCase() || "";
+    const characterId = extractCharacterId(url.pathname);
     const card = CHARACTER_SHARE_CARDS[characterId];
 
     // Record the arrival even for unknown ids — a typo'd campaign link is
     // worth seeing in the numbers. Never let logging break the page.
-    ctx.waitUntil(
-        recordReferralVisit(env, {
-            characterId,
-            source: detectTrafficSource(request, url),
-            utmMedium: url.searchParams.get("utm_medium"),
-            utmCampaign: url.searchParams.get("utm_campaign"),
-            referer: request.headers.get("Referer"),
-            userAgent: request.headers.get("User-Agent"),
-            known: Boolean(card),
-        }).catch(() => {})
-    );
+    if (!isSyntheticTest(request)) {
+        ctx.waitUntil(
+            recordReferralVisit(env, {
+                characterId,
+                source: detectTrafficSource(request, url),
+                utmMedium: url.searchParams.get("utm_medium"),
+                utmCampaign: url.searchParams.get("utm_campaign"),
+                referer: request.headers.get("Referer"),
+                userAgent: request.headers.get("User-Agent"),
+                known: Boolean(card),
+            }).catch(() => {})
+        );
+    }
 
     // Hand unknown characters to the normal app shell; the Flutter route
     // sends them to the dashboard.

@@ -3,6 +3,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/analytics.dart';
 import '../data/chat_prompt.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,6 +18,15 @@ class OpenAIService {
   /// (not a rate-limit/error/"trouble thinking" fallback). Used to decide
   /// whether the free-reply counter should increment.
   bool lastSendSucceeded = false;
+
+  /// Why the most recent [sendMessage] failed, or null if it succeeded.
+  ///
+  /// "network" is the important one: the request never reached the worker, so
+  /// there is no server-side log row for it at all, and without this the
+  /// failure is indistinguishable from the user never having typed anything.
+  /// The rest ("http_500", "empty_response", ...) do have server rows, and
+  /// comparing the two tells you how many sends died in transit.
+  String? lastFailureReason;
 
   OpenAIService({
     List<dynamic> history = const [],
@@ -66,6 +76,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
 
   Future<String> sendMessage(String message) async {
     lastSendSucceeded = false;
+    lastFailureReason = null;
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
@@ -112,6 +123,13 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       if (_characterId != null && _characterId!.isNotEmpty) {
         headers['x-character-id'] = _characterId!;
       }
+      // Ties this message to the browser visit that sent it, so the server can
+      // answer "how many messages did this session manage before quitting".
+      // Null off the web, where there is no page load to belong to.
+      final visitId = currentVisitId();
+      if (visitId != null && visitId.isNotEmpty) {
+        headers['x-visit-id'] = visitId;
+      }
 
       // Call Backend Worker
       final response = await _dio.post(
@@ -127,6 +145,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         final data = response.data;
         final choices = data is Map<String, dynamic> ? data['choices'] : null;
         if (choices is! List || choices.isEmpty) {
+          lastFailureReason = 'empty_response';
           return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(data));
         }
 
@@ -139,6 +158,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
             : null;
 
         if (responseText is! String || responseText.trim().isEmpty) {
+          lastFailureReason = 'empty_content';
           return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(data));
         }
 
@@ -159,11 +179,15 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         lastSendSucceeded = true;
         return responseText;
       } else if (response.statusCode == 429) {
+        lastFailureReason = 'rate_limited';
         return "I need a moment, darling. We've been talking so fast!";
       } else {
+        lastFailureReason = 'http_${response.statusCode}';
         return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(response.data));
       }
     } catch (e) {
+      // Never reached the worker, so nothing server-side recorded this send.
+      lastFailureReason = 'network';
       if (kDebugMode) {
         debugPrint("Chat connection error: $e");
       }
