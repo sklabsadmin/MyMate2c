@@ -38,8 +38,19 @@ double _measure() {
   return hidden > 1 ? hidden : 0;
 }
 
+/// Largest gap seen since the page loaded.
+///
+/// Screenshotting a phone while the keyboard is up is fiddly, and the live
+/// value is back to 0 the moment the keyboard closes — so every screenshot
+/// arrives reading 0 whether or not the browser ever reported anything. The
+/// peak survives the keyboard closing, which makes the one question here
+/// ("did this browser ever tell us about the keyboard?") answerable after the
+/// fact rather than in the moment.
+double _peak = 0;
+
 void _update() {
   final next = _measure();
+  if (next > _peak) _peak = next;
   if ((next - _inset.value).abs() > 1) _inset.value = next;
 }
 
@@ -68,5 +79,6 @@ String keyboardInsetDebug() {
   return 'inner ${_window.innerHeight.toStringAsFixed(0)} · '
       'vv ${viewport.height.toStringAsFixed(0)} · '
       'top ${viewport.offsetTop.toStringAsFixed(0)} · '
-      'hidden ${_measure().toStringAsFixed(0)}';
+      'hidden ${_measure().toStringAsFixed(0)} · '
+      'PEAK ${_peak.toStringAsFixed(0)}';
 }
