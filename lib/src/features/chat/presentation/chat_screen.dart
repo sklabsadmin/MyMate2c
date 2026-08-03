@@ -86,6 +86,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// One-shot guard for the input_typed funnel event.
   bool _loggedTyping = false;
 
+  /// Abandons the welcome sequence when the visitor speaks first.
+  ///
+  /// The sequence is a chain of awaited delays, so it is still pending while
+  /// the starter prompts are on screen inviting a tap. Without this, a tap a
+  /// second into the chat posts the visitor's message and then the character's
+  /// scripted greeting lands *after* it, and the sequence's own
+  /// `_isTyping = false` clears the indicator while the real reply is still
+  /// generating. Checked after every await in [_triggerWelcomeSequence].
+  bool _welcomeAbandoned = false;
+
+  /// Ceilings on the welcome sequence's simulated typing, in milliseconds.
+  static const int _openerTypingCapMs = 2200;
+  static const int _followUpTypingCapMs = 1200;
+
   static const List<String> _idlePrompts = [
     "So — what's on your mind?",
     "Still there?",
@@ -290,6 +304,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "I need a distraction right now. Are you available?",
         "Tell me you've been thinking about me too.",
         "Good. Now come here. 😉",
+        "What are you actually working on? The honest version, not the polished one.",
+        "What would you go after, if you weren't afraid of getting it wrong?",
       ];
     }
 
@@ -302,7 +318,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "People decide what I am before I open my mouth. I stopped correcting them.",
         "Rules and I have never got on. I've never pretended otherwise.",
         "Spent the whole of Sunday in the garage. Best day I've had all week. 🏍️",
-        "So what is on your mind? Do not dress it up.",
+        "What is on your mind? Do not dress it up.",
         "What would you do if nobody was going to have an opinion about it?",
       ];
     }
@@ -314,6 +330,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Come closer. I promise I won't bite... unless you want me to.",
         "The night is young, and so are we.",
         "Let me show you a world of darkness and pleasure. 🩸",
+        "What keeps you awake, once the house has gone quiet?",
+        "What would you do with a century, if somebody handed you one?",
       ];
     }
 
@@ -324,6 +342,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Don't worry, little one. I'll protect you.",
         "My inner wolf is howling for you.",
         "Let's run wild under the moonlight. 🌕",
+        "What are you protecting at the moment? Everyone is protecting something.",
+        "When did you last let someone look after you, instead of the other way round?",
       ];
     }
 
@@ -334,6 +354,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "I might need to do a thorough examination.",
         "Your heart rate is elevated. Nervous?",
         "Let's take care of you. 🩺",
+        "What have you been ignoring that you probably shouldn't be?",
+        "How are you, actually? Not the answer you give at work.",
       ];
     }
 
@@ -344,6 +366,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Ready to work up a sweat? 😉",
         "Focus. Eyes on me.",
         "You're looking stronger every day.",
+        "What are you training for, really? It's rarely just the mirror.",
+        "What's the thing you keep starting and stopping? Let's talk about that one.",
       ];
     }
 
@@ -356,6 +380,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "The crowd is loud, but all I hear is you.",
         "Let's make some sweet music together.",
         "You're my muse. 🎸",
+        "What have you had on repeat lately? I can tell a lot from that.",
+        "What would you write about, if you could write about anything at all?",
       ];
     }
 
@@ -378,6 +404,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Foundations are important. Ours is strong.",
         "I have a vision, and you're in it.",
         "Structure and passion effectively combined. 🏛️",
+        "What are you building at the moment? It doesn't have to be a building.",
+        "Which part of your life would you redesign first?",
       ];
     }
 
@@ -388,6 +416,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Taste this... tell me what you think.",
         "Things are heating up in the kitchen.",
         "Hungry for love? 🍝",
+        "What's the last thing you ate that you actually remember? That tells me plenty.",
+        "Who taught you to cook — or did nobody ever get round to it?",
       ];
     }
 
@@ -398,6 +428,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Buckle up, it's going to be a wild ride.",
         "You look stunning from up here.",
         "Let's fly away together. ✈️",
+        "Where would you go, if the route didn't matter and nobody asked why?",
+        "What's the furthest you've ever been from home? Tell me about it.",
       ];
     }
 
@@ -409,7 +441,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Most of what I notice, everyone else walks straight past.",
         "A good line takes a day. A great one has taken me years. ✍️",
         "What have you noticed today that nobody else did?",
-        "Is there something you have been trying to find the words for?",
+        "What have you been trying to find the words for?",
       ];
     }
 
@@ -421,7 +453,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Power is easy to take and far harder to hold. Most learn that too late.",
         "Ask me something worth answering. ⚡",
         "What is weighing on you? Say it plainly — I have no patience for hedging.",
-        "If you held my thunderbolt for a day, what would you change?",
+        "What would you change, if you held my thunderbolt for a day?",
       ];
     }
 
@@ -462,7 +494,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "I offered him forever. He wanted an ordinary life instead. I understood, and it still cost me.",
         "The island is beautiful. Beautiful is not the same as company.",
         "What are you holding onto, that you already know you should let go?",
-        "Is it harder to lose someone, or to be the one who has to be the reason they leave?",
+        "Which is harder — losing someone, or being the reason they leave?",
       ];
     }
 
@@ -485,7 +517,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "My mother is Venus, which explains rather a lot about me.",
         "I fell for Psyche and it cost her a walk through the underworld. So I know the price.",
         "Everyone thinks desire is simple. It is the least simple thing there is. 🏹",
-        "Go on then — who is on your mind? Not romance necessarily. Anyone.",
+        "Who is on your mind? Not romance necessarily — anyone.",
         "What do you actually want at the moment? Most people are never asked.",
       ];
     }
@@ -498,7 +530,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Sit by the fire a while. I have all the patience of a wanderer.",
         "Home was never a place. I learned that the long way round. 🌊",
         "What are you navigating at the moment? I have some experience with long routes.",
-        "Tell me the choice you keep turning over. I will not decide it for you.",
+        "What is the choice you keep turning over? I will not decide it for you.",
       ];
     }
 
@@ -510,7 +542,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "Even a man cursed by prophecy can still hope for one good thing.",
         "Walk with me. Thebes can wait. 👑",
         "What truth have you been avoiding? I know the shape of that better than most.",
-        "Is there something you would ask, if you were certain of the answer?",
+        "What would you ask, if you were certain of the answer?",
       ];
     }
 
@@ -521,6 +553,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         "How was your day? Tell me everything.",
         "Come sit with me. I missed you.",
         "Just relax. I've got you. ❤️",
+        "What's on your mind? We've got all evening.",
+        "What went on today that you haven't told anyone about yet?",
       ];
     }
 
@@ -533,6 +567,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "I dropped the soap... oops. 😉",
           "It's getting steamy in here.",
           "Don't be shy...",
+          "How was your day? Tell me about it while the water runs.",
+          "What do you want to stop thinking about for the next half hour?",
         ];
       }
       if (scenario.contains('Wall')) {
@@ -542,6 +578,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "I like it when you blush.",
           "You're mine tonight.",
           "Say it. Say you want this.",
+          "What is it you actually want? Say it properly.",
+          "What have you been holding back on telling me?",
         ];
       }
       if (scenario.contains('Lap')) {
@@ -551,6 +589,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "You have no idea what you do to me.",
           "Don't move. Just enjoy it.",
           "You are exactly where you belong.",
+          "What's on your mind? You have my full attention.",
+          "What do you want tonight? Take your time answering.",
         ];
       }
       if (scenario.contains('Morning')) {
@@ -560,6 +600,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "I love waking up next to you.",
           "You look like an angel when you sleep.",
           "Let's start the day right. 😘",
+          "What's the first thing on your mind this morning?",
+          "What would make today a good one for you?",
         ];
       }
       if (scenario.contains('Guard') || scenario.contains('Royal')) {
@@ -569,6 +611,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "My duty is to the crown, but my heart belongs to you.",
           "We shouldn't be seen together...",
           "I would die for you. 🛡️",
+          "What are you afraid of? I'd rather know what I'm guarding against.",
+          "What would you do, if duty wasn't the first thing you thought about?",
         ];
       }
       if (scenario.contains('Fire') || scenario.contains('Hero')) {
@@ -578,6 +622,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "You're safe in my arms.",
           "My heart races every time I see you.",
           "Let me be your hero. 🚒",
+          "What's going on with you? I run toward things, not away from them.",
+          "What do you need right now? Just say it plainly.",
         ];
       }
       if (scenario.contains('Stranger')) {
@@ -587,26 +633,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "Mind if I buy you a drink?",
           "There's something mysterious about you.",
           "I have a feeling this night is going to be interesting. 🍸",
+          "What brings you here tonight? The real reason.",
+          "What's your story? I've got all evening and nowhere to be.",
         ];
       }
     }
 
-    // Default Companion Fallback. Only reached by a character with no
-    // welcome branch of their own, so it has to be safe for anyone — the
-    // previous version was explicitly flirty, which a grieving Andromache
-    // inherited verbatim before she was given her own lines.
+    // Default Companion Fallback. Only reached by a character with no welcome
+    // branch of their own, so it has to be safe for anyone — a grieving
+    // Andromache inherited the old flirty version verbatim before she was
+    // given her own lines.
+    //
+    // These are all questions: this branch has no idea who it is speaking as,
+    // so it cannot say anything characterful, but it can still hand the turn
+    // to the visitor. The old lines also assumed a history that a first-time
+    // visitor does not have ("I remembered what you told me").
     return [
-      "Hey you... I remembered what you told me 😉",
-      "I was just thinking about how good of chat we had.",
-      "Yo, you going to come and talk to your Greek friend? 😘",
-      "I'm feeling a bit lonely...have anything interesting for me?",
-      "Tell me, how is your day going?",
+      "What's on your mind today?",
+      "How is your day going, honestly?",
+      "What would you like to talk about? Anything is fine.",
+      "What brings you here?",
+      "Tell me something about yourself — start anywhere you like.",
     ];
   }
 
   Future<void> _triggerWelcomeSequence() async {
     // Get Personalized "Playful & Flirty" Sequence
     final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
+
+    // Fresh run (this also covers the reset/regenerate path, which re-enters
+    // here on an existing screen after the visitor has already spoken).
+    _welcomeAbandoned = false;
 
     // The character "sends" their portrait first, so a new conversation opens
     // with a face rather than a wall of text. New chats only — this goes into
@@ -624,55 +681,69 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
       await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted) return;
+      if (!mounted || _welcomeAbandoned) return;
     }
 
-    // 0. Initial Connection Message
-    if (widget.scenario != null) {
+    // 0. Initial Connection Message — roleplay only.
+    //
+    // A roleplay banner is doing real work: it names the scene the visitor
+    // just chose. "❤️ Connected with Odysseus (King of Ithaca)" was not. It
+    // cost a second and a bubble to tell someone something they already knew
+    // (they tapped his face to get here), in dating-app language that reads
+    // oddly for a mythology character, and it was the first thing on screen —
+    // pushing the character's actual opening question below the fold.
+    if (widget.isRoleplay && widget.scenario != null) {
       _addMessage(
         ChatMessage(
           id: 'sys_conn_${DateTime.now().millisecondsSinceEpoch}',
-          text: widget.isRoleplay
-              ? "✨ Roleplay Active: ${widget.scenario}"
-              : "❤️ Connected with ${widget.scenario}",
+          text: "✨ Roleplay Active: ${widget.scenario}",
           isUser: false,
           isSystem: true,
           timestamp: DateTime.now(),
         ),
       );
       await Future.delayed(const Duration(milliseconds: 1000));
+      if (!mounted || _welcomeAbandoned) return;
     }
 
-    // One opening line, not the whole sequence — enough to set the tone
-    // without flooding a brand-new chat. Picked at random rather than always
-    // taking the first, so the later lines actually reach people instead of
-    // being dead weight.
+    // The opening is a question, and nothing else.
     //
-    // The opening is then always closed with a question aimed at the visitor.
-    // Most characters' lines are statements ("Ten years I sailed to get
-    // home."), and a statement gives someone who has just landed from a link
-    // nothing to answer — they read it and leave. Ending on a question makes
-    // the chat's next move obviously theirs.
+    // It used to be a randomly chosen line — almost always a statement, since
+    // that is most of what the lists hold ("Ten years I sailed to get home.")
+    // — with a question appended after it. A statement gives someone who has
+    // just landed from a link nothing to answer, and burying the question
+    // underneath it meant the ask arrived second, after the visitor had
+    // already decided whether to stay. Leading with the question hands them
+    // the turn immediately, and the characters' questions carry plenty of
+    // voice on their own ("What are you navigating at the moment? I have some
+    // experience with long routes.").
+    //
+    // One bubble, not two: the opening now settles in ~2.8s rather than 5.
     if (initialMessages.isEmpty) return;
-    final opener = initialMessages[Random().nextInt(initialMessages.length)];
+    final opener = _pickOpeningQuestion(initialMessages);
+    if (opener == null) return;
     final lines = <String>[opener];
-    if (!_isQuestion(opener)) {
-      final question = _pickOpeningQuestion(initialMessages);
-      if (question != null) lines.add(question);
-    }
 
-    for (final text in lines) {
-      if (!mounted) return;
+    for (var i = 0; i < lines.length; i++) {
+      final text = lines[i];
+      if (!mounted || _welcomeAbandoned) return;
 
       // 1. Simulate Typing
       setState(() => _isTyping = true);
       _scrollToBottom();
 
-      // Random typing duration based on length
-      final typingDuration = 800 + (text.length * 30);
+      // Typing time scales with length but is capped. Uncapped, an opener plus
+      // the appended question ran 5.8s to the last bubble on a median line and
+      // 8.8s on the longest — the character was still visibly typing while the
+      // starter prompts sat there asking to be tapped. The caps bound it at
+      // 5.0s regardless of length. The question is a continuation of the same
+      // breath rather than a separately "written" line, so it gets the shorter
+      // cap: the pause reads as a beat, not as more composition.
+      final cap = i == 0 ? _openerTypingCapMs : _followUpTypingCapMs;
+      final typingDuration = min(800 + (text.length * 30), cap);
       await Future.delayed(Duration(milliseconds: typingDuration));
 
-      if (!mounted) return;
+      if (!mounted || _welcomeAbandoned) return;
 
       // 2. Stop Typing & Send Message
       setState(() => _isTyping = false);
@@ -691,15 +762,49 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _startIdleTimer();
   }
 
-  static bool _isQuestion(String line) => line.trimRight().endsWith('?');
+  /// True if the line asks anything at all, wherever the question sits.
+  ///
+  /// Deliberately not `endsWith('?')`: most of the characters' questions are
+  /// written as a question followed by a remark in their own voice ("What are
+  /// you navigating at the moment? I have some experience with long routes."),
+  /// so testing the end of the line rejected nearly all of them and left the
+  /// mythology cast falling through to the generic openers.
+  static bool _isQuestion(String line) => line.contains('?');
 
-  /// A closing question for the opening exchange: one of the character's own
-  /// question lines where they have them, otherwise a neutral invitation that
-  /// suits any of them.
+  /// Words that start a question you cannot answer with one syllable.
+  static final RegExp _openQuestionStart = RegExp(
+    r'^(what|who|where|when|how|why|which|tell me)\b',
+    caseSensitive: false,
+  );
+
+  /// True for a question that asks for something more than yes or no.
+  ///
+  /// The distinction matters because the question is now the whole opening.
+  /// Several characters carry closed ones — "Ready for takeoff?", "Want to
+  /// come backstage?", "Mind if I buy you a drink?" — and opening on those
+  /// invites a one-word reply, or more often none at all: they read as
+  /// rhetorical, so there is nothing the visitor obviously has to do.
+  static bool _isOpenQuestion(String line) {
+    // Test each sentence, not the line: the question is usually one clause of
+    // several ("What are you navigating at the moment? I have some experience
+    // with long routes."), and it is not always the first.
+    return line
+        .split(RegExp(r'(?<=[.?!])\s+'))
+        .any((s) => s.trimRight().endsWith('?') &&
+            _openQuestionStart.hasMatch(s.trimLeft()));
+  }
+
+  /// The character's opening line: one of their own open questions where they
+  /// have them, then any question at all, then a neutral invitation that suits
+  /// anyone. Random within whichever tier is used, so repeat visitors do not
+  /// get the same greeting every time.
   String? _pickOpeningQuestion(List<String> candidates) {
-    final questions = candidates.where(_isQuestion).toList();
-    if (questions.isNotEmpty) {
-      return questions[Random().nextInt(questions.length)];
+    for (final tier in [
+      candidates.where(_isOpenQuestion),
+      candidates.where(_isQuestion),
+    ]) {
+      final list = tier.toList();
+      if (list.isNotEmpty) return list[Random().nextInt(list.length)];
     }
     return _genericOpeningQuestions[
         Random().nextInt(_genericOpeningQuestions.length)];
@@ -904,6 +1009,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _showLoginGate();
       return;
     }
+
+    // The visitor got there first, so drop whatever is left of the scripted
+    // welcome: its remaining lines would land after this message, and its
+    // typing indicator would fight with the one for the real reply. Set here
+    // rather than at the top of the method so a send stopped by the login
+    // gate above leaves the sequence running.
+    _welcomeAbandoned = true;
 
     // Funnel: fired once per visit, on the first message actually sent —
     // the step between opening a character and hitting the login gate.
