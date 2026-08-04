@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wrangler-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--remote",
+        "--port", "8787"
+      ],
+      "port": 8787
+    },
+    {
+      "name": "preview-local",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "tool/preview_web.sh",
+        "serve"
+      ],
+      "port": 8788
+    }
+  ]
+}
