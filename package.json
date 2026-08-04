@@ -1,6 +1,6 @@
 {
   "devDependencies": {
-    "wrangler": "^4.107.0"
+    "wrangler": "^4.118.0"
   },
   "scripts": {
     "build:web": "bash tool/build_web.sh",
@@ -8,5 +8,10 @@
     "preview": "wrangler dev",
     "preview:local": "bash tool/preview_web.sh serve",
     "preview:shot": "bash tool/preview_web.sh shot"
+  },
+  "allowScripts": {
+    "workerd@1.20260730.1": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
   }
 }
