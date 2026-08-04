@@ -71,9 +71,14 @@
        rgb(26,3,33), within a shade of AppTheme.backgroundColor. Capped so it
        reads as a logo rather than filling a large desktop window. */
     #splash img { z-index: 9999; width: min(62vw, 300px); height: auto; }
+    /* Anchored to the logo, not the viewport bottom. The logo is vertically
+       centred and square, so its lower edge sits at 50% + half its width;
+       28px below that keeps the tagline visually attached to the mark instead
+       of stranded near the bottom of a tall phone screen. */
     #splash-tagline {
       position: fixed; left: 50%; transform: translateX(-50%);
-      bottom: 11vh; margin: 0; width: 92%; text-align: center; z-index: 9999;
+      top: calc(50% + min(31vw, 150px) + 28px);
+      margin: 0; width: 92%; text-align: center; z-index: 9999;
       font-family: Georgia, "Times New Roman", serif;
       font-size: clamp(15px, 4.2vw, 19px); letter-spacing: .02em;
       /* Light enough to read on the dark backdrop; the old #6B4B7A was picked
