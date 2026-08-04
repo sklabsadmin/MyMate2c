@@ -170,6 +170,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           appUserId: prefs.getString('user_id'),
         );
       });
+      _startScreenPing();
 
       // An opener tapped on the profile card before entering the chat. Sent
       // through _handleSend so it behaves exactly like a typed message —
@@ -187,6 +188,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Neither of these was being disposed before; the controller has leaked
     // on every chat close since the screen was written.
     _cancelIdleTimer();
+    _screenPingTimer?.cancel();
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _inputFocus.dispose();
@@ -202,6 +204,58 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  /// Ticks twice a second from the moment a character is opened, capped at
+  /// 30s, reporting a screen_ping funnel event on each tick and stopping the
+  /// instant there is any sign of engagement (see _stopScreenPing). Bounded
+  /// on both axes so it stays cheap despite the fast tick rate: only visits
+  /// that actually open a character send these at all (a small fraction of
+  /// arrivals), and never more than 60 ticks each.
+  ///
+  /// The gap the funnel could not see: character_tap fires and, most of the
+  /// time, nothing else ever does — for Facebook traffic specifically, 86% of
+  /// arrivals open a character and 0% ever type or tap anything. leave's
+  /// dwell time cannot isolate that: it measures the whole page visit, not
+  /// time on this screen, so someone who browsed the dashboard for 20s before
+  /// tapping a character looks identical to someone who tapped immediately.
+  /// Counting ticks on THIS visit answers the actual question — did the
+  /// people who never engaged leave in the first 5 seconds, or sit here for
+  /// 40 reading before giving up — which points at two entirely different
+  /// fixes (broken/confusing screen vs. uncompelling content).
+  ///
+  /// No explicit duration is sent; each tick's own timestamp is enough for
+  /// the server to derive elapsed time by counting rows for the visit, the
+  /// same technique the admin funnel query already uses for other events.
+  Timer? _screenPingTimer;
+  int _screenPingTicks = 0;
+  static const int _maxScreenPingTicks = 60; // 60 x 500ms = 30s
+
+  void _startScreenPing() {
+    _screenPingTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (_) {
+      _screenPingTicks++;
+      if (_screenPingTicks > _maxScreenPingTicks) {
+        _stopScreenPing();
+        return;
+      }
+      SharedPreferences.getInstance().then((prefs) {
+        logFunnelEvent(
+          'screen_ping',
+          detail: widget.characterId,
+          appUserId: prefs.getString('user_id'),
+        );
+      });
+    });
+  }
+
+  /// Called the instant there is any real sign of engagement (typing,
+  /// tapping a starter, sending) — see call sites. Once we know they engaged,
+  /// further pings would just be noise: they exist solely to measure how long
+  /// the *never engaged* population lingered before giving up.
+  void _stopScreenPing() {
+    _screenPingTimer?.cancel();
+    _screenPingTimer = null;
+  }
+
   /// Funnel: the visitor typed their first character. Sits between
   /// character_tap and first_message, which is where nearly everyone is lost,
   /// and splits that gap in two: never realised they could reply, versus
@@ -213,6 +267,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _onUserTyped() {
     if (_loggedTyping) return;
     _loggedTyping = true;
+    _stopScreenPing();
     SharedPreferences.getInstance().then((prefs) {
       logFunnelEvent(
         'input_typed',
@@ -973,6 +1028,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
+    // Backstop alongside the calls in _onUserTyped and _sendStarter: whatever
+    // path got text into the box, an actual send is unambiguous engagement,
+    // so the screen_ping population (never engaged) must exclude it.
+    _stopScreenPing();
+
     // The user is back — stop nudging and give them a fresh allowance.
     _cancelIdleTimer();
     _idleNudges = 0;
@@ -1623,6 +1683,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Sends a tapped starter as though it had been typed, so it goes through
   /// the same gate, history and logging as any other message.
   void _sendStarter(String text) {
+    _stopScreenPing();
     SharedPreferences.getInstance().then((prefs) {
       logFunnelEvent(
         'starter_tap',

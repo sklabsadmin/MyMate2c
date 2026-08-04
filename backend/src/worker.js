@@ -242,7 +242,19 @@ export default {
                        r.duration_ms AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
                          WHERE m.visit_id = a.visit_id
-                           AND m.event IN ('first_message','login_gate')) AS messaged
+                           AND m.event IN ('first_message','login_gate')) AS messaged,
+                       -- Ticks on the chat screen before engaging or giving up.
+                       -- Present (possibly 0) whenever a character was opened;
+                       -- NULL when one never was, which the UI shows as "—"
+                       -- rather than 0 so a visit that never reached a
+                       -- character isn't confused with one that reached it
+                       -- and left instantly. A visit still mid-session with no
+                       -- leave row yet shows its ticks-so-far here too — this
+                       -- is the one column that updates for an open tab.
+                       (SELECT COUNT(*) FROM site_visits g
+                         WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
+                       EXISTS (SELECT 1 FROM site_visits t
+                                WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character
                 FROM site_visits a
                 LEFT JOIN site_visits l
                        ON l.visit_id = a.visit_id AND l.event = 'leave'
@@ -276,12 +288,52 @@ export default {
                 GROUP BY detail, event ORDER BY n DESC
             `).bind(since).all();
 
+            // How long the "opened a character, never engaged" population
+            // actually lingered before giving up — the question leave's
+            // page-wide dwell cannot answer, because it does not isolate time
+            // on the chat screen from time spent anywhere else on the visit.
+            // screen_ping ticks twice a second, capped at 60 (30s), only for
+            // visits that reach character_tap and stops the instant any
+            // engagement signal fires — so a visit's own tick count is a
+            // direct, cheap proxy for elapsed seconds on the screen, with no
+            // need for timestamp arithmetic. Bucketed rather than averaged: an
+            // average of "left in 1s" and "stayed 30s" hides the fact that
+            // those are two different visitors with two different problems.
+            const dwellBuckets = await db.prepare(`
+                SELECT a.source AS source,
+                       COUNT(DISTINCT a.visit_id) AS never_engaged,
+                       SUM(CASE WHEN p.ticks IS NULL OR p.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
+                       SUM(CASE WHEN p.ticks BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS left_under_5s,
+                       SUM(CASE WHEN p.ticks BETWEEN 10 AND 29 THEN 1 ELSE 0 END) AS left_5s_to_15s,
+                       SUM(CASE WHEN p.ticks BETWEEN 30 AND 59 THEN 1 ELSE 0 END) AS left_15s_to_30s,
+                       SUM(CASE WHEN p.ticks >= 60 THEN 1 ELSE 0 END) AS stayed_full_30s
+                FROM site_visits a
+                LEFT JOIN (
+                    SELECT visit_id, COUNT(*) AS ticks
+                    FROM site_visits WHERE event = 'screen_ping'
+                    GROUP BY visit_id
+                ) p ON p.visit_id = a.visit_id
+                WHERE a.event = 'arrive'
+                  AND a.created_at >= datetime('now', ?)
+                  AND EXISTS (
+                      SELECT 1 FROM site_visits t
+                      WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM site_visits e
+                      WHERE e.visit_id = a.visit_id
+                        AND e.event IN ('input_typed', 'starter_tap', 'first_message')
+                  )
+                GROUP BY a.source ORDER BY never_engaged DESC
+            `).bind(since).all();
+
             return jsonResponse({
                 bySource: bySource.results || [],
                 byDay: byDay.results || [],
                 recent: recent.results || [],
                 funnel: funnel.results || [],
                 characters: characters.results || [],
+                dwellBuckets: dwellBuckets.results || [],
             });
         }
 
@@ -1438,6 +1490,17 @@ async function recordSiteVisit(raw, request, env) {
     //   send_failed   sent a message and got nothing usable back
     //                 (failure_reason says why; "network" means the request
     //                 never reached us, so no conversation_logs row exists)
+    //   screen_ping   still on the chat screen, not yet engaged (detail =
+    //                 character id). Fired twice a second starting at
+    //                 character_tap, capped at 30s (60 ticks), and stopped
+    //                 the moment the visitor actually engages — see leave for
+    //                 full-page dwell; this measures dwell on the chat screen
+    //                 specifically, for the population that opened a
+    //                 character but never typed or tapped anything, which
+    //                 leave alone cannot isolate. Bounded on both axes
+    //                 (visitor population and duration) so it stays cheap:
+    //                 only the "opened a character" cohort ever sends these,
+    //                 and never for more than 60 ticks each.
     //   leave         page hidden/closed (duration = dwell)
     //
     // input_typed and starter_tap split the character_tap -> first_message gap,
@@ -1447,7 +1510,7 @@ async function recordSiteVisit(raw, request, env) {
     // conversation people actually take.
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
-        "first_message", "login_gate", "send_failed", "leave",
+        "first_message", "login_gate", "send_failed", "screen_ping", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -2490,6 +2553,26 @@ async function load() {
   if (!(d.funnel || []).length) h += '<tr><td colspan="7" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
 
+  const buckets = d.dwellBuckets || [];
+  if (buckets.length) {
+    h += '<h2>How long before giving up</h2><p class="muted" style="margin:0 0 8px">' +
+         'Visits that opened a character and never typed, tapped a starter, or sent ' +
+         'anything. Left instantly means gone before the first half-second tick &mdash; ' +
+         'the screen never had a chance. Stayed the full 30s means they were still ' +
+         'reading when we stopped counting.</p><div class="wrap"><table><tr><th>Source</th>' +
+         '<th>Never engaged</th><th>Left instantly</th><th>&lt;5s</th><th>5&ndash;15s</th>' +
+         '<th>15&ndash;30s</th><th>Stayed full 30s</th></tr>';
+    for (const r of buckets) {
+      h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.never_engaged +
+           '</td><td class="num">' + (r.left_instantly || 0) +
+           '</td><td class="num">' + (r.left_under_5s || 0) +
+           '</td><td class="num">' + (r.left_5s_to_15s || 0) +
+           '</td><td class="num">' + (r.left_15s_to_30s || 0) +
+           '</td><td class="num">' + (r.stayed_full_30s || 0) + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
+
   const chars = d.characters || [];
   if (chars.length) {
     h += '<h2>By character</h2><div class="wrap"><table><tr><th>Character</th>' +
@@ -2521,20 +2604,30 @@ async function load() {
   h += '</table></div>';
 
   h += '<h2>Recent arrivals</h2><div class="wrap"><table><tr><th>When (UTC)</th><th>Path</th>' +
-       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th><th>Chat</th></tr>';
+       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th>' +
+       '<th>Ticks</th><th>Chat</th></tr>';
   for (const r of d.recent) {
+    // Ticks only mean anything once a character was opened — a visit that
+    // never reached one shows "—", not 0, so "left instantly after opening a
+    // character" is never confused with "never opened one at all". A visit
+    // still open right now (no leave row) shows its ticks-so-far live,
+    // updating on every page refresh even with no session log of its own.
+    const ticksCell = r.opened_character
+      ? '<span title="' + (r.ticks || 0) + ' x 0.5s ticks">' + (r.ticks || 0) + '</span>'
+      : '<span class="muted">—</span>';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num">' + dur(r.load_ms) +
-         '</td><td class="num">' + dur(r.duration_ms) + '</td><td>' +
+         '</td><td class="num">' + dur(r.duration_ms) +
+         '</td><td class="num">' + ticksCell + '</td><td>' +
          (r.messaged
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="8"></td></tr>';
+         '" style="display:none"><td colspan="9"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="8" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="9" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
 
