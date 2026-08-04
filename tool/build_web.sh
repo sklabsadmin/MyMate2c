@@ -23,7 +23,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WORKER_URL="${WORKER_URL:-https://chat.deeploveechoes.com}"
+# Captured before anything else assigns these, so we can tell "the caller
+# exported it" from "the default filled it in".
+CALLER_WORKER_URL="${WORKER_URL:-}"
+CALLER_APP_SECRET="${APP_SECRET:-}"
 
 # .env is gitignored and holds APP_SECRET. Only fills in what the environment
 # has not already set, so CI can override without editing anything.
@@ -33,6 +36,21 @@ if [[ -f .env ]]; then
   . ./.env
   set +a
 fi
+
+# `set -a; . ./.env` assigns unconditionally, so on its own it does the opposite
+# of what the comment above promises: the file beats the environment. That is
+# how `npm run preview:local` came to serve the app on one port while building
+# a client that called another — preview_web.sh exports WORKER_URL and .env
+# quietly replaced it. Invisible in cloud sessions, which have no .env.
+if [[ -n "$CALLER_WORKER_URL" ]]; then
+  WORKER_URL="$CALLER_WORKER_URL"
+fi
+if [[ -n "$CALLER_APP_SECRET" ]]; then
+  APP_SECRET="$CALLER_APP_SECRET"
+fi
+
+# Applied last, once both the environment and .env have had their say.
+WORKER_URL="${WORKER_URL:-https://chat.deeploveechoes.com}"
 
 if [[ -z "${APP_SECRET:-}" ]]; then
   echo "ERROR: APP_SECRET is not set (looked at the environment and .env)." >&2
