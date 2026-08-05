@@ -414,6 +414,23 @@ export default {
             }
         }
 
+        // The other half of the log: a visit that opened a character and never
+        // typed has no transcript to fetch, only a tick trail.
+        if (request.method === "GET" && url.pathname === "/api/admin/visit-detail") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                const visitId = url.searchParams.get("visit_id");
+                if (!visitId) {
+                    return jsonResponse({ error: "visit_id is required" }, { status: 400 });
+                }
+                const result = await getVisitDetail(env, visitId, url.searchParams.get("character"));
+                return jsonResponse(result);
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/api/admin/export") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -2309,33 +2326,139 @@ async function listConversations(env, params) {
     const rawOffset = parseInt(params.get("offset"), 10);
     const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
 
-    const filters = [];
-    const binds = [];
     const character = params.get("character");
     const userId = params.get("user_id");
-    if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
-    if (userId) { filters.push("user_id = ?"); binds.push(userId); }
-    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
-    const having = params.get("errors_only") === "1"
+    const errorsOnly = params.get("errors_only") === "1";
+
+    // Conversations that produced at least one exchange.
+    const chatFilters = [];
+    const chatBinds = [];
+    if (character) { chatFilters.push("chat_id LIKE ?"); chatBinds.push(`%${character}%`); }
+    if (userId) { chatFilters.push("user_id = ?"); chatBinds.push(userId); }
+    const where = chatFilters.length ? `WHERE ${chatFilters.join(" AND ")}` : "";
+    const having = errorsOnly
         ? "HAVING SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) > 0"
         : "";
 
-    const { results } = await env.CHAT_LOGS_DB.prepare(`
-        SELECT user_id, chat_id,
+    const engaged = `
+        SELECT user_id,
+               chat_id,
+               NULL AS visit_id,
+               1 AS engaged,
                COUNT(*) AS message_count,
+               -- Ticks this conversation's visits recorded before anyone
+               -- typed. Counted through visit_id because that is the only
+               -- column shared with the funnel events.
+               (SELECT COUNT(*) FROM site_visits sp
+                 WHERE sp.event = 'screen_ping'
+                   AND sp.visit_id IN (
+                       SELECT cl2.visit_id FROM conversation_logs cl2
+                        WHERE cl2.user_id = conversation_logs.user_id
+                          AND cl2.chat_id = conversation_logs.chat_id
+                          AND cl2.visit_id IS NOT NULL)) AS tick_count,
+               SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) AS error_count,
+               SUM(COALESCE(total_tokens, 0)) AS total_tokens,
                MIN(created_at) AS first_at,
                MAX(created_at) AS last_at,
-               SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) AS error_count,
-               SUM(COALESCE(total_tokens, 0)) AS total_tokens
+               NULL AS dwell_ms
         FROM conversation_logs
         ${where}
         GROUP BY user_id, chat_id
-        ${having}
+        ${having}`;
+
+    // Visits that opened a character and never said anything. They have no
+    // conversation_logs row at all, so before this they were invisible here —
+    // which hid the largest group of all: on some traffic sources most
+    // arrivals open a character and never type. Reconstructed from the funnel
+    // events instead, keyed by (visit, character) the way a chat is keyed by
+    // (user, chat_id), so both kinds list together.
+    //
+    // Excluded when filtering for errors: a visit that never sent anything
+    // cannot have failed a send.
+    const visitFilters = [
+        "event IN ('character_tap', 'screen_ping')",
+        "detail IS NOT NULL",
+        "NOT EXISTS (SELECT 1 FROM conversation_logs cl WHERE cl.visit_id = sv.visit_id)",
+    ];
+    const visitBinds = [];
+    if (character) { visitFilters.push("detail LIKE ?"); visitBinds.push(`%${character}%`); }
+    if (userId) { visitFilters.push("app_user_id = ?"); visitBinds.push(userId); }
+
+    const unengaged = `
+        SELECT MAX(sv.app_user_id) AS user_id,
+               sv.detail AS chat_id,
+               sv.visit_id AS visit_id,
+               0 AS engaged,
+               0 AS message_count,
+               SUM(CASE WHEN sv.event = 'screen_ping' THEN 1 ELSE 0 END) AS tick_count,
+               0 AS error_count,
+               0 AS total_tokens,
+               MIN(sv.created_at) AS first_at,
+               MAX(sv.created_at) AS last_at,
+               (SELECT l.duration_ms FROM site_visits l
+                 WHERE l.visit_id = sv.visit_id AND l.event = 'leave'
+                 ORDER BY l.created_at DESC LIMIT 1) AS dwell_ms
+        FROM site_visits sv
+        WHERE ${visitFilters.join(" AND ")}
+        GROUP BY sv.visit_id, sv.detail`;
+
+    const union = errorsOnly ? engaged : `${engaged} UNION ALL ${unengaged}`;
+    const binds = errorsOnly ? chatBinds : [...chatBinds, ...visitBinds];
+
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT * FROM (${union})
         ORDER BY last_at DESC
         LIMIT ? OFFSET ?
     `).bind(...binds, limit, offset).all();
 
     return { conversations: results, limit, offset };
+}
+
+/**
+ * Funnel events for one visit, oldest first — the tick trail.
+ *
+ * screen_ping fires twice a second while a character screen sits open and
+ * unengaged, stopping the moment anything is typed, so the tick count is a
+ * direct measure of how long someone looked at a character before either
+ * starting to type or giving up. 'leave' carries the dwell time for the whole
+ * page visit.
+ */
+async function getVisitEvents(env, visitIds) {
+    const ids = (visitIds || []).filter(Boolean);
+    if (!ids.length || !env.CHAT_LOGS_DB) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    const { results } = await env.CHAT_LOGS_DB.prepare(`
+        SELECT visit_id, created_at, event, detail, duration_ms,
+               source, utm_campaign, country, viewport_w, failure_reason
+        FROM site_visits
+        WHERE visit_id IN (${placeholders})
+        ORDER BY created_at ASC
+    `).bind(...ids).all();
+    return results || [];
+}
+
+/** Everything known about a visit that never produced a message. */
+async function getVisitDetail(env, visitId, character) {
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", events: [] };
+    }
+    const events = await getVisitEvents(env, [visitId]);
+    const ticks = events.filter((e) => e.event === "screen_ping");
+    const leave = events.filter((e) => e.event === "leave").pop() || null;
+    return {
+        visit_id: visitId,
+        chat_id: character || null,
+        engaged: 0,
+        events,
+        tick_count: ticks.length,
+        // Ticks are 500ms apart, but derive the span from the timestamps
+        // rather than multiplying — a backgrounded tab stops firing, and
+        // counting would then overstate how long they actually looked.
+        first_tick_at: ticks.length ? ticks[0].created_at : null,
+        last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
+        left_at: leave ? leave.created_at : null,
+        dwell_ms: leave ? leave.duration_ms : null,
+    };
 }
 
 /** All exchanges of one conversation, oldest first. */
@@ -2345,13 +2468,36 @@ async function getTranscript(env, userId, chatId) {
     }
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT id, created_at, user_message, assistant_message, status, status_code,
-               model, error, total_tokens
+               model, error, total_tokens, visit_id
         FROM conversation_logs
         WHERE user_id = ? AND chat_id = ?
         ORDER BY created_at ASC
         LIMIT 2000
     `).bind(userId, chatId).all();
-    return { user_id: userId, chat_id: chatId, messages: results };
+
+    // The tick trail that led up to the first message, plus when they left.
+    // Joined on visit_id rather than character, because that is the only
+    // column the two tables actually share — chat_id here is the scenario
+    // string ("Calypso (Nymph of Ogygia)") while the funnel events carry the
+    // character id ("calypso"), and matching those by name would break the
+    // moment a display name is edited.
+    const visitIds = [...new Set((results || []).map((r) => r.visit_id).filter(Boolean))];
+    const events = await getVisitEvents(env, visitIds);
+    const ticks = events.filter((e) => e.event === "screen_ping");
+    const leave = events.filter((e) => e.event === "leave").pop() || null;
+
+    return {
+        user_id: userId,
+        chat_id: chatId,
+        engaged: 1,
+        messages: results,
+        events,
+        tick_count: ticks.length,
+        first_tick_at: ticks.length ? ticks[0].created_at : null,
+        last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
+        left_at: leave ? leave.created_at : null,
+        dwell_ms: leave ? leave.duration_ms : null,
+    };
 }
 
 /**
@@ -2913,6 +3059,25 @@ function adminLogsPageHtml() {
   .ex-meta { font-size: 11px; color: #55555f; margin: 2px 0 14px; }
   .ex-meta .err-text { color: #e57373; }
   .gap-divider { text-align: center; color: #9a9aa5; font-size: 12px; margin: 16px 0; }
+
+  /* Visits that opened a character and never typed. Dimmed so the eye still
+     lands on real conversations first, but present so the drop-off is
+     countable instead of invisible. */
+  tr.silent td { color: #6b6b78; }
+  tr.silent td.ch { font-style: italic; }
+  .tick-badge { color: #7e9fd6; }
+  .silent-note { color: #9a9aa5; font-style: italic; }
+
+  /* Tick trail */
+  .timeline { border-left: 2px solid #2a2a33; margin: 8px 0 20px; padding: 0 0 0 14px; }
+  .tl-item { position: relative; padding: 3px 0; font-size: 13px; color: #c8c8d2; }
+  .tl-item::before { content: ""; position: absolute; left: -19px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: #45455a; }
+  .tl-item.key::before { background: #b39ddb; }
+  .tl-item.leave::before { background: #e5b573; }
+  .tl-time { color: #6b6b78; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .tl-ticks { color: #7e9fd6; }
+  .tl-summary { background: #16161c; border: 1px solid #26262f; border-radius: 8px; padding: 12px 14px; margin: 0 0 16px; font-size: 13px; line-height: 1.7; }
+  .tl-summary b { color: #e6e6ea; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -2941,7 +3106,7 @@ function adminLogsPageHtml() {
   <section id="view-list">
     <table>
       <thead>
-        <tr><th>Character</th><th>User</th><th>Messages</th><th>Errors</th><th>Tokens</th><th>First</th><th>Last active</th></tr>
+        <tr><th>Character</th><th>User</th><th>Messages</th><th>Ticks</th><th>Errors</th><th>Tokens</th><th>First</th><th>Last active</th></tr>
       </thead>
       <tbody id="conv-rows"></tbody>
     </table>
@@ -3028,19 +3193,19 @@ function adminLogsPageHtml() {
   }
 
   function loadConversations() {
-    emptyMessage(convRowsEl, 7, "Loading...", "empty");
+    emptyMessage(convRowsEl, 8, "Loading...", "empty");
     fetch("/api/admin/conversations?" + listParams().toString())
       .then(function (r) { return r.json(); })
       .then(renderConversations)
       .catch(function (err) {
-        emptyMessage(convRowsEl, 7, "Failed to load: " + err.message, "error");
+        emptyMessage(convRowsEl, 8, "Failed to load: " + err.message, "error");
       });
   }
 
   function renderConversations(data) {
     convRowsEl.innerHTML = "";
     if (data.error) {
-      emptyMessage(convRowsEl, 7, data.error, "error");
+      emptyMessage(convRowsEl, 8, data.error, "error");
       pageInfoEl.textContent = "";
       prevBtnEl.disabled = offset === 0;
       nextBtnEl.disabled = true;
@@ -3048,24 +3213,39 @@ function adminLogsPageHtml() {
     }
     var convs = data.conversations || [];
     if (convs.length === 0) {
-      emptyMessage(convRowsEl, 7, "No conversations found.", "empty");
+      emptyMessage(convRowsEl, 8, "No conversations found.", "empty");
     }
     prevBtnEl.disabled = offset === 0;
     nextBtnEl.disabled = convs.length < limit;
 
     convs.forEach(function (c) {
+      var silent = !c.engaged;
       var row = document.createElement("tr");
-      row.className = "conv-row";
-      row.appendChild(td(characterName(c.chat_id)));
-      row.appendChild(td(shortUser(c.user_id)));
-      row.appendChild(td(c.message_count));
+      row.className = "conv-row" + (silent ? " silent" : "");
+
+      var chCell = td(characterName(c.chat_id || "(unknown)"));
+      chCell.className = "ch";
+      row.appendChild(chCell);
+      row.appendChild(td(c.user_id ? shortUser(c.user_id) : "anon"));
+      // An em dash rather than 0: they did not send zero messages, they never
+      // got as far as the box.
+      row.appendChild(td(silent ? "\\u2014" : c.message_count));
+
+      var tickCell = td(c.tick_count ? c.tick_count : "");
+      if (c.tick_count) tickCell.className = "tick-badge";
+      row.appendChild(tickCell);
+
       var errCell = td(c.error_count > 0 ? c.error_count : "");
       if (c.error_count > 0) errCell.className = "err-badge";
       row.appendChild(errCell);
-      row.appendChild(td(c.total_tokens || 0));
+      row.appendChild(td(silent ? "" : (c.total_tokens || 0)));
       row.appendChild(td(fmtTime(c.first_at)));
       row.appendChild(td(fmtTime(c.last_at)));
-      row.addEventListener("click", function () { openTranscript(c.user_id, c.chat_id); });
+
+      row.addEventListener("click", function () {
+        if (silent) openVisitDetail(c.visit_id, c.chat_id);
+        else openTranscript(c.user_id, c.chat_id);
+      });
       convRowsEl.appendChild(row);
     });
     pageInfoEl.textContent = "Showing " + convs.length + " (offset " + offset + ")";
@@ -3113,6 +3293,7 @@ function adminLogsPageHtml() {
   function openTranscript(userId, chatId) {
     current = { userId: userId, chatId: chatId };
     showView("transcript");
+    document.getElementById("export-conv-btn").style.display = "";
     var metaEl = document.getElementById("t-meta");
     var messagesEl = document.getElementById("t-messages");
     metaEl.textContent = "Loading...";
@@ -3129,6 +3310,118 @@ function adminLogsPageHtml() {
       });
   }
 
+  // Ticks are 500ms apart while the character screen sits unengaged. Report
+  // the span between first and last rather than count x 500ms: a backgrounded
+  // tab stops ticking, so multiplying would claim attention that never
+  // happened.
+  function tickSpanMs(data) {
+    if (!data.first_tick_at || !data.last_tick_at) return 0;
+    return parseUtc(data.last_tick_at) - parseUtc(data.first_tick_at);
+  }
+
+  function fmtDuration(ms) {
+    if (ms === null || ms === undefined || isNaN(ms)) return "unknown";
+    var secs = Math.round(ms / 1000);
+    if (secs < 60) return secs + "s";
+    var mins = Math.floor(secs / 60);
+    return mins + "m " + (secs % 60) + "s";
+  }
+
+  // The tick trail. Consecutive screen_pings collapse into one line — sixty
+  // near-identical rows would bury the events that actually mean something.
+  function renderTimeline(container, events) {
+    if (!events || !events.length) return;
+    var wrap = document.createElement("div");
+    wrap.className = "timeline";
+
+    var i = 0;
+    while (i < events.length) {
+      var e = events[i];
+      var item = document.createElement("div");
+
+      if (e.event === "screen_ping") {
+        var j = i;
+        while (j < events.length && events[j].event === "screen_ping") j++;
+        var run = events.slice(i, j);
+        var span = parseUtc(run[run.length - 1].created_at) - parseUtc(run[0].created_at);
+        item.className = "tl-item";
+        var t1 = document.createElement("span");
+        t1.className = "tl-time";
+        t1.textContent = fmtTime(run[0].created_at);
+        item.appendChild(t1);
+        var ticks = document.createElement("span");
+        ticks.className = "tl-ticks";
+        ticks.textContent = run.length + " ticks over " + fmtDuration(span) + " - on screen, not engaging";
+        item.appendChild(ticks);
+        i = j;
+      } else {
+        var isLeave = e.event === "leave";
+        item.className = "tl-item " + (isLeave ? "leave" : "key");
+        var t2 = document.createElement("span");
+        t2.className = "tl-time";
+        t2.textContent = fmtTime(e.created_at);
+        item.appendChild(t2);
+        var label = e.event + (e.detail ? " (" + e.detail + ")" : "");
+        if (isLeave && e.duration_ms) label += " - dwell " + fmtDuration(e.duration_ms);
+        if (e.failure_reason) label += " - " + e.failure_reason;
+        item.appendChild(document.createTextNode(label));
+        i++;
+      }
+      wrap.appendChild(item);
+    }
+    container.appendChild(wrap);
+  }
+
+  // A visit that opened a character and never typed. There is no transcript
+  // to show, so the tick trail IS the record: how long they looked, and when
+  // they gave up.
+  function openVisitDetail(visitId, character) {
+    current = null;
+    showView("transcript");
+    // Nothing to export — there is no transcript, only the tick trail.
+    document.getElementById("export-conv-btn").style.display = "none";
+    var metaEl = document.getElementById("t-meta");
+    var messagesEl = document.getElementById("t-messages");
+    metaEl.textContent = "Loading...";
+    messagesEl.innerHTML = "";
+
+    fetch("/api/admin/visit-detail?visit_id=" + encodeURIComponent(visitId) +
+          "&character=" + encodeURIComponent(character || ""))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { metaEl.textContent = data.error; return; }
+        renderVisitDetail(data, metaEl, messagesEl);
+      })
+      .catch(function (err) {
+        metaEl.textContent = "Failed to load visit: " + err.message;
+      });
+  }
+
+  function renderVisitDetail(data, metaEl, messagesEl) {
+    metaEl.textContent = (data.chat_id || "unknown character") +
+      " - never engaged - visit " + String(data.visit_id).slice(0, 12);
+
+    var sum = document.createElement("div");
+    sum.className = "tl-summary";
+    var lines = ["<span class=\\"silent-note\\">Opened this character and never typed anything.</span>"];
+    if (data.tick_count) {
+      lines.push("<b>" + data.tick_count + " ticks</b> on the character screen (" +
+        fmtDuration(tickSpanMs(data)) + " before giving up)");
+    } else {
+      lines.push("No ticks recorded - left almost immediately, or the tab was backgrounded before the first tick.");
+    }
+    if (data.left_at) {
+      lines.push("Left <b>" + fmtTime(data.left_at) + "</b>" +
+        (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : ""));
+    } else {
+      lines.push("<span class=\\"silent-note\\">No leave event - the tab was closed without firing one, so the exit time is unknown.</span>");
+    }
+    sum.innerHTML = lines.join("<br>");
+    messagesEl.appendChild(sum);
+
+    renderTimeline(messagesEl, data.events);
+  }
+
   function renderTranscript(data, metaEl, messagesEl) {
     var msgs = data.messages || [];
     var name = characterName(data.chat_id);
@@ -3138,6 +3431,23 @@ function adminLogsPageHtml() {
       msgs.length + " exchanges" +
       (msgs.length ? ", " + fmtTime(msgs[0].created_at) + " to " + fmtTime(msgs[msgs.length - 1].created_at) : "") +
       (tokens ? ", " + tokens + " tokens" : "");
+
+    if (data.tick_count || data.left_at) {
+      var sum = document.createElement("div");
+      sum.className = "tl-summary";
+      var parts = [];
+      if (data.tick_count) {
+        parts.push("<b>" + data.tick_count + " ticks</b> before engaging (" +
+          fmtDuration(tickSpanMs(data)) + " looking at the character)");
+      }
+      if (data.left_at) {
+        parts.push("left <b>" + fmtTime(data.left_at) + "</b>" +
+          (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : ""));
+      }
+      sum.innerHTML = parts.join("<br>");
+      messagesEl.appendChild(sum);
+      renderTimeline(messagesEl, data.events);
+    }
 
     var prevAt = null;
     msgs.forEach(function (m) {
