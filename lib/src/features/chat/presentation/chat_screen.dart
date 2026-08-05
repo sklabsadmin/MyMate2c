@@ -204,12 +204,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  /// Ticks twice a second from the moment a character is opened, capped at
-  /// 30s, reporting a screen_ping funnel event on each tick and stopping the
-  /// instant there is any sign of engagement (see _stopScreenPing). Bounded
-  /// on both axes so it stays cheap despite the fast tick rate: only visits
-  /// that actually open a character send these at all (a small fraction of
-  /// arrivals), and never more than 60 ticks each.
+  /// Ticks every 2s from the moment a character is opened, capped at 30s,
+  /// reporting a screen_ping funnel event on each tick and stopping the
+  /// instant there is any sign of engagement (see _stopScreenPing).
+  ///
+  /// The rate was originally 500ms/60 ticks, which is 60 D1 rows for every
+  /// visit that opens a character and bounces — and per the figures below,
+  /// that is most of them. At roughly 1,600 such visits it exhausts D1's
+  /// 100k daily writes, and traffic arrives in bursts after a boost, which is
+  /// exactly when the data matters most. Worse, the writes share a database
+  /// with conversation_logs, so exhausting the quota degrades chat itself.
+  /// 2s over the same 30s window is 15 rows: the same shape of answer at a
+  /// quarter of the cost, and still far finer than the 5s-vs-40s distinction
+  /// this exists to draw.
   ///
   /// The gap the funnel could not see: character_tap fires and, most of the
   /// time, nothing else ever does — for Facebook traffic specifically, 86% of
@@ -227,11 +234,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// same technique the admin funnel query already uses for other events.
   Timer? _screenPingTimer;
   int _screenPingTicks = 0;
-  static const int _maxScreenPingTicks = 60; // 60 x 500ms = 30s
+  static const int _maxScreenPingTicks = 15; // 15 x 2s = 30s
 
   void _startScreenPing() {
     _screenPingTimer =
-        Timer.periodic(const Duration(milliseconds: 500), (_) {
+        Timer.periodic(const Duration(seconds: 2), (_) {
       _screenPingTicks++;
       if (_screenPingTicks > _maxScreenPingTicks) {
         _stopScreenPing();

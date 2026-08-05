@@ -1162,7 +1162,34 @@ function base64UrlDecode(value) {
     return new TextDecoder().decode(bytes);
 }
 
+/// Writes the row, but never lets failing to write one cost the visitor their
+/// reply.
+///
+/// The three call sites in the chat handler await this inside the try whose
+/// catch returns a 500, so anything thrown here is returned to the client as a
+/// server error. That meant an unavailable, over-quota or rate-limited D1 could
+/// turn a perfectly good AI reply into "<character> is having trouble thinking
+/// right now" — the identical message a real backend outage produces, from a
+/// cause that has nothing to do with the conversation. Analytics must not be
+/// able to take the product down.
+///
+/// REQUIRE_CHAT_LOGS is the deliberate opt-out: it exists so an operator can
+/// say "a lost row is worse than a failed request". When it is "true" the
+/// failure is rethrown and the 500 happens as before.
 async function persistConversationLog(env, entry) {
+    try {
+        await writeConversationLogRow(env, entry);
+    } catch (e) {
+        console.error(JSON.stringify({
+            event: "chat_log_failed",
+            requestId: entry.id,
+            error: e && e.message ? e.message : String(e),
+        }));
+        if (env.REQUIRE_CHAT_LOGS === "true") throw e;
+    }
+}
+
+async function writeConversationLogRow(env, entry) {
     if (entry.synthetic) return;
     if (!env.CHAT_LOGS_DB) {
         if (env.REQUIRE_CHAT_LOGS === "true") {
