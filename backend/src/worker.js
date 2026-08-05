@@ -2604,10 +2604,38 @@ function dur(ms) {
   if (ms === null || ms === undefined) return '<span class="muted">—</span>';
   return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
 }
-async function load() {
-  const days = document.getElementById('days').value;
+// Tick -> seconds has to be computable in the browser as well, because each
+// row's own tick count is only known here. The worker's constants are
+// interpolated in rather than written out a second time, so the two copies
+// cannot drift; calling the worker's screenPingSeconds() directly from this
+// script is what left the page stuck on "Loading…" — it is a module-scope
+// function that does not exist in the page.
+const PING = ${JSON.stringify({
+        phase1Ticks: SCREEN_PING_PHASE1_TICKS,
+        phase1Interval: SCREEN_PING_PHASE1_INTERVAL_SECONDS,
+        phase1Seconds: SCREEN_PING_PHASE1_SECONDS,
+        phase2Interval: SCREEN_PING_PHASE2_INTERVAL_SECONDS,
+        maxTicks: SCREEN_PING_MAX_TICKS,
+    })};
+function screenPingSeconds(ticks) {
+  return ticks <= PING.phase1Ticks
+    ? ticks * PING.phase1Interval
+    : PING.phase1Seconds + (ticks - PING.phase1Ticks) * PING.phase2Interval;
+}
+// Anything thrown in here used to leave "Loading…" on screen with the real
+// error only in the console, which is indistinguishable from a slow request.
+// load() now always reports what went wrong on the page itself.
+function load() {
   const out = document.getElementById('out');
   out.textContent = 'Loading…';
+  render(out).catch(function (err) {
+    console.error('visits page failed', err);
+    out.innerHTML = '<p style="color:#e57373">Could not load this page: ' +
+      esc(err && err.message ? err.message : err) + '</p>';
+  });
+}
+async function render(out) {
+  const days = document.getElementById('days').value;
   const res = await fetch('/api/admin/visits?days=' + days);
   if (!res.ok) { out.textContent = 'Error ' + res.status; return; }
   const d = await res.json();
@@ -2645,8 +2673,8 @@ async function load() {
          // label would overstate by two seconds and quietly rot again the next
          // time the cadence moves.
          '<th>Never engaged</th><th>Left instantly</th><th>&lt;5s</th><th>5&ndash;15s</th>' +
-         '<th>15&ndash;' + screenPingSeconds(SCREEN_PING_MAX_TICKS) + 's</th>' +
-         '<th>Stayed ' + screenPingSeconds(SCREEN_PING_MAX_TICKS) + 's+</th></tr>';
+         '<th>15&ndash;' + screenPingSeconds(PING.maxTicks) + 's</th>' +
+         '<th>Stayed ' + screenPingSeconds(PING.maxTicks) + 's+</th></tr>';
     for (const r of buckets) {
       h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.never_engaged +
            '</td><td class="num">' + (r.left_instantly || 0) +
