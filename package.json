@@ -4,10 +4,11 @@
   },
   "scripts": {
     "build:web": "bash tool/build_web.sh",
-    "deploy": "bash tool/build_web.sh && wrangler deploy && bash tool/verify_deploy.sh https://chat.deeploveechoes.com",
+    "deploy": "bash tool/build_web.sh && wrangler deploy && bash tool/verify_deploy.sh https://chat.deeploveechoes.com && bash tool/smoke_test.sh https://chat.deeplovepoems.com",
     "preview": "wrangler dev",
     "preview:local": "bash tool/preview_web.sh serve",
-    "preview:shot": "bash tool/preview_web.sh shot"
+    "preview:shot": "bash tool/preview_web.sh shot",
+    "smoke": "bash tool/smoke_test.sh"
   },
   "allowScripts": {
     "workerd@1.20260730.1": true,
