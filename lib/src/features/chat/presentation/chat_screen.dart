@@ -234,11 +234,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// same technique the admin funnel query already uses for other events.
   Timer? _screenPingTimer;
   int _screenPingTicks = 0;
+  /// Mirrored by SCREEN_PING_INTERVAL_SECONDS / SCREEN_PING_MAX_SECONDS in
+  /// backend/src/worker.js, which converts a visit's tick count into elapsed
+  /// seconds for the admin dwell buckets. Changing the cadence here without
+  /// changing it there shifts every dwell figure by the ratio, silently and
+  /// plausibly — keep the two in step.
+  static const Duration _screenPingInterval = Duration(seconds: 2);
   static const int _maxScreenPingTicks = 15; // 15 x 2s = 30s
 
   void _startScreenPing() {
     _screenPingTimer =
-        Timer.periodic(const Duration(seconds: 2), (_) {
+        Timer.periodic(_screenPingInterval, (_) {
       _screenPingTicks++;
       if (_screenPingTicks > _maxScreenPingTicks) {
         _stopScreenPing();

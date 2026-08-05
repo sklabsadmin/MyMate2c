@@ -292,21 +292,32 @@ export default {
             // actually lingered before giving up — the question leave's
             // page-wide dwell cannot answer, because it does not isolate time
             // on the chat screen from time spent anywhere else on the visit.
-            // screen_ping ticks twice a second, capped at 60 (30s), only for
+            // screen_ping ticks every SCREEN_PING_INTERVAL_SECONDS, capped at
+            // SCREEN_PING_MAX_SECONDS, only for
             // visits that reach character_tap and stops the instant any
             // engagement signal fires — so a visit's own tick count is a
             // direct, cheap proxy for elapsed seconds on the screen, with no
             // need for timestamp arithmetic. Bucketed rather than averaged: an
             // average of "left in 1s" and "stayed 30s" hides the fact that
             // those are two different visitors with two different problems.
+            // Tick -> seconds boundaries, derived rather than written out, so
+            // the buckets cannot drift from the client's tick rate the way they
+            // did when the rate changed from 500ms to 2s and every threshold
+            // below was left describing the old one: "stayed the full 30s"
+            // needed 60 ticks, which a 2s tick can never reach, so that column
+            // read 0 for everyone while genuinely-engaged visits were counted
+            // as leaving in under 15 seconds.
+            const b5s = Math.ceil(5 / SCREEN_PING_INTERVAL_SECONDS);
+            const b15s = Math.ceil(15 / SCREEN_PING_INTERVAL_SECONDS);
+            const bFull = Math.ceil(SCREEN_PING_MAX_SECONDS / SCREEN_PING_INTERVAL_SECONDS);
             const dwellBuckets = await db.prepare(`
                 SELECT a.source AS source,
                        COUNT(DISTINCT a.visit_id) AS never_engaged,
                        SUM(CASE WHEN p.ticks IS NULL OR p.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
-                       SUM(CASE WHEN p.ticks BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS left_under_5s,
-                       SUM(CASE WHEN p.ticks BETWEEN 10 AND 29 THEN 1 ELSE 0 END) AS left_5s_to_15s,
-                       SUM(CASE WHEN p.ticks BETWEEN 30 AND 59 THEN 1 ELSE 0 END) AS left_15s_to_30s,
-                       SUM(CASE WHEN p.ticks >= 60 THEN 1 ELSE 0 END) AS stayed_full_30s
+                       SUM(CASE WHEN p.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
+                       SUM(CASE WHEN p.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
+                       SUM(CASE WHEN p.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
+                       SUM(CASE WHEN p.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
                 FROM site_visits a
                 LEFT JOIN (
                     SELECT visit_id, COUNT(*) AS ticks
@@ -1427,6 +1438,21 @@ async function checkRateLimit(kv, userId) {
 // direct-OpenAI path (see CHARACTER_PERSONAS below): one call instead of
 // Inworld-plus-a-cleanup-pass, so he answers faster and costs less, and his
 // prompt is edited in one place with everyone else's.
+/// Cadence of the client's screen_ping heartbeat, mirrored from
+/// _screenPingInterval / _maxScreenPingTicks in chat_screen.dart.
+///
+/// The admin dwell buckets convert a visit's tick count into elapsed seconds,
+/// so these two numbers are the conversion factor. If the client rate changes
+/// and these do not, every dwell figure silently shifts by that ratio while
+/// still looking perfectly plausible — which is exactly what happened when the
+/// rate went from 500ms to 2s.
+///
+/// Note the change also breaks comparability with rows recorded before it: a
+/// tick was 0.5s then and is 2s now, so a visit logged under the old rate looks
+/// four times longer than it was. Only compare dwell data within one era.
+const SCREEN_PING_INTERVAL_SECONDS = 2;
+const SCREEN_PING_MAX_SECONDS = 30;
+
 const INWORLD_CHARACTERS = {
     oedipus: {
         id: "oedipus",
@@ -2640,7 +2666,9 @@ async function load() {
     // still open right now (no leave row) shows its ticks-so-far live,
     // updating on every page refresh even with no session log of its own.
     const ticksCell = r.opened_character
-      ? '<span title="' + (r.ticks || 0) + ' x 0.5s ticks">' + (r.ticks || 0) + '</span>'
+      ? '<span title="' + (r.ticks || 0) + ' x ' + SCREEN_PING_INTERVAL_SECONDS +
+        's ticks = ~' + ((r.ticks || 0) * SCREEN_PING_INTERVAL_SECONDS) +
+        's on the chat screen">' + (r.ticks || 0) + '</span>'
       : '<span class="muted">—</span>';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' +
