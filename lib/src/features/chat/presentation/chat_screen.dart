@@ -204,19 +204,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  /// Ticks every 2s from the moment a character is opened, capped at 30s,
-  /// reporting a screen_ping funnel event on each tick and stopping the
-  /// instant there is any sign of engagement (see _stopScreenPing).
+  /// Reports a screen_ping funnel event from the moment a character is opened
+  /// until 30s, stopping the instant there is any sign of engagement (see
+  /// _stopScreenPing).
   ///
-  /// The rate was originally 500ms/60 ticks, which is 60 D1 rows for every
-  /// visit that opens a character and bounces — and per the figures below,
-  /// that is most of them. At roughly 1,600 such visits it exhausts D1's
-  /// 100k daily writes, and traffic arrives in bursts after a boost, which is
-  /// exactly when the data matters most. Worse, the writes share a database
-  /// with conversation_logs, so exhausting the quota degrades chat itself.
-  /// 2s over the same 30s window is 15 rows: the same shape of answer at a
-  /// quarter of the cost, and still far finer than the 5s-vs-40s distinction
-  /// this exists to draw.
+  /// Two cadences, because resolution and cost matter in opposite places. The
+  /// first 10 seconds decide almost everything — whether someone bounced on
+  /// sight or actually looked — so that window ticks every 500ms and can tell
+  /// 2s apart from 5s. After that the only question left is roughly how long
+  /// they lingered, which 3s answers just as well.
+  ///
+  /// Cost is why it is not 500ms throughout: every tick is a D1 row, and per
+  /// the figures below most visits that open a character never engage, so they
+  /// pay the full run. A flat 500ms is 60 rows a visit and around 1,600 such
+  /// visits exhausts D1's 100k daily writes — during a boost, which is exactly
+  /// when the data matters. Those writes share a database with
+  /// conversation_logs, so running the quota dry degrades chat itself. Splitting
+  /// the cadence costs 26 rows instead and gives up nothing in the window that
+  /// actually answers the question.
   ///
   /// The gap the funnel could not see: character_tap fires and, most of the
   /// time, nothing else ever does — for Facebook traffic specifically, 86% of
@@ -234,30 +239,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// same technique the admin funnel query already uses for other events.
   Timer? _screenPingTimer;
   int _screenPingTicks = 0;
-  /// Mirrored by SCREEN_PING_INTERVAL_SECONDS / SCREEN_PING_MAX_SECONDS in
-  /// backend/src/worker.js, which converts a visit's tick count into elapsed
-  /// seconds for the admin dwell buckets. Changing the cadence here without
-  /// changing it there shifts every dwell figure by the ratio, silently and
-  /// plausibly — keep the two in step.
-  static const Duration _screenPingInterval = Duration(seconds: 2);
-  static const int _maxScreenPingTicks = 15; // 15 x 2s = 30s
+  /// Mirrored by the SCREEN_PING_* constants in backend/src/worker.js, which
+  /// turn a visit's tick count back into elapsed seconds for the admin dwell
+  /// buckets. Because the cadence changes partway through, that conversion is
+  /// no longer a single multiply — tick 22 is 16s, not 11s — so the two sides
+  /// have to agree on all four numbers, not just the interval. Change one
+  /// without the other and every dwell figure shifts, silently and plausibly.
+  static const Duration _screenPingPhase1Interval = Duration(milliseconds: 500);
+  static const Duration _screenPingPhase2Interval = Duration(seconds: 3);
+  static const int _screenPingPhase1Ticks = 20; // 20 x 500ms = first 10s
+  static const int _maxScreenPingTicks = 26; // + 6 x 3s = 28s, inside the 30s cap
 
   void _startScreenPing() {
     _screenPingTimer =
-        Timer.periodic(_screenPingInterval, (_) {
-      _screenPingTicks++;
-      if (_screenPingTicks > _maxScreenPingTicks) {
-        _stopScreenPing();
-        return;
-      }
-      SharedPreferences.getInstance().then((prefs) {
-        logFunnelEvent(
-          'screen_ping',
-          detail: widget.characterId,
-          appUserId: prefs.getString('user_id'),
-        );
-      });
+        Timer.periodic(_screenPingPhase1Interval, _onScreenPingTick);
+  }
+
+  void _onScreenPingTick(Timer _) {
+    _screenPingTicks++;
+    if (_screenPingTicks > _maxScreenPingTicks) {
+      _stopScreenPing();
+      return;
+    }
+    SharedPreferences.getInstance().then((prefs) {
+      logFunnelEvent(
+        'screen_ping',
+        detail: widget.characterId,
+        appUserId: prefs.getString('user_id'),
+      );
     });
+    // Drop to the slow cadence once the decisive first 10s are recorded. The
+    // timer is replaced rather than left running and skipped, so the device
+    // stops waking six times as often as it needs to.
+    if (_screenPingTicks == _screenPingPhase1Ticks) {
+      _screenPingTimer?.cancel();
+      _screenPingTimer =
+          Timer.periodic(_screenPingPhase2Interval, _onScreenPingTick);
+    }
   }
 
   /// Called the instant there is any real sign of engagement (typing,

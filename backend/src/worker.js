@@ -307,9 +307,9 @@ export default {
             // needed 60 ticks, which a 2s tick can never reach, so that column
             // read 0 for everyone while genuinely-engaged visits were counted
             // as leaving in under 15 seconds.
-            const b5s = Math.ceil(5 / SCREEN_PING_INTERVAL_SECONDS);
-            const b15s = Math.ceil(15 / SCREEN_PING_INTERVAL_SECONDS);
-            const bFull = Math.ceil(SCREEN_PING_MAX_SECONDS / SCREEN_PING_INTERVAL_SECONDS);
+            const b5s = screenPingTicksAt(5);
+            const b15s = screenPingTicksAt(15);
+            const bFull = SCREEN_PING_MAX_TICKS;
             const dwellBuckets = await db.prepare(`
                 SELECT a.source AS source,
                        COUNT(DISTINCT a.visit_id) AS never_engaged,
@@ -1450,8 +1450,35 @@ async function checkRateLimit(kv, userId) {
 /// Note the change also breaks comparability with rows recorded before it: a
 /// tick was 0.5s then and is 2s now, so a visit logged under the old rate looks
 /// four times longer than it was. Only compare dwell data within one era.
-const SCREEN_PING_INTERVAL_SECONDS = 2;
+const SCREEN_PING_PHASE1_INTERVAL_SECONDS = 0.5;
+const SCREEN_PING_PHASE1_SECONDS = 10;
+const SCREEN_PING_PHASE2_INTERVAL_SECONDS = 3;
 const SCREEN_PING_MAX_SECONDS = 30;
+
+const SCREEN_PING_PHASE1_TICKS =
+    SCREEN_PING_PHASE1_SECONDS / SCREEN_PING_PHASE1_INTERVAL_SECONDS;
+const SCREEN_PING_MAX_TICKS = SCREEN_PING_PHASE1_TICKS + Math.floor(
+    (SCREEN_PING_MAX_SECONDS - SCREEN_PING_PHASE1_SECONDS) /
+    SCREEN_PING_PHASE2_INTERVAL_SECONDS);
+
+/// Seconds on the chat screen that a given tick count represents.
+function screenPingSeconds(ticks) {
+    if (ticks <= SCREEN_PING_PHASE1_TICKS) {
+        return ticks * SCREEN_PING_PHASE1_INTERVAL_SECONDS;
+    }
+    return SCREEN_PING_PHASE1_SECONDS +
+        (ticks - SCREEN_PING_PHASE1_TICKS) * SCREEN_PING_PHASE2_INTERVAL_SECONDS;
+}
+
+/// The first tick whose elapsed time reaches `seconds` — the inverse of the
+/// above, and what the dwell buckets are cut on.
+function screenPingTicksAt(seconds) {
+    if (seconds <= SCREEN_PING_PHASE1_SECONDS) {
+        return Math.ceil(seconds / SCREEN_PING_PHASE1_INTERVAL_SECONDS);
+    }
+    return SCREEN_PING_PHASE1_TICKS + Math.ceil(
+        (seconds - SCREEN_PING_PHASE1_SECONDS) / SCREEN_PING_PHASE2_INTERVAL_SECONDS);
+}
 
 const INWORLD_CHARACTERS = {
     oedipus: {
@@ -2613,8 +2640,13 @@ async function load() {
          'anything. Left instantly means gone before the first half-second tick &mdash; ' +
          'the screen never had a chance. Stayed the full 30s means they were still ' +
          'reading when we stopped counting.</p><div class="wrap"><table><tr><th>Source</th>' +
+         // Last column is labelled from the real cap rather than a written-in
+         // "30s": the slow phase's final tick lands at 28s, not 30, so a fixed
+         // label would overstate by two seconds and quietly rot again the next
+         // time the cadence moves.
          '<th>Never engaged</th><th>Left instantly</th><th>&lt;5s</th><th>5&ndash;15s</th>' +
-         '<th>15&ndash;30s</th><th>Stayed full 30s</th></tr>';
+         '<th>15&ndash;' + screenPingSeconds(SCREEN_PING_MAX_TICKS) + 's</th>' +
+         '<th>Stayed ' + screenPingSeconds(SCREEN_PING_MAX_TICKS) + 's+</th></tr>';
     for (const r of buckets) {
       h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.never_engaged +
            '</td><td class="num">' + (r.left_instantly || 0) +
@@ -2666,9 +2698,9 @@ async function load() {
     // still open right now (no leave row) shows its ticks-so-far live,
     // updating on every page refresh even with no session log of its own.
     const ticksCell = r.opened_character
-      ? '<span title="' + (r.ticks || 0) + ' x ' + SCREEN_PING_INTERVAL_SECONDS +
-        's ticks = ~' + ((r.ticks || 0) * SCREEN_PING_INTERVAL_SECONDS) +
-        's on the chat screen">' + (r.ticks || 0) + '</span>'
+      ? '<span title="' + (r.ticks || 0) + ' ticks = ~' +
+        screenPingSeconds(r.ticks || 0) + 's on the chat screen">' +
+        (r.ticks || 0) + '</span>'
       : '<span class="muted">—</span>';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' +
