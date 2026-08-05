@@ -1,9 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // mymate-v2 is the new active-development worker. mymate2c is now a
-  // frozen checkpoint (same pattern as mymate-api for the 1.39 App Store
-  // build) — nothing should deploy to it going forward.
-  "name": "mymate-v2",
+  // mythoslive is the active worker. mymate-v2 and mymate2c are both frozen
+  // predecessors (same pattern as mymate-api for the 1.39 App Store build) —
+  // nothing should deploy to either going forward.
+  //
+  // Renaming here creates a NEW Worker; Cloudflare has no rename. The old one
+  // keeps running with its custom domains and secrets still attached, which is
+  // invisible from this repo and looks exactly like a successful deploy. That
+  // is how the 21 July mymate2c -> mymate-v2 rename left production on a
+  // two-week-old build. See docs/worker-migration-runbook.md.
+  "name": "mythoslive",
   "main": "backend/src/worker.js",
   "compatibility_date": "2026-07-05",
   "workers_dev": true,
@@ -74,9 +80,14 @@
     // without it ships an empty secret and breaks chat for everyone, which is
     // exactly why this flag was previously turned off.
     "REQUIRE_SIGNATURE": "true",
-    // Update this once the worker's real URL is confirmed (used for
-    // Instagram/Google-auth redirects only; not load-bearing for chat/logging).
-    "APP_ORIGIN": "https://mymate-v2.sklabs-admin.workers.dev",
+    // Fallback landing origin after an Instagram/Google auth round trip, used
+    // only when the caller did not supply returnTo — which the app always does,
+    // so this rarely fires. Not load-bearing for chat or logging.
+    //
+    // Must name the worker that is actually serving, or the rare fallback drops
+    // someone on a dead host. Consider pointing it at a real user-facing domain
+    // rather than workers.dev, so the fallback lands where visitors already are.
+    "APP_ORIGIN": "https://mythoslive.sklabs-admin.workers.dev",
     // Google Sign-In (Settings > Continue with Google). Client ID is not
     // secret; GOOGLE_CLIENT_SECRET is set via `wrangler secret put`.
     "GOOGLE_CLIENT_ID": "791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com"
