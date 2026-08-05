@@ -2836,9 +2836,20 @@ function adminReferralsPageHtml() {
 </main>
 <script>
 const esc = s => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
-async function load() {
+// Same guard as the visits page: without it a failed request or a throw
+// mid-render leaves the last-rendered numbers (or the empty shell) on screen
+// with nothing to say something went wrong.
+function load() {
+  render().catch(function (err) {
+    console.error('referrals page failed', err);
+    document.getElementById('total').textContent =
+      'error: ' + (err && err.message ? err.message : err);
+  });
+}
+async function render() {
   const days = document.getElementById('days').value;
   const res = await fetch('/api/admin/referrals?days=' + days);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
   const d = await res.json();
   if (d.error) { document.getElementById('total').textContent = d.error; return; }
   document.getElementById('total').textContent = d.totalVisits ?? 0;
