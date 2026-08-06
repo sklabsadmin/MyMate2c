@@ -96,9 +96,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// generating. Checked after every await in [_triggerWelcomeSequence].
   bool _welcomeAbandoned = false;
 
+  /// Which run of the welcome sequence is the current one.
+  ///
+  /// [_welcomeAbandoned] alone cannot survive a restart: starting a fresh
+  /// conversation sets it true to stop the running script and
+  /// [_triggerWelcomeSequence] immediately sets it false again, at which point
+  /// the *old* loop — still parked on a delay — wakes up, sees a clear flag
+  /// and carries on posting into the new conversation alongside the new one.
+  /// Each run captures this counter and stops as soon as it is no longer the
+  /// latest.
+  int _welcomeRun = 0;
+
   /// Ceilings on the welcome sequence's simulated typing, in milliseconds.
   static const int _openerTypingCapMs = 2200;
   static const int _followUpTypingCapMs = 1200;
+
+  /// How long a beat of a scripted opening takes, per word of that beat.
+  ///
+  /// This is the main pacing dial: raise it to slow the whole script down,
+  /// lower it to speed it up. A flat interval was the first attempt and it was
+  /// wrong — "Those make better songs." and a thirty-word sentence about the
+  /// sea got the same one second each, so the short beats felt spat out and
+  /// the long ones were gone before they could be read. Time per word keeps a
+  /// short line snappy and gives a long one room, which is also just how a
+  /// person types.
+  ///
+  /// 260ms/word is roughly half of unhurried reading speed: fast enough to
+  /// feel live, slow enough to follow.
+  static const int _scriptMsPerWord = 260;
+
+  /// Fixed cost on every beat, for the pause between one line and the next
+  /// that has nothing to do with how long either is.
+  static const int _scriptBeatBaseMs = 400;
+
+  /// Floor and ceiling on a beat. The floor stops a two-word line snapping past
+  /// unread; the ceiling stops the single longest sentence stalling the script.
+  static const int _scriptBeatMinMs = 900;
+  static const int _scriptBeatMaxMs = 4500;
+
+  /// Share of each beat spent showing the typing indicator before the message
+  /// lands, bounded so it is always perceptible but never the whole beat.
+  static const int _scriptTypingMinMs = 300;
+  static const int _scriptTypingMaxMs = 1400;
+
+  /// Extra pause at a segment boundary — the gap between one "Calypso:" turn
+  /// and the next. She has stopped and started again, not carried on, so it
+  /// needs to read as a longer breath than the beats inside a turn.
+  static const int _scriptSegmentPauseMs = 1500;
+
+  /// Extra pause after a segment that asks the visitor something outright and
+  /// holds for an answer, rather than talking straight through it.
+  static const int _scriptWaitPauseMs = 6000;
 
   static const List<String> _idlePrompts = [
     "So — what's on your mind?",
@@ -296,6 +344,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// only a real keystroke fires it — the starter prompts set the controller
   /// directly and must not be counted as typing.
   void _onUserTyped() {
+    // Scripted characters only. A visitor who starts typing during an
+    // eighty-second monologue has taken the turn and the rest would talk over
+    // them; a one-bubble opener has no such problem and should still land.
+    //
+    // Before the _loggedTyping guard: that guard exists to log input_typed
+    // once, but abandoning has to happen on every keystroke path, including
+    // after a regenerate has restarted the sequence with _loggedTyping already
+    // set.
+    if (_hasOpeningScript) _welcomeAbandoned = true;
+
     if (_loggedTyping) return;
     _loggedTyping = true;
     _stopScreenPing();
@@ -743,6 +801,190 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ];
   }
 
+  /// The scripted opening for a character, or null if they open the usual way
+  /// with a single question.
+  ///
+  /// A script is a different opening shape entirely: instead of handing the
+  /// turn straight over, the character talks for a while and the visitor is
+  /// free to just read. It runs until they type or tap a starter, at which
+  /// point whatever is left is dropped and the model takes the conversation
+  /// from wherever it actually got to — the script is an opening, not a rail.
+  ///
+  /// Keyed on characterId rather than the scenario string the rest of this
+  /// file matches on. Scenario matching is substring-based and has already
+  /// caused one mix-up (see the Andromache/Hector note above); the id is exact.
+  List<({List<String> lines, bool waits})>? _openingScriptFor(
+    String? characterId,
+  ) {
+    if (characterId == 'calypso') return _calypsoOpeningScript;
+    return null;
+  }
+
+  /// Whether this character opens with a script rather than the single
+  /// question everyone else opens with.
+  ///
+  /// Gates the behaviour that only a script needs, so adding Calypso's opening
+  /// changed nothing for the other twenty characters. They keep the one-bubble
+  /// opener, and it keeps landing even if the visitor starts typing over it —
+  /// suppressing that would leave a chat with no greeting in it at all, which
+  /// is a regression for an opener that arrives in under three seconds and a
+  /// necessity only for one that runs for eighty.
+  bool get _hasOpeningScript => _openingScriptFor(widget.characterId) != null;
+
+  /// Calypso's scripted opening.
+  ///
+  /// Each string here is its OWN message bubble, not a line inside one. That
+  /// is the whole shape of it: short beats arriving one after another read as
+  /// someone talking to you, where the same words collapsed into a paragraph
+  /// read as an essay and get skipped.
+  ///
+  /// A segment is one "Calypso:" turn — she stops and starts again between
+  /// them, so a boundary gets a longer breath than the beats inside it. The
+  /// segments marked `waits` are the script's own `(wait)` marks: she has
+  /// asked something and holds for an answer before going on.
+  ///
+  /// She opens by talking rather than by asking, which every other character
+  /// does. That is on purpose: she is the one who spent seven years with
+  /// someone who mostly sat and carved driftwood. But the first real question
+  /// still lands inside the opening twenty seconds.
+  static const List<({List<String> lines, bool waits})>
+      _calypsoOpeningScript = [
+    (
+      waits: false,
+      lines: ['Well... another stranger has washed ashore.'],
+    ),
+    (
+      waits: false,
+      lines: ["Don't worry. My island has better Wi-Fi than it used to."],
+    ),
+    (
+      waits: false,
+      lines: ["You're smiling already, aren't you?"],
+    ),
+    (
+      waits: true,
+      lines: [
+        'Tell me... have you ever read the old stories about me, or did my '
+            'name simply sound mysterious?',
+      ],
+    ),
+    (
+      waits: false,
+      lines: [
+        'Most people imagine I spent my days trying to imprison Odysseus.',
+        "That isn't how it felt.",
+        "Imagine meeting the first interesting soul you've seen in "
+            'centuries... then learning the gods had already decided he would '
+            'leave.',
+      ],
+    ),
+    (
+      waits: true,
+      lines: ['Would you have fought fate... or let him sail?'],
+    ),
+    (
+      waits: false,
+      lines: [
+        'No answer?',
+        "Perhaps you're thinking.",
+        'I like people who think before they speak.',
+      ],
+    ),
+    (
+      waits: false,
+      lines: [
+        'The poets never wrote about the quiet evenings.',
+        'We watched the waves.',
+        'We argued about whether home is a place... or simply the people you '
+            'miss.',
+      ],
+    ),
+    (
+      waits: true,
+      lines: [
+        'What do you think?',
+        'Can someone have two homes?',
+      ],
+    ),
+    (
+      waits: false,
+      lines: [
+        "You know what's amusing?",
+        'Thousands of years have passed...',
+        'People still ask me whether I was a villain or a victim.',
+        'Almost nobody asks if I was lonely.',
+      ],
+    ),
+    (
+      waits: false,
+      lines: [
+        "If you're still here...",
+        '...say hello.',
+        "I've been waiting a very long time for a new conversation.",
+      ],
+    ),
+  ];
+
+  /// Plays a scripted opening one beat at a time, stopping the instant the
+  /// visitor engages. Every await is followed by the same abandon check the
+  /// rest of [_triggerWelcomeSequence] uses, so a tap or a keystroke
+  /// mid-monologue leaves the remaining beats unsent rather than landing them
+  /// on top of the visitor's own message.
+  Future<void> _playOpeningScript(
+    List<({List<String> lines, bool waits})> script,
+    int run,
+  ) async {
+    for (var s = 0; s < script.length; s++) {
+      final segment = script[s];
+      final lastSegment = s == script.length - 1;
+
+      for (var i = 0; i < segment.lines.length; i++) {
+        final line = segment.lines[i];
+
+        // Beat length comes from the line itself, so a four-word remark and a
+        // thirty-word sentence are not given the same second.
+        final words = line.trim().split(RegExp(r'\s+')).length;
+        final beatMs = (_scriptBeatBaseMs + (words * _scriptMsPerWord))
+            .clamp(_scriptBeatMinMs, _scriptBeatMaxMs);
+        final typingMs = (beatMs * 45 ~/ 100)
+            .clamp(_scriptTypingMinMs, _scriptTypingMaxMs);
+        final gapMs = max(0, beatMs - typingMs);
+
+        // The indicator now runs per line rather than per segment. At the old
+        // flat 1s it strobed and read as a glitch; at a beat this long it
+        // reads as her writing each line, and it is what makes the pause
+        // before a long sentence feel intended rather than stalled.
+        if (!mounted || _welcomeAbandoned || run != _welcomeRun) return;
+        setState(() => _isTyping = true);
+        _scrollToBottom();
+        await Future.delayed(Duration(milliseconds: typingMs));
+        if (!mounted || _welcomeAbandoned || run != _welcomeRun) return;
+        setState(() => _isTyping = false);
+
+        _addMessage(
+          ChatMessage(
+            id: 'welcome_${DateTime.now().microsecondsSinceEpoch}_${s}_$i',
+            text: line,
+            isUser: false,
+            timestamp: DateTime.now(),
+          ),
+        );
+
+        final lastLine = i == segment.lines.length - 1;
+        if (lastLine && lastSegment) return;
+
+        // A segment boundary is a longer breath: she stopped and started
+        // again rather than carrying on. Where the script holds on a
+        // question, longer still.
+        var delay = gapMs;
+        if (lastLine) {
+          delay += segment.waits ? _scriptWaitPauseMs : _scriptSegmentPauseMs;
+        }
+        await Future.delayed(Duration(milliseconds: delay));
+      }
+    }
+  }
+
   Future<void> _triggerWelcomeSequence() async {
     // Get Personalized "Playful & Flirty" Sequence
     final initialMessages = _getWelcomeMessages(widget.scenario ?? "");
@@ -750,6 +992,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Fresh run (this also covers the reset/regenerate path, which re-enters
     // here on an existing screen after the visitor has already spoken).
     _welcomeAbandoned = false;
+    final run = ++_welcomeRun;
 
     // The portrait is no longer sent automatically. It used to open every new
     // chat, but that gave it away before the visitor had any reason to want
@@ -791,6 +1034,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // experience with long routes.").
     //
     // One bubble, not two: the opening now settles in ~2.8s rather than 5.
+    //
+    // Characters with a scripted opening take the branch above this instead:
+    // they open by talking rather than by asking, so none of the
+    // pick-a-question logic below applies to them.
+    final script = _openingScriptFor(widget.characterId);
+    if (script != null) {
+      await _playOpeningScript(script, run);
+      if (!mounted || _welcomeAbandoned || run != _welcomeRun) return;
+      _refocusInput();
+      _startIdleTimer();
+      return;
+    }
+
     if (initialMessages.isEmpty) return;
     final opener = _pickOpeningQuestion(initialMessages);
     if (opener == null) return;
@@ -980,6 +1236,79 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (question == null || !mounted) return;
     _textController.text = question;
     _handleSend();
+  }
+
+  /// Wipes this conversation and replays the character's opening from the top.
+  ///
+  /// Exists because the only clear was buried inside the profile screen, which
+  /// is several taps away and leaves the chat behind while you use it —
+  /// unusable for the thing it is most needed for, which is watching a
+  /// scripted opening again after changing it.
+  ///
+  /// Clears storage first and memory second: [clearChatHistoryFor] is what
+  /// makes it survive a reload, and the in-memory reset is what makes the
+  /// screen agree with it without a round trip.
+  Future<void> _startFreshConversation() async {
+    // Stop everything the old conversation had in flight before anything is
+    // torn out from under it. Bumping the run counter is what stops a script
+    // that is parked mid-burst from waking up into the new conversation.
+    _welcomeAbandoned = true;
+    _welcomeRun++;
+    _cancelIdleTimer();
+    _stopScreenPing();
+
+    await ref.read(storageServiceProvider).clearChatHistoryFor(
+          chatId: _chatId,
+          characterKey: _characterKey,
+        );
+    if (!mounted) return;
+
+    setState(() {
+      _messages.clear();
+      _isTyping = false;
+      // Back to a blank conversation, so the starter prompts belong on screen
+      // again exactly as they would for a first-time visitor.
+      _userHasSent = false;
+      _aiService = OpenAIService(
+        history: const [],
+        scenario: widget.scenario,
+        characterId: widget.characterId,
+      );
+    });
+
+    await _loadReplyCount();
+    if (mounted) _triggerWelcomeSequence();
+  }
+
+  /// The header's context menu: right-click on desktop and web, long-press on
+  /// touch, since neither gesture exists on both.
+  Future<void> _showHeaderMenu(Offset globalPosition) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        overlay.size.width - globalPosition.dx,
+        overlay.size.height - globalPosition.dy,
+      ),
+      items: const [
+        PopupMenuItem<String>(
+          value: 'fresh',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.refresh),
+            title: Text('Fresh conversation'),
+          ),
+        ),
+      ],
+    );
+
+    if (selected == 'fresh') await _startFreshConversation();
   }
 
   /// Drops the in-memory conversation if its stored copy has gone, and
@@ -1415,6 +1744,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // way tapping a contact's name does in a messaging app. Inert for
           // characters that have no profile written yet.
           onTap: _openProfile,
+          // Long-press only, deliberately not right-click: on Flutter web the
+          // browser's own context menu opens on top of ours, and suppressing
+          // it costs the page every other right-click (copy, inspect) to buy
+          // one shortcut. The overflow button in `actions` is the discoverable
+          // route; this is the shortcut for anyone who reaches for the
+          // character itself.
+          onLongPressStart: (d) => _showHeaderMenu(d.globalPosition),
           behavior: HitTestBehavior.opaque,
           child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1472,6 +1808,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               onPressed: () => context.push('/paywall'),
               tooltip: 'Premium',
             ),
+          // PopupMenuButton rather than a hand-positioned showMenu: it anchors
+          // itself to the button on every platform, which is the whole reason
+          // to prefer it over the right-click that Chrome hijacks.
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            color: const Color(0xFF2A1533),
+            tooltip: 'Conversation options',
+            onSelected: (value) {
+              if (value == 'fresh') _startFreshConversation();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem<String>(
+                value: 'fresh',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.refresh, color: Colors.white70),
+                  title: Text(
+                    'Fresh conversation',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
         flexibleSpace: ClipRect(
           child: BackdropFilter(
@@ -1502,10 +1863,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               Expanded(
                 child: ListView.builder(
                   controller: _scrollController,
-                  padding: const EdgeInsets.only(
-                    left: 16,
-                    right: 16,
-                    top: 130,
+                  // Narrower side gutters than the 16 this had: combined with
+                  // the wider bubble cap it is another few characters per line,
+                  // which is fewer wrapped rows over a long scripted opening.
+                  //
+                  // The top inset clears the app bar, which the list scrolls
+                  // under (extendBodyBehindAppBar). It was a flat 130, chosen
+                  // for the tallest case — a notched phone — and left the same
+                  // everywhere else, so on web it was ~66px of empty purple
+                  // above the first message. Measured instead: the real status
+                  // bar inset plus the real toolbar height, which is correct
+                  // on a notch and tight on a desktop browser.
+                  padding: EdgeInsets.only(
+                    left: 12,
+                    right: 12,
+                    top: MediaQuery.paddingOf(context).top + kToolbarHeight + 8,
                     bottom: 8,
                   ),
                   itemCount: _messages.length + (_isTyping ? 1 : 0),
@@ -1516,8 +1888,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       );
                     }
                     final msg = _messages[index];
+                    // A scripted opening is 23 bubbles from one speaker in a
+                    // row. At a uniform 12px gap that reads as 23 separate
+                    // statements and scrolls the early ones off screen; run
+                    // together, it reads as one person talking. The gap only
+                    // closes between same-speaker neighbours, so the turn
+                    // boundaries a conversation depends on stay visible.
+                    final next = index + 1 < _messages.length
+                        ? _messages[index + 1]
+                        : null;
                     return _ChatBubble(
                       message: msg,
+                      groupedWithNext:
+                          next != null && next.isUser == msg.isUser,
                       onReport: () => _reportMessage(msg),
                     );
                   },
@@ -1534,6 +1917,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   characterName: _characterDisplayName,
                   prompts: _starterPrompts,
                   onTap: _sendStarter,
+                  // Only offered where there is actually a portrait to send.
+                  onPhoto: (widget.characterImage?.isNotEmpty ?? false)
+                      ? () => _sendStarter(_photoPrompt)
+                      : null,
                 ),
               _buildInputArea(theme),
             ],
@@ -1694,26 +2081,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// set ("Send me a photo 📸", "Roleplay: First Date 🍷") was dating-app copy
   /// that made no sense addressed to Hector or Andromache.
   ///
-  /// "What do you look like?" is appended to every list rather than written
-  /// per character: it is the one prompt matched by _wantsPhoto, so tapping it
-  /// always resolves to the portrait rather than an AI reply — see
-  /// _handleSend.
+  /// The photo ask is no longer one of these. It used to be appended to every
+  /// list as "What do you look like?", which spent a full-width row — the same
+  /// space as a real conversational opener — on a request that always resolves
+  /// to the same canned portrait. It is now a small icon button on the hint
+  /// line above the prompts (see [_StarterPrompts]), which costs no row at all.
   List<String> get _starterPrompts {
     final asks = profileForCharacter(widget.characterId)?.asks;
-    if (asks != null && asks.isNotEmpty) {
-      return [...asks, 'What do you look like?'];
-    }
+    if (asks != null && asks.isNotEmpty) return asks;
     return const [
       "Where should I start?",
       "Tell me something about yourself.",
       "I could use some advice.",
-      "What do you look like?",
     ];
   }
+
+  /// The text the photo button sends. Kept as a sentence rather than a command
+  /// because it is posted as the visitor's own message, and it has to be one
+  /// that [_wantsPhoto] matches so it resolves to the portrait, not the model.
+  static const String _photoPrompt = 'What do you look like?';
 
   /// Sends a tapped starter as though it had been typed, so it goes through
   /// the same gate, history and logging as any other message.
   void _sendStarter(String text) {
+    // Scripted characters only, for the same reason as _onUserTyped.
+    // _handleSend sets this for everyone anyway, but not if the login gate
+    // intercepts first — and a gated visitor should not have the rest of a
+    // monologue arriving behind the gate.
+    if (_hasOpeningScript) _welcomeAbandoned = true;
     _stopScreenPing();
     SharedPreferences.getInstance().then((prefs) {
       logFunnelEvent(
@@ -1739,10 +2134,16 @@ class _StarterPrompts extends StatefulWidget {
   final List<String> prompts;
   final ValueChanged<String> onTap;
 
+  /// Asks the character for their portrait. Sits on the hint line rather than
+  /// taking a prompt row of its own, and is null for characters with no
+  /// portrait to send.
+  final VoidCallback? onPhoto;
+
   const _StarterPrompts({
     required this.characterName,
     required this.prompts,
     required this.onTap,
+    this.onPhoto,
   });
 
   @override
@@ -1758,6 +2159,24 @@ class _StarterPromptsState extends State<_StarterPrompts>
   /// shown whole. A row cut in half by the panel edge looks broken, which is
   /// the opposite of what the strip is for.
   static const double _shortScreenHeight = 720;
+
+  /// The prompt that has been tapped, held so it can be drawn as chosen.
+  String? _selected;
+
+  /// How long the chosen row is shown before the send runs.
+  ///
+  /// Sending sets `_userHasSent`, which removes this whole strip, so without a
+  /// beat here the green state would be built and destroyed in the same frame
+  /// and never actually seen. Short enough not to feel like lag.
+  static const Duration _selectionHold = Duration(milliseconds: 260);
+
+  Future<void> _select(String prompt) async {
+    if (_selected != null) return; // ignore a second tap mid-confirmation
+    setState(() => _selected = prompt);
+    await Future.delayed(_selectionHold);
+    if (!mounted) return;
+    widget.onTap(prompt);
+  }
 
   @override
   void initState() {
@@ -1831,17 +2250,80 @@ class _StarterPromptsState extends State<_StarterPrompts>
                           ),
                         ),
                       ),
+                      if (widget.onPhoto != null) ...[
+                        const SizedBox(width: 8),
+                        _PhotoRequestButton(
+                          characterName: widget.characterName,
+                          onTap: widget.onPhoto!,
+                        ),
+                      ],
                     ],
                   ),
                 ),
                 for (final prompt in prompts)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.only(bottom: 6),
                     child: _StarterButton(
                       label: prompt,
-                      onTap: () => widget.onTap(prompt),
+                      selected: _selected == prompt,
+                      onTap: () => _select(prompt),
                     ),
                   ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The photo ask, as a small pill on the hint line.
+///
+/// Small on purpose: it is the one starter that never varies and never
+/// produces conversation — it resolves to the same canned portrait every time
+/// — so it should not look like an equal alternative to the character's real
+/// questions, and it certainly should not cost a full row to say so.
+class _PhotoRequestButton extends StatelessWidget {
+  final String characterName;
+  final VoidCallback onTap;
+
+  const _PhotoRequestButton({
+    required this.characterName,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Semantics(
+      button: true,
+      label: 'Ask $characterName for a photo',
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.photo_camera_outlined,
+                  size: 14,
+                  color: theme.primaryColor,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  'Photo',
+                  style: GoogleFonts.lato(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ],
             ),
           ),
@@ -1855,39 +2337,85 @@ class _StarterButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
 
-  const _StarterButton({required this.label, required this.onTap});
+  /// True from the moment this one is tapped until the strip goes away, so the
+  /// choice is acknowledged before the send tears the strip down. Without it a
+  /// tap produced no feedback at all: the row simply vanished, which reads as
+  /// a mis-tap rather than as "that was sent".
+  final bool selected;
+
+  /// The confirmation colour. Green rather than the accent purple because it
+  /// has to mean something different from the resting border, which is already
+  /// accent-coloured — the same hue at a higher opacity would read as a hover.
+  static const Color _selectedColor = Color(0xFF4ADE80);
+
+  const _StarterButton({
+    required this.label,
+    required this.onTap,
+    this.selected = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
-      color: Colors.white.withOpacity(0.07),
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: theme.primaryColor.withOpacity(0.55)),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  label,
-                  style: GoogleFonts.lato(
-                    color: Colors.white,
-                    fontSize: 14.5,
-                    height: 1.25,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: selected
+            ? [
+                BoxShadow(
+                  color: _selectedColor.withValues(alpha: 0.45),
+                  blurRadius: 16,
+                  spreadRadius: 1,
+                ),
+              ]
+            : const [],
+      ),
+      child: Material(
+        color: selected
+            ? _selectedColor.withValues(alpha: 0.14)
+            : Colors.white.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            // Tight: these are one line of 14.5pt text, and 12pt above and
+            // below made each row half padding. The trailing inset is smaller
+            // still because the arrow icon carries its own visual margin.
+            padding: const EdgeInsets.fromLTRB(13, 8, 9, 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected
+                    ? _selectedColor
+                    : theme.primaryColor.withOpacity(0.55),
+                width: selected ? 1.6 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: GoogleFonts.lato(
+                      color: Colors.white,
+                      fontSize: 14.5,
+                      height: 1.2,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              // Says "this gets sent", so the row is not mistaken for a label.
-              Icon(Icons.arrow_upward, size: 17, color: theme.primaryColor),
-            ],
+                const SizedBox(width: 8),
+                // Says "this gets sent", so the row is not mistaken for a
+                // label; becomes a tick once it has been.
+                Icon(
+                  selected ? Icons.check : Icons.arrow_upward,
+                  size: 16,
+                  color: selected ? _selectedColor : theme.primaryColor,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1981,12 +2509,26 @@ class _ChatBubble extends StatelessWidget {
   final ChatMessage message;
   final VoidCallback? onReport;
 
-  const _ChatBubble({required this.message, this.onReport});
+  /// True when the next bubble is from the same speaker, so this one closes up
+  /// against it instead of leaving a full turn's worth of gap.
+  final bool groupedWithNext;
+
+  /// Gap to the next bubble: tight within a run from one speaker, full at a
+  /// turn boundary.
+  static const double _gapWithinTurn = 3;
+  static const double _gapBetweenTurns = 12;
+
+  const _ChatBubble({
+    required this.message,
+    this.groupedWithNext = false,
+    this.onReport,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isUser = message.isUser;
+    final gap = groupedWithNext ? _gapWithinTurn : _gapBetweenTurns;
 
     // A portrait the character "sent". Rendered as the image itself in a
     // rounded frame rather than inside a text bubble, so it reads as a shared
@@ -1996,7 +2538,7 @@ class _ChatBubble extends StatelessWidget {
       return Align(
         alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
+          margin: EdgeInsets.only(bottom: gap),
           constraints: BoxConstraints(
             maxWidth: MediaQuery.of(context).size.width * 0.62,
           ),
@@ -2031,18 +2573,27 @@ class _ChatBubble extends StatelessWidget {
           }
         },
         child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
+          margin: EdgeInsets.only(bottom: gap),
+          // 0.86 rather than 0.75. The cap only bites on long lines, and there
+          // it was forcing an extra wrapped row out of text that had room to
+          // sit on one — buying whitespace down the right-hand side at the
+          // cost of height, which is the scarce direction.
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75,
+            maxWidth: MediaQuery.of(context).size.width * 0.86,
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          // Tight. On a single-line bubble the old 10pt vertical padding was
+          // very nearly as tall as the line of text inside it, so half of
+          // every bubble was frame. The radius comes down with it: a 20pt
+          // corner on a 34pt-tall box is most of the height, and the pill
+          // shape it produced read as a button rather than a message.
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
           decoration: BoxDecoration(
             color: isUser ? theme.primaryColor : Colors.white.withOpacity(0.1),
             borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(20),
-              topRight: const Radius.circular(20),
-              bottomLeft: Radius.circular(isUser ? 20 : 4),
-              bottomRight: Radius.circular(isUser ? 4 : 20),
+              topLeft: const Radius.circular(14),
+              topRight: const Radius.circular(14),
+              bottomLeft: Radius.circular(isUser ? 14 : 4),
+              bottomRight: Radius.circular(isUser ? 4 : 14),
             ),
           ),
           child: Text(
@@ -2050,7 +2601,7 @@ class _ChatBubble extends StatelessWidget {
             style: theme.textTheme.bodyLarge?.copyWith(
               color: Colors.white.withOpacity(0.95),
               fontSize: 16,
-              height: 1.3,
+              height: 1.25,
             ),
           ),
         ),
