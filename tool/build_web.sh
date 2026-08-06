@@ -23,6 +23,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# `bash tool/build_web.sh release` marks this as the build that gets deployed,
+# which turns on the checks below that only make sense for one. Passed as an
+# argument rather than as a `RELEASE_BUILD=1 bash ...` prefix because npm runs
+# scripts through cmd.exe on Windows, where that prefix is a syntax error and
+# not an environment variable. The env var is still honoured for CI.
+if [[ "${1:-}" == "release" ]]; then
+  RELEASE_BUILD=1
+fi
+
 # Captured before anything else assigns these, so we can tell "the caller
 # exported it" from "the default filled it in".
 CALLER_WORKER_URL="${WORKER_URL:-}"
@@ -59,6 +68,20 @@ if [[ -z "${APP_SECRET:-}" ]]; then
   exit 1
 fi
 
+# The failure this exists for: a .env left holding WORKER_URL=http://localhost
+# from a session of local testing, which silently becomes the API address for
+# every real visitor. It compiles, deploys, and serves a page that looks
+# perfect right up until the first message, which goes to the visitor's own
+# machine and fails. Checked before the build rather than after, so a release
+# that cannot ship does not cost ninety seconds to find out.
+if [[ -n "${RELEASE_BUILD:-}" ]] &&
+   [[ "$WORKER_URL" == *localhost* || "$WORKER_URL" == *127.0.0.1* ]]; then
+  echo "ERROR: refusing to build a release against ${WORKER_URL}." >&2
+  echo "       Every visitor's chat request would go to their own machine." >&2
+  echo "       Unset WORKER_URL in .env, or export the real origin." >&2
+  exit 1
+fi
+
 echo "==> cleaning build/web (flutter build does not)"
 rm -rf build/web
 
@@ -75,5 +98,10 @@ if ! grep -qF "$APP_SECRET" build/web/main.dart.js; then
   exit 1
 fi
 
-echo "==> ok: APP_SECRET and WORKER_URL both baked in"
+if ! grep -qF "$WORKER_URL" build/web/main.dart.js; then
+  echo "ERROR: WORKER_URL did not make it into build/web/main.dart.js." >&2
+  exit 1
+fi
+
+echo "==> ok: APP_SECRET baked in, API at ${WORKER_URL}"
 du -sh build/web
