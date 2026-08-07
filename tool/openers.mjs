@@ -26,26 +26,37 @@ if (!Number.isFinite(hours) || hours <= 0) {
     process.exit(1);
 }
 
-// --- the starters, straight from the app's own source ------------------------
-// Parsed rather than duplicated: if a character's asks change, the numbering
-// here follows automatically, and an opener from an older wording simply stops
-// matching instead of being mislabelled as a different ask.
-function loadAsks() {
-    const src = fs.readFileSync(
-        path.join(repo, 'lib/src/core/data/character_profiles.dart'), 'utf8');
-    const asks = {};
-    const entry = /'([a-z_]+)':\s*CharacterProfile\(/g;
-    let m;
-    while ((m = entry.exec(src))) {
-        const id = m[1];
-        const rest = src.slice(m.index);
-        const block = rest.slice(0, rest.indexOf('\n  ),'));
-        const list = block.match(/asks:\s*\[([\s\S]*?)\]/);
-        if (!list) continue;
-        asks[id] = [...list[1].matchAll(/(['"])((?:\\.|(?!\1).)*)\1/g)]
-            .map((s) => s[2].replace(/\\'/g, "'").replace(/\\"/g, '"'));
+// --- what counts as a tap ----------------------------------------------------
+// The same generated file the worker's sessions page uses, rather than a second
+// parser over the Dart source. Keeping two of those was how this tool ended up
+// blind to Calypso's quick replies after the worker had already learned them:
+// it could see the funnel had recorded a tap, and still had to report it as
+// unmatched. Regenerate with `npm run gen:starters`.
+const { CHARACTER_ASKS, CHARACTER_QUICK_REPLY_SETS, DEFAULT_STARTERS, SHARED_TAPS } =
+    await import(path.join(repo, 'backend/src/starters.generated.js'));
+
+/// Names the tap: which ask it was, or how far into a scripted conversation the
+/// visitor had walked before saying this. Returns null for anything that was
+/// not on offer, which is what "typed" means.
+function labelFor(text, characterId) {
+    const asks = CHARACTER_ASKS[characterId] || [];
+    const ask = asks.indexOf(text);
+    if (ask >= 0) return `ask #${ask + 1}`;
+
+    const sets = CHARACTER_QUICK_REPLY_SETS[characterId] || [];
+    for (let i = 0; i < sets.length; i++) {
+        if (sets[i].includes(text)) return `quick reply, set ${i + 1}`;
     }
-    return asks;
+
+    if (SHARED_TAPS.includes(text)) return 'photo button';
+
+    // Only for characters with no profile of their own — everyone else has
+    // asks, and a match here would be a coincidence of wording.
+    if (!asks.length) {
+        const i = DEFAULT_STARTERS.indexOf(text);
+        if (i >= 0) return `starter #${i + 1}`;
+    }
+    return null;
 }
 
 function d1(sql) {
@@ -88,21 +99,20 @@ const rows = d1(`
     ORDER BY c.created_at
 `);
 
-const asksById = loadAsks();
-// scenario is a display name ("Penelope (Queen of Ithaca)"); the asks are keyed
-// by character id.
+// scenario is a display name ("Penelope (Queen of Ithaca)"); the starters are
+// keyed by character id.
 const idFor = (scenario) => String(scenario || '').split(' (')[0].trim().toLowerCase();
 
 const users = new Map();
 const table = rows.map((r) => {
     if (!users.has(r.user_id)) users.set(r.user_id, users.size + 1);
     const id = idFor(r.scenario);
-    const asks = asksById[id] || [];
-    const i = asks.findIndex((a) => a === r.user_message);
-    let source = i >= 0 ? `ask #${i + 1}` : 'typed';
-    // A starter_tap with no matching ask text means the wording moved on since
-    // that visit; say so rather than silently calling a tap a typed message.
-    if (i < 0 && r.tapped && !r.typed) source = 'starter (unmatched)';
+    const label = labelFor(r.user_message, id);
+    let source = label || 'typed';
+    // A starter_tap the text cannot account for means the wording moved on
+    // since that visit, or starters.generated.js is stale. Say so rather than
+    // silently calling a tap a typed message.
+    if (!label && r.tapped && !r.typed) source = 'starter (unmatched)';
     return {
         user: `User-${users.get(r.user_id)} → ${id ? id[0].toUpperCase() + id.slice(1) : '?'}`,
         opener: r.user_message.replace(/\s+/g, ' ').trim(),

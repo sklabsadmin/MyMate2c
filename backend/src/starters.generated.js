@@ -3,7 +3,8 @@
 // lib/src/core/data/character_profiles.dart. See that script for why this is
 // generated rather than maintained by hand.
 
-/// The one-tap openers each character offers, in the order shown.
+/// Every line a character can send by tap, flattened — what a "was this typed?"
+/// check needs, and all the worker uses.
 export const CHARACTER_STARTERS = {
     "zeus": [
         "What do you envy about being human?",
@@ -105,6 +106,152 @@ export const CHARACTER_STARTERS = {
         "What's the biggest wave you've taken?",
         "How are you always this calm?",
         "Is it bad that I can't sit still?"
+    ]
+};
+
+/// The same lines kept apart by where they come from, for callers that need to
+/// name the tap rather than just recognise it: which ask it was, or how far
+/// into a scripted conversation the visitor had gone.
+export const CHARACTER_ASKS = {
+    "zeus": [
+        "What do you envy about being human?",
+        "Pettiest thing you've ever done with lightning?",
+        "Who's the worst god at family dinner?"
+    ],
+    "odysseus": [
+        "How do you love someone you can't reach?",
+        "Be honest — how much of that was your own fault?",
+        "How do you know when to stop sailing?"
+    ],
+    "oedipus": [
+        "Rate my life choices. You're qualified.",
+        "Be honest — was the riddle actually that hard?",
+        "You killed a man over a traffic dispute. Explain."
+    ],
+    "penelope": [
+        "How long do I wait before it's foolish?",
+        "How do I trust someone I can't see?",
+        "Twenty years of suitors — best excuse you used?"
+    ],
+    "cupid": [
+        "Am I in love, or just lonely?",
+        "How do I tell them without ruining it?",
+        "Do you ever miss and hit the wrong person?"
+    ],
+    "calypso": [
+        "Why did you let him go, if you could have kept him?",
+        "Does being alone get easier, or do you just get used to it?",
+        "What's it like wanting someone who wants somewhere else?"
+    ],
+    "hector": [
+        "How do I do the right thing when I know it will cost me?",
+        "I'm afraid. Does that make me a coward?",
+        "What did you say to your wife before you left?"
+    ],
+    "andromache": [
+        "How do you keep going after losing everything?",
+        "Is it weak to ask someone to stay?",
+        "How do I comfort someone when there is nothing to say?"
+    ],
+    "badboy": [
+        "What's the fastest you've ever gone?",
+        "How do I stop caring what people think?",
+        "Do you ever regret any of it?"
+    ],
+    "poet": [
+        "What's the last line you wrote?",
+        "How do you describe something you can't name?",
+        "Does writing it down actually help?"
+    ],
+    "surfer": [
+        "What's the biggest wave you've taken?",
+        "How are you always this calm?",
+        "Is it bad that I can't sit still?"
+    ]
+};
+
+export const CHARACTER_QUICK_REPLY_SETS = {
+    "calypso": [
+        [
+            "Are you really the Calypso from the Odyssey?",
+            "What is it like to have lived for thousands of years?",
+            "Do you really remember the ancient world?"
+        ],
+        [
+            "You mean Odysseus, don't you?",
+            "Why do you call Odysseus stubborn?",
+            "What really happened between the two of you?"
+        ],
+        [
+            "What do you wish people understood about you?",
+            "What did Homer get wrong about your story?",
+            "Where would you begin if you could tell your story yourself?"
+        ],
+        [
+            "Does three thousand years still feel like a long time to you?",
+            "Do you ever get lonely after living so long?",
+            "What do you miss most about the world you were born into?"
+        ],
+        [
+            "Who were you before Odysseus arrived?",
+            "Were you happy before you met him?",
+            "What is something Homer never told us about you?"
+        ],
+        [
+            "Was Ogygia really as beautiful as you remember it?",
+            "Would you ever return to Ogygia if you could?",
+            "Were you completely alone on the island?"
+        ],
+        [
+            "What small moment from your long life do you remember most?",
+            "Do immortals experience time differently from humans?",
+            "What do you think modern people take for granted?"
+        ],
+        [
+            "Which matters more to you now: quiet moments or great adventures?",
+            "What is the most beautiful ordinary thing you have ever seen?",
+            "After so many centuries, can anything still surprise you?"
+        ],
+        [
+            "Why has the sea always meant so much to you?",
+            "Will you tell me about the day Odysseus arrived?",
+            "What happened to you after Odysseus left?"
+        ],
+        [
+            "What did you think when you first saw Odysseus?",
+            "Did you know who he was when you found him?",
+            "What were the first words Odysseus said to you?"
+        ],
+        [
+            "Did you truly fall in love with Odysseus?",
+            "Do you believe Odysseus loved you too?",
+            "What were those seven years really like?"
+        ],
+        [
+            "Why would Odysseus turn down immortality?",
+            "Did you truly expect him to accept your offer?",
+            "Would you offer someone immortality again today?"
+        ],
+        [
+            "Were you jealous of Penelope?",
+            "Did Odysseus talk about Penelope while he was with you?",
+            "Did you ever understand why he chose to return to her?"
+        ],
+        [
+            "Why did you let him go if you could have kept him?",
+            "Does being alone get easier, or do you just get used to it?",
+            "What's it like wanting someone who wants somewhere else?"
+        ],
+        [
+            "Did you regret helping Odysseus leave?",
+            "Did you watch until his ship disappeared?",
+            "Did part of you believe he might come back?"
+        ],
+        [
+            "Do you still believe in love after everything that happened?",
+            "How do you know when loving someone means letting them go?",
+            "If you met Odysseus today, what would you say to him?"
+        ]
     ]
 };
 
