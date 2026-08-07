@@ -83,7 +83,26 @@ if [[ -n "${RELEASE_BUILD:-}" ]] &&
 fi
 
 echo "==> cleaning build/web (flutter build does not)"
-rm -rf build/web
+# A bare `rm -rf` is enough on macOS and not on Windows, where a leftover
+# `wrangler dev`/workerd from a preview, an editor, or a virus scanner can hold
+# an open handle on the directory. rm then empties it and still fails with
+# "Device or resource busy" — and under `set -e` that aborted the entire deploy
+# over a directory that was, by then, already clean.
+#
+# Retry briefly, then judge the result rather than rm's exit code: an EMPTY
+# build/web is exactly what the build wants, whether or not the directory
+# itself could be unlinked. Only real surviving files are a failure.
+for _attempt in 1 2 3; do
+  rm -rf build/web 2>/dev/null && break
+  sleep 1
+done
+if [[ -d build/web ]] && [[ -n "$(ls -A build/web 2>/dev/null)" ]]; then
+  echo "ERROR: could not clear build/web; files are still in it." >&2
+  echo "       Something is holding the directory open. On Windows that is" >&2
+  echo "       usually a 'wrangler dev' or workerd left over from a preview:" >&2
+  echo "       stop it and run this again." >&2
+  exit 1
+fi
 
 echo "==> building against ${WORKER_URL}"
 flutter build web --release \

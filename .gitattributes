@@ -1,0 +1,20 @@
+# Line-ending rules. Without these the deploy chain works on macOS and breaks
+# on Windows, for a reason that is invisible until it happens.
+#
+# Git for Windows installs with core.autocrlf=true, which rewrites text files
+# as CRLF on checkout. Every step of `npm run deploy` is a bash script, and
+# bash treats a trailing \r as part of the command:
+#
+#   tool/build_web.sh: line 2: $'\r': command not found
+#
+# So a fresh clone on Windows can fail before the build has done anything,
+# while the same commit deploys cleanly from a Mac. Pinning the scripts to LF
+# is what makes the repo deployable from either machine.
+#
+# eol=lf, not text=auto: these files must be LF in the working tree on every
+# platform, not merely normalised in the repository.
+*.sh text eol=lf
+
+# Same reasoning for the other things bash and node read as scripts.
+*.bash text eol=lf
+*.mjs text eol=lf
