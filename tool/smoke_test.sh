@@ -33,6 +33,27 @@ cd "$(dirname "$0")/.."
 URL="${1:?Usage: smoke_test.sh <deployed-url>}"
 URL="${URL%/}"
 
+# Whichever Python this machine actually has. Hard-coding `python3` broke the
+# deploy on Windows: there is no python3 there, and the name resolves to the
+# Microsoft Store's installer stub, which prints "Python was not found" and
+# exits non-zero — so a successful, verified deploy reported as a failure at
+# the last step. `py` is the Windows launcher; `python` is Python 3 on any
+# machine new enough to run this project.
+PYTHON=""
+for candidate in python3 python py; do
+  if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' \
+       >/dev/null 2>&1; then
+    PYTHON="$candidate"
+    break
+  fi
+done
+if [[ -z "$PYTHON" ]]; then
+  echo "ERROR: no Python 3 found (tried python3, python, py)." >&2
+  echo "       The signed-request checks cannot run without it, and a smoke" >&2
+  echo "       test that skips them is not worth reporting a pass on." >&2
+  exit 1
+fi
+
 # Cloudflare answers a default curl user-agent with 403 error 1010, which looks
 # exactly like an auth failure if you are not expecting it.
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
@@ -73,7 +94,7 @@ chat_check() {
   local character="$1" scenario="$2" label="$3"
   local out status body
   out="$(APP_SECRET="$APP_SECRET" URL="$URL" UA="$UA" CHARACTER="$character" \
-         SCENARIO="$scenario" python3 - <<'PY'
+         SCENARIO="$scenario" "$PYTHON" - <<'PY'
 import hashlib, hmac, json, os, subprocess, sys, time
 
 secret = os.environ["APP_SECRET"]

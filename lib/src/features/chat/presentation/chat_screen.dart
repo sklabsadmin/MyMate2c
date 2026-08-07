@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -107,6 +108,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// latest.
   int _welcomeRun = 0;
 
+  /// Which pause point's quick replies are on offer, as an index into the
+  /// character's [_quickRepliesFor] list.
+  ///
+  /// Driven two different ways, because the conversation has two phases. While
+  /// the scripted opening plays it tracks the turn that just landed, so the
+  /// questions are always the ones that follow what she has actually said.
+  /// After the script it advances one step per completed exchange, walking the
+  /// rest of the document's pause points in order.
+  int _quickReplyIndex = 0;
+
   /// Ceilings on the welcome sequence's simulated typing, in milliseconds.
   static const int _openerTypingCapMs = 2200;
   static const int _followUpTypingCapMs = 1200;
@@ -139,14 +150,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   static const int _scriptTypingMinMs = 300;
   static const int _scriptTypingMaxMs = 1400;
 
-  /// Extra pause at a segment boundary — the gap between one "Calypso:" turn
-  /// and the next. She has stopped and started again, not carried on, so it
-  /// needs to read as a longer breath than the beats inside a turn.
-  static const int _scriptSegmentPauseMs = 1500;
-
-  /// Extra pause after a segment that asks the visitor something outright and
-  /// holds for an answer, rather than talking straight through it.
-  static const int _scriptWaitPauseMs = 6000;
+  /// Longest a scripted turn may hold before the next one starts.
+  ///
+  /// The pause at a turn boundary is written into the script itself — each
+  /// segment carries its own `pauseMs` — rather than picked from a couple of
+  /// constants here, because the source document specifies one per turn. This
+  /// is only a backstop against a typo turning a 3s breath into a dead screen.
+  static const int _scriptTurnPauseMaxMs = 8000;
 
   static const List<String> _idlePrompts = [
     "So — what's on your mind?",
@@ -344,8 +354,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// only a real keystroke fires it — the starter prompts set the controller
   /// directly and must not be counted as typing.
   void _onUserTyped() {
-    // Scripted characters only. A visitor who starts typing during an
-    // eighty-second monologue has taken the turn and the rest would talk over
+    // Scripted characters only. A visitor who starts typing during a
+    // minutes-long monologue has taken the turn and the rest would talk over
     // them; a one-bubble opener has no such problem and should still land.
     //
     // Before the _loggedTyping guard: that guard exists to log input_typed
@@ -397,11 +407,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (!mounted) return;
 
       if (history.isNotEmpty) {
+        // Put the quick replies back roughly where the conversation left them,
+        // or coming back to a long chat would offer "Are you really the
+        // Calypso from the Odyssey?" again. Stored history means the opening
+        // script has already run (it only plays into an empty chat), so its
+        // nine pauses are spent; each exchange since then is one more.
+        // Approximate by design — the index is not persisted, so this
+        // reconstructs it from what the history can actually show.
+        final sets = _quickRepliesFor(widget.characterId);
+        final spoken = history.where((m) => m.isUser).length;
         setState(() {
           _messages.addAll(history);
           // A conversation they have already spoken in doesn't need the
           // first-message scaffolding put back in front of it on every return.
           _userHasSent = history.any((m) => m.isUser);
+          if (sets != null) {
+            _quickReplyIndex = (8 + spoken).clamp(0, sets.length - 1);
+          }
         });
         _aiService = OpenAIService(
           history: history,
@@ -813,7 +835,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Keyed on characterId rather than the scenario string the rest of this
   /// file matches on. Scenario matching is substring-based and has already
   /// caused one mix-up (see the Andromache/Hector note above); the id is exact.
-  List<({List<String> lines, bool waits})>? _openingScriptFor(
+  List<({List<String> lines, int pauseMs})>? _openingScriptFor(
     String? characterId,
   ) {
     if (characterId == 'calypso') return _calypsoOpeningScript;
@@ -828,112 +850,308 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// opener, and it keeps landing even if the visitor starts typing over it —
   /// suppressing that would leave a chat with no greeting in it at all, which
   /// is a regression for an opener that arrives in under three seconds and a
-  /// necessity only for one that runs for eighty.
+  /// necessity only for one that runs for a minute and a half.
   bool get _hasOpeningScript => _openingScriptFor(widget.characterId) != null;
 
-  /// Calypso's scripted opening.
+  /// Calypso's scripted opening — "Calypso Conversation Flow v1", 2026-08-07.
   ///
   /// Each string here is its OWN message bubble, not a line inside one. That
   /// is the whole shape of it: short beats arriving one after another read as
   /// someone talking to you, where the same words collapsed into a paragraph
-  /// read as an essay and get skipped.
+  /// read as an essay and get skipped. The "Message N" turns of the source
+  /// document are the segments below; the line breaks inside each one are its
+  /// bubbles.
   ///
-  /// A segment is one "Calypso:" turn — she stops and starts again between
-  /// them, so a boundary gets a longer breath than the beats inside it. The
-  /// segments marked `waits` are the script's own `(wait)` marks: she has
-  /// asked something and holds for an answer before going on.
+  /// `pauseMs` is that document's WAIT mark — the extra breath after the turn's
+  /// last line, on top of the beat the line earns for itself. Where it wrote a
+  /// range ("2–3 seconds") this takes a single value in it, because one number
+  /// per turn is what actually gets tuned.
+  ///
+  /// The document's brief is an immortal storyteller rather than a chatbot: she
+  /// is never impatient, and silence is comfortable rather than rejection. So
+  /// its three questions are all written to be optional — each is followed by a
+  /// turn that only makes sense if nobody answered ("Perhaps you're still
+  /// thinking"), and reaching that turn is exactly what silence means here. A
+  /// visitor who does answer never sees it: the first keystroke drops the rest
+  /// of the script and the model takes over from their reply, which is the
+  /// document's last design note.
+  ///
+  /// Its WAIT after a question is 3s, shorter than the 6s the previous script
+  /// held for. That is deliberate on the document's part — the follow-up is
+  /// meant to read as her thinking aloud, not as a timeout — but it does mean
+  /// someone composing an answer can see the next turn land before they send.
+  /// It costs them nothing (the script stops at their first keystroke); raise
+  /// the two 3000s below if it reads as her talking over people anyway.
   ///
   /// She opens by talking rather than by asking, which every other character
   /// does. That is on purpose: she is the one who spent seven years with
-  /// someone who mostly sat and carved driftwood. But the first real question
-  /// still lands inside the opening twenty seconds.
-  static const List<({List<String> lines, bool waits})>
+  /// someone who mostly sat and carved driftwood.
+  static const List<({List<String> lines, int pauseMs})>
       _calypsoOpeningScript = [
+    // 1
     (
-      waits: false,
-      lines: ['Well... another stranger has washed ashore.'],
-    ),
-    (
-      waits: false,
-      lines: ["Don't worry. My island has better Wi-Fi than it used to."],
-    ),
-    (
-      waits: false,
-      lines: ["You're smiling already, aren't you?"],
-    ),
-    (
-      waits: true,
+      pauseMs: 2500,
       lines: [
-        'Tell me... have you ever read the old stories about me, or did my '
-            'name simply sound mysterious?',
+        'Hello.',
+        "I'm genuinely glad you came.",
       ],
     ),
+    // 2
     (
-      waits: false,
+      pauseMs: 1500,
       lines: [
-        'Most people imagine I spent my days trying to imprison Odysseus.',
-        "That isn't how it felt.",
-        "Imagine meeting the first interesting soul you've seen in "
-            'centuries... then learning the gods had already decided he would '
-            'leave.',
+        'Before we speak about forgotten islands and stubborn heroes...',
+        'may I ask you one small question?',
       ],
     ),
+    // 3 — first question. Holds; turn 4 is the no-answer continuation.
     (
-      waits: true,
-      lines: ['Would you have fought fate... or let him sail?'],
-    ),
-    (
-      waits: false,
+      pauseMs: 3000,
       lines: [
-        'No answer?',
-        "Perhaps you're thinking.",
-        'I like people who think before they speak.',
+        'When you first saw my name...',
+        'what made you stay?',
       ],
     ),
+    // 4
     (
-      waits: false,
+      pauseMs: 3000,
       lines: [
-        'The poets never wrote about the quiet evenings.',
-        'We watched the waves.',
-        'We argued about whether home is a place... or simply the people you '
-            'miss.',
+        "Perhaps you're still thinking.",
+        "That's alright.",
+        "I've learned not to rush conversations.",
+        'Three thousand years gives one quite a bit of patience.',
       ],
     ),
+    // 5
     (
-      waits: true,
+      pauseMs: 3000,
       lines: [
-        'What do you think?',
-        'Can someone have two homes?',
+        'Most people expect me to begin with Odysseus.',
+        "It's understandable.",
+        'Heroes have a way of borrowing the spotlight from everyone around '
+            'them.',
+        'But before I tell you about him...',
+        'perhaps I should tell you about me.',
       ],
     ),
+    // 6
     (
-      waits: false,
+      pauseMs: 4000,
       lines: [
-        "You know what's amusing?",
-        'Thousands of years have passed...',
-        'People still ask me whether I was a villain or a victim.',
-        'Almost nobody asks if I was lonely.',
+        'I lived on an island called Ogygia.',
+        'Not a kingdom.',
+        'Not a palace.',
+        'Just cliffs, olive trees, cedar forests, wildflowers, and a sea so '
+            'impossibly blue that even now I struggle to describe it.',
+        'When the wind was gentle, I could hear waves breathing against the '
+            'rocks all night long.',
+        'It never became ordinary.',
       ],
     ),
+    // 7
     (
-      waits: false,
+      pauseMs: 3000,
       lines: [
-        "If you're still here...",
-        '...say hello.',
-        "I've been waiting a very long time for a new conversation.",
+        'Immortality sounds exciting when poets write about it.',
+        'In truth...',
+        'it teaches you to notice very small things.',
+        'The smell of rain before it arrives.',
+        'The first blossom each spring.',
+        'How sunlight changes in the final minutes before evening.',
+        'Humans rush past these moments.',
+        'Immortals collect them.',
+      ],
+    ),
+    // 8 — second question. Holds; turn 9 is the no-answer continuation.
+    (
+      pauseMs: 3000,
+      lines: [
+        'Tell me...',
+        'are you someone who notices little things?',
+        "Or do you prefer life's great adventures?",
+      ],
+    ),
+    // 9 — last turn, so its pause is never spent.
+    (
+      pauseMs: 0,
+      lines: [
+        "Perhaps you'll answer later.",
+        "There's no hurry.",
+        'You remind me a little of the sea.',
+        'Quiet...',
+        'but never truly silent.',
       ],
     ),
   ];
+
+  /// Tappable questions offered at each pause point — "Calypso - Quick Reply
+  /// Questions v2", 2026-08-07. Three per pause, in the visitor's voice, so
+  /// tapping one reads as something they said.
+  ///
+  /// These are quick replies, not dialogue: nothing here is ever spoken by
+  /// Calypso, and ignoring them is the normal case — she carries on talking
+  /// after the pause whether or not one is tapped.
+  ///
+  /// The first nine line up one-for-one with the nine turns of
+  /// [_calypsoOpeningScript], which is what the document's pause titles
+  /// describe ("Initial greeting", "Three thousand years of patience",
+  /// "Quiet like the sea"). The remaining seven are the arc past the script —
+  /// Odysseus arriving, the seven years, the offer, Penelope, letting him go —
+  /// which no script covers, so they are walked one per exchange once the
+  /// model has the conversation. That pacing is an assumption; the document
+  /// gives the order but not the trigger.
+  static const List<List<String>> _calypsoQuickReplies = [
+    // 1 — initial greeting
+    [
+      'Are you really the Calypso from the Odyssey?',
+      'What is it like to have lived for thousands of years?',
+      'Do you really remember the ancient world?',
+    ],
+    // 2 — forgotten islands and stubborn heroes
+    [
+      "You mean Odysseus, don't you?",
+      'Why do you call Odysseus stubborn?',
+      'What really happened between the two of you?',
+    ],
+    // 3 — after she asks what made the user stay
+    [
+      'What do you wish people understood about you?',
+      'What did Homer get wrong about your story?',
+      'Where would you begin if you could tell your story yourself?',
+    ],
+    // 4 — three thousand years of patience
+    [
+      'Does three thousand years still feel like a long time to you?',
+      'Do you ever get lonely after living so long?',
+      'What do you miss most about the world you were born into?',
+    ],
+    // 5 — before she begins telling her own story
+    [
+      'Who were you before Odysseus arrived?',
+      'Were you happy before you met him?',
+      'What is something Homer never told us about you?',
+    ],
+    // 6 — after describing Ogygia
+    [
+      'Was Ogygia really as beautiful as you remember it?',
+      'Would you ever return to Ogygia if you could?',
+      'Were you completely alone on the island?',
+    ],
+    // 7 — humans rush; immortals collect moments
+    [
+      'What small moment from your long life do you remember most?',
+      'Do immortals experience time differently from humans?',
+      'What do you think modern people take for granted?',
+    ],
+    // 8 — little things or great adventures
+    [
+      'Which matters more to you now: quiet moments or great adventures?',
+      'What is the most beautiful ordinary thing you have ever seen?',
+      'After so many centuries, can anything still surprise you?',
+    ],
+    // 9 — quiet like the sea (last scripted turn)
+    [
+      'Why has the sea always meant so much to you?',
+      'Will you tell me about the day Odysseus arrived?',
+      'What happened to you after Odysseus left?',
+    ],
+    // 10 — Odysseus washes ashore
+    [
+      'What did you think when you first saw Odysseus?',
+      'Did you know who he was when you found him?',
+      'What were the first words Odysseus said to you?',
+    ],
+    // 11 — the seven years together
+    [
+      'Did you truly fall in love with Odysseus?',
+      'Do you believe Odysseus loved you too?',
+      'What were those seven years really like?',
+    ],
+    // 12 — the offer of immortality
+    [
+      'Why would Odysseus turn down immortality?',
+      'Did you truly expect him to accept your offer?',
+      'Would you offer someone immortality again today?',
+    ],
+    // 13 — Penelope enters the story
+    [
+      'Were you jealous of Penelope?',
+      'Did Odysseus talk about Penelope while he was with you?',
+      'Did you ever understand why he chose to return to her?',
+    ],
+    // 14 — before she explains letting him go
+    [
+      'Why did you let him go if you could have kept him?',
+      'Does being alone get easier, or do you just get used to it?',
+      "What's it like wanting someone who wants somewhere else?",
+    ],
+    // 15 — after she helps him leave
+    [
+      'Did you regret helping Odysseus leave?',
+      'Did you watch until his ship disappeared?',
+      'Did part of you believe he might come back?',
+    ],
+    // 16 — sometimes loving someone means letting them leave
+    [
+      'Do you still believe in love after everything that happened?',
+      'How do you know when loving someone means letting them go?',
+      'If you met Odysseus today, what would you say to him?',
+    ],
+  ];
+
+  /// The pause-point quick replies for [characterId], or null for a character
+  /// that has none and therefore keeps the old fixed starter strip.
+  ///
+  /// Keyed on the id for the same reason as [_openingScriptFor].
+  static List<List<String>>? _quickRepliesFor(String? characterId) {
+    if (characterId == 'calypso') return _calypsoQuickReplies;
+    return null;
+  }
+
+  /// The questions on offer right now, or null when this character has none
+  /// or the conversation has walked off the end of the list.
+  List<String>? get _quickReplies {
+    final sets = _quickRepliesFor(widget.characterId);
+    if (sets == null) return null;
+    if (_quickReplyIndex < 0 || _quickReplyIndex >= sets.length) return null;
+    return sets[_quickReplyIndex];
+  }
+
+  /// Moves the strip to [index], clamped to the last pause so the final set
+  /// stays on offer rather than the strip vanishing mid-conversation.
+  void _setQuickReplyIndex(int index) {
+    final sets = _quickRepliesFor(widget.characterId);
+    if (sets == null || !mounted) return;
+    final next = index.clamp(0, sets.length - 1);
+    if (next == _quickReplyIndex) return;
+    setState(() => _quickReplyIndex = next);
+  }
 
   /// Plays a scripted opening one beat at a time, stopping the instant the
   /// visitor engages. Every await is followed by the same abandon check the
   /// rest of [_triggerWelcomeSequence] uses, so a tap or a keystroke
   /// mid-monologue leaves the remaining beats unsent rather than landing them
   /// on top of the visitor's own message.
+  ///
+  /// Every line that actually reaches the screen is also handed to the AI
+  /// service, a turn at a time, so the model picks the conversation up knowing
+  /// what she has already said and already asked — see
+  /// [OpenAIService.recordAssistantTurn]. Only delivered lines: the point of
+  /// stopping the script is that the rest was never said, and telling the model
+  /// otherwise would have it answer a question the visitor never saw.
   Future<void> _playOpeningScript(
-    List<({List<String> lines, bool waits})> script,
+    List<({List<String> lines, int pauseMs})> script,
     int run,
   ) async {
+    // Lines posted so far in the current turn, flushed to the model's history
+    // as one assistant message at every exit from this loop.
+    final delivered = <String>[];
+    void flushTurn() {
+      if (delivered.isEmpty) return;
+      _aiService?.recordAssistantTurn(delivered.join('\n'));
+      delivered.clear();
+    }
+
     for (var s = 0; s < script.length; s++) {
       final segment = script[s];
       final lastSegment = s == script.length - 1;
@@ -954,11 +1172,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         // flat 1s it strobed and read as a glitch; at a beat this long it
         // reads as her writing each line, and it is what makes the pause
         // before a long sentence feel intended rather than stalled.
-        if (!mounted || _welcomeAbandoned || run != _welcomeRun) return;
+        if (!mounted || _welcomeAbandoned || run != _welcomeRun) {
+          flushTurn();
+          return;
+        }
         setState(() => _isTyping = true);
         _scrollToBottom();
         await Future.delayed(Duration(milliseconds: typingMs));
-        if (!mounted || _welcomeAbandoned || run != _welcomeRun) return;
+        if (!mounted || _welcomeAbandoned || run != _welcomeRun) {
+          flushTurn();
+          return;
+        }
         setState(() => _isTyping = false);
 
         _addMessage(
@@ -969,16 +1193,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             timestamp: DateTime.now(),
           ),
         );
+        delivered.add(line);
 
         final lastLine = i == segment.lines.length - 1;
+        if (lastLine) {
+          flushTurn();
+          // The turn is complete, so this is the pause the document names —
+          // swap the strip to the questions that follow what she just said.
+          _setQuickReplyIndex(s);
+        }
         if (lastLine && lastSegment) return;
 
         // A segment boundary is a longer breath: she stopped and started
-        // again rather than carrying on. Where the script holds on a
-        // question, longer still.
+        // again rather than carrying on. How much longer is the script's own
+        // WAIT for that turn, added to the gap the last line already earned.
         var delay = gapMs;
         if (lastLine) {
-          delay += segment.waits ? _scriptWaitPauseMs : _scriptSegmentPauseMs;
+          delay += segment.pauseMs.clamp(0, _scriptTurnPauseMaxMs);
         }
         await Future.delayed(Duration(milliseconds: delay));
       }
@@ -1267,8 +1498,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _messages.clear();
       _isTyping = false;
       // Back to a blank conversation, so the starter prompts belong on screen
-      // again exactly as they would for a first-time visitor.
+      // again exactly as they would for a first-time visitor — including the
+      // quick replies, which would otherwise stay wherever the old
+      // conversation had walked them until the replayed script's first turn
+      // reset them.
       _userHasSent = false;
+      _quickReplyIndex = 0;
       _aiService = OpenAIService(
         history: const [],
         scenario: widget.scenario,
@@ -1326,8 +1561,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() {
       _messages.clear();
       // Back to a blank conversation, so the starter prompts belong on screen
-      // again exactly as they would for a first-time visitor.
+      // again exactly as they would for a first-time visitor — including the
+      // quick replies, which would otherwise stay wherever the old
+      // conversation had walked them until the replayed script's first turn
+      // reset them.
       _userHasSent = false;
+      _quickReplyIndex = 0;
       _aiService = OpenAIService(
         history: const [],
         scenario: widget.scenario,
@@ -1538,8 +1777,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
-    // Reply finished — hand the caret back so the next message can just be
-    // typed, and start counting down to a nudge if they go quiet.
+    // Reply finished — this is a pause point in the same sense the script's
+    // are, so move the strip on to the next set of questions. Done here rather
+    // than when the message is sent so the questions change with her answer
+    // instead of while she is still typing it.
+    _setQuickReplyIndex(_quickReplyIndex + 1);
+
+    // Hand the caret back so the next message can just be typed, and start
+    // counting down to a nudge if they go quiet.
     _refocusInput();
     _startIdleTimer();
   }
@@ -1888,12 +2133,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       );
                     }
                     final msg = _messages[index];
-                    // A scripted opening is 23 bubbles from one speaker in a
-                    // row. At a uniform 12px gap that reads as 23 separate
-                    // statements and scrolls the early ones off screen; run
-                    // together, it reads as one person talking. The gap only
-                    // closes between same-speaker neighbours, so the turn
-                    // boundaries a conversation depends on stay visible.
+                    // A scripted opening is dozens of bubbles from one speaker
+                    // in a row (Calypso's is 37). At a uniform 12px gap that
+                    // reads as three dozen separate statements and scrolls the
+                    // early ones off screen; run together, it reads as one
+                    // person talking. The gap only closes between same-speaker
+                    // neighbours, so the turn boundaries a conversation depends
+                    // on stay visible.
                     final next = index + 1 < _messages.length
                         ? _messages[index + 1]
                         : null;
@@ -1906,16 +2152,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   },
                 ),
               ),
-              // Shown until the visitor sends their first message. Gated on
-              // "has never spoken here", NOT on an empty message list as it
-              // used to be: the welcome sequence posts a portrait and a
-              // connection notice within the first second of every new chat,
-              // so the list was empty only for that first second and these
-              // prompts were, in practice, never seen by anyone.
-              if (!_userHasSent)
+              // Two different strips share this slot.
+              //
+              // For most characters it is the original one-shot opener: shown
+              // until the visitor sends their first message, gated on "has
+              // never spoken here" and NOT on an empty message list as it used
+              // to be, because the welcome sequence posts into that list within
+              // the first second and the prompts were in practice never seen.
+              //
+              // For a character with pause-point questions it stays for the
+              // whole conversation, changing at each pause — so the gate has to
+              // survive the first send. It does not retire: the index clamps at
+              // the last pause, so those questions stay on offer rather than
+              // the strip vanishing partway through a conversation.
+              if (!_userHasSent || _quickReplies != null)
                 _StarterPrompts(
                   characterName: _characterDisplayName,
-                  prompts: _starterPrompts,
+                  prompts: _quickReplies ?? _starterPrompts,
                   onTap: _sendStarter,
                   // Only offered where there is actually a portrait to send.
                   onPhoto: (widget.characterImage?.isNotEmpty ?? false)
@@ -1940,23 +2193,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // announces a limit to someone who has not yet worked out that they are
     // allowed to type at all.
     final showCounter = !authed && _replyCount > 0;
-    return SizedBox(
-      height: showCounter ? 118 : 100,
-      child: Stack(
-        children: [
+    // No fixed height. This used to be a SizedBox of 100 (118 with the
+    // counter), which had to cover the tallest case — content plus a notched
+    // phone's bottom inset — and so left ~34px of empty glass above the
+    // keyboard on every device without one, web included. The two decorative
+    // layers are positioned, so the Stack now takes its height from the
+    // content, which already includes the real inset via SafeArea.
+    return Stack(
+      children: [
           // Glass Effect Layer
-          ClipRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-              child: Container(color: Colors.black.withOpacity(0.6)),
+          Positioned.fill(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(color: Colors.black.withOpacity(0.6)),
+              ),
             ),
           ),
           // Border Layer
-          IgnorePointer(
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: Colors.white.withOpacity(0.1)),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(color: Colors.white.withOpacity(0.1)),
+                  ),
                 ),
               ),
             ),
@@ -1965,7 +2226,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -2020,9 +2281,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   _userHasSent ? 0.35 : 0.7,
                                 ),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 12,
+                              // Without this a prefixIcon is given a 48x48
+                              // minimum, which set the height of the whole
+                              // field no matter how small contentPadding was —
+                              // the reason trimming the padding alone did
+                              // nothing here before.
+                              prefixIconConstraints: const BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 36,
+                              ),
+                              isDense: true,
+                              contentPadding: const EdgeInsets.fromLTRB(
+                                8,
+                                10,
+                                20,
+                                10,
                               ),
                               filled: true,
                               fillColor: Colors.white.withOpacity(
@@ -2057,6 +2330,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               _hasDraft ? 1.0 : 0.45,
                             ),
                           ),
+                          // 44, not IconButton's default 48: the smallest the
+                          // send target can be and still meet the 44pt
+                          // touch-target minimum, and it is now the tallest
+                          // thing in the row, so those 4px come off the bar.
+                          iconSize: 20,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 44,
+                            height: 44,
+                          ),
                           onPressed: _handleSend,
                           tooltip: 'Send',
                         ),
@@ -2067,8 +2350,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
             ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -2165,9 +2447,11 @@ class _StarterPromptsState extends State<_StarterPrompts>
 
   /// How long the chosen row is shown before the send runs.
   ///
-  /// Sending sets `_userHasSent`, which removes this whole strip, so without a
-  /// beat here the green state would be built and destroyed in the same frame
-  /// and never actually seen. Short enough not to feel like lag.
+  /// Where the strip is a one-shot opener, sending sets `_userHasSent` and
+  /// removes it, so without a beat here the chosen state would be built and
+  /// destroyed in the same frame and never actually seen. Where the strip
+  /// persists across pause points it is simply the confirmation of the tap.
+  /// Short enough not to feel like lag either way.
   static const Duration _selectionHold = Duration(milliseconds: 260);
 
   Future<void> _select(String prompt) async {
@@ -2190,6 +2474,24 @@ class _StarterPromptsState extends State<_StarterPrompts>
     Future.delayed(const Duration(milliseconds: 900), () {
       if (mounted) _controller.forward();
     });
+  }
+
+  @override
+  void didUpdateWidget(_StarterPrompts oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (listEquals(widget.prompts, oldWidget.prompts)) return;
+
+    // A new pause point. Clearing the selection is not cosmetic: this state
+    // object used to be destroyed by the first send, so `_selected` was never
+    // reset, and a strip that now survives the send would keep the old row
+    // drawn as chosen AND make _select() ignore every later tap — one tap and
+    // the questions become dead furniture for the rest of the conversation.
+    setState(() => _selected = null);
+
+    // Fade the new set in, without initState's 900ms hold: that delay is there
+    // to let the opening line land first, and the pauses here are only a few
+    // seconds apart, so re-using it would leave the strip permanently mid-fade.
+    _controller.forward(from: 0);
   }
 
   @override

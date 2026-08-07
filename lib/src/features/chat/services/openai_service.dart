@@ -74,6 +74,24 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
     }
   }
 
+  /// Records something the character said that this service did not generate.
+  ///
+  /// A scripted opening is posted straight into the chat by the UI, so without
+  /// this the model's first sight of the conversation is the visitor's reply on
+  /// its own — it never learns that it opened by asking "what made you stay?"
+  /// or that it already told them about Ogygia. Two things break as a result:
+  /// a bare answer ("the second one") has nothing to attach to, and the model
+  /// re-asks a question the visitor has just been asked.
+  ///
+  /// Pass one turn per call, not one bubble: the opening is dozens of bubbles
+  /// and, at one history entry each, it would push everything else out of the
+  /// 30-message window the moment the conversation got going.
+  void recordAssistantTurn(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    _conversationHistory.add({"role": "assistant", "content": trimmed});
+  }
+
   Future<String> sendMessage(String message) async {
     lastSendSucceeded = false;
     lastFailureReason = null;
