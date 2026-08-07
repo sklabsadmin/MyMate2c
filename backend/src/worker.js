@@ -8,6 +8,8 @@
  * 4. Fixed Model Enforcement
  */
 
+import { CHARACTER_STARTERS, DEFAULT_STARTERS } from "./starters.generated.js";
+
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
@@ -345,6 +347,122 @@ export default {
                 funnel: funnel.results || [],
                 characters: characters.results || [],
                 dwellBuckets: dwellBuckets.results || [],
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/admin/sessions") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminSessionsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/sessions") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            // Either a single UTC day (what the Visits "by day" table links to)
+            // or a trailing window. The day form has to group on the same
+            // date(created_at) that produced the count being drilled into, or
+            // the two disagree and the page looks broken.
+            const day = url.searchParams.get("day");
+            const isDay = /^\d{4}-\d{2}-\d{2}$/.test(day || "");
+            const days = Math.min(Math.max(parseInt(url.searchParams.get("days") || "7", 10) || 7, 1), 90);
+            const where = isDay
+                ? "date(a.created_at) = ?"
+                : "a.created_at >= datetime('now', ?)";
+            const param = isDay ? day : `-${days} days`;
+
+            // Aggregate subqueries rather than joins, deliberately: a visit can
+            // hold more than one leave row (see docs/ANALYTICS_HANDOFF.md 4.1),
+            // and a chained LEFT JOIN multiplies the visit into several rows
+            // instead of counting it once.
+            //
+            // Sorted by dwell, longest first, with unknowns last. A visit with
+            // no leave row is one the browser never got to report — that is not
+            // a zero-second visit, and sorting it as one would bury the longest
+            // sessions under a wall of hard exits.
+            const SESSION_LIMIT = 500;
+            const sessions = await db.prepare(`
+                SELECT a.visit_id,
+                       MIN(a.created_at) AS created_at,
+                       a.source, a.path, a.country, a.viewport_w,
+                       (SELECT MIN(r.duration_ms) FROM site_visits r
+                         WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
+                       (SELECT MAX(l.duration_ms) FROM site_visits l
+                         WHERE l.visit_id = a.visit_id AND l.event = 'leave') AS dwell_ms,
+                       (SELECT COUNT(*) FROM site_visits g
+                         WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
+                       (SELECT t.detail FROM site_visits t
+                         WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
+                         ORDER BY t.created_at LIMIT 1) AS character_id,
+                       EXISTS (SELECT 1 FROM site_visits t
+                                WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character,
+                       EXISTS (SELECT 1 FROM site_visits s
+                                WHERE s.visit_id = a.visit_id AND s.event = 'starter_tap') AS tapped_starter,
+                       (SELECT COUNT(*) FROM site_visits f
+                         WHERE f.visit_id = a.visit_id AND f.event = 'send_failed') AS send_failed
+                FROM site_visits a
+                WHERE a.event = 'arrive' AND ${where}
+                GROUP BY a.visit_id
+                ORDER BY dwell_ms IS NULL, dwell_ms DESC
+                LIMIT ${SESSION_LIMIT + 1}
+            `).bind(param).all();
+
+            const rows = sessions.results || [];
+            const truncated = rows.length > SESSION_LIMIT;
+            if (truncated) rows.length = SESSION_LIMIT;
+
+            // Messages for the same visits. conversation_logs.created_at is
+            // ISO-8601 with a T and a Z while site_visits uses SQLite's own
+            // format, so these are selected by visit rather than by their own
+            // timestamp — comparing the two formats as strings goes wrong
+            // inside a single day.
+            const messages = await db.prepare(`
+                SELECT c.visit_id, c.user_message, c.scenario, c.status
+                FROM conversation_logs c
+                WHERE c.visit_id IS NOT NULL
+                  AND c.visit_id IN (
+                      SELECT a.visit_id FROM site_visits a
+                       WHERE a.event = 'arrive' AND ${where})
+                ORDER BY c.created_at
+            `).bind(param).all();
+
+            const byVisit = new Map();
+            for (const m of messages.results || []) {
+                if (!byVisit.has(m.visit_id)) {
+                    byVisit.set(m.visit_id, { messages: 0, tapped: 0, typed: 0, failed: 0 });
+                }
+                const agg = byVisit.get(m.visit_id);
+                agg.messages += 1;
+                // A successful row is status "completed"; everything else
+                // ("ai_error", "rejected_validation", "rate_limited") is a
+                // message the visitor sent and got nothing usable back from.
+                if (m.status && m.status !== "completed") agg.failed += 1;
+                if (isStarterText(m.user_message, characterIdFromScenario(m.scenario))) agg.tapped += 1;
+                else agg.typed += 1;
+            }
+
+            return jsonResponse({
+                day: isDay ? day : null,
+                days: isDay ? null : days,
+                truncated,
+                limit: SESSION_LIMIT,
+                sessions: rows.map((r) => {
+                    const agg = byVisit.get(r.visit_id) || { messages: 0, tapped: 0, typed: 0, failed: 0 };
+                    return {
+                        ...r,
+                        ...agg,
+                        // A tap recorded by the funnel that no message text
+                        // matches means the starters moved on since this visit
+                        // and backend/src/starters.generated.js is stale. Say
+                        // so on the row rather than counting the tap as typed.
+                        starter_unmatched: Boolean(r.tapped_starter) && agg.messages > 0 && agg.tapped === 0,
+                    };
+                }),
             });
         }
 
@@ -1480,6 +1598,27 @@ function screenPingTicksAt(seconds) {
         (seconds - SCREEN_PING_PHASE1_SECONDS) / SCREEN_PING_PHASE2_INTERVAL_SECONDS);
 }
 
+/// conversation_logs stores a display name ("Penelope (Queen of Ithaca)");
+/// the starters are keyed by character id. There is no character_id column on
+/// that table, so the name is the only link between a message and its
+/// character.
+function characterIdFromScenario(scenario) {
+    return String(scenario || "").split(" (")[0].trim().toLowerCase();
+}
+
+/// Whether a message is one of the one-tap starters rather than something the
+/// visitor wrote. Nothing records this per message — starter_tap stores only
+/// the character and input_typed fires once per screen — so an exact match
+/// against the openers that were on offer is the only available signal. It
+/// cannot tell a visitor who typed a starter out word for word from one who
+/// tapped it; that is rare enough to accept, and stated on the page.
+function isStarterText(message, characterId) {
+    const text = String(message || "").trim();
+    if (!text) return false;
+    const list = CHARACTER_STARTERS[characterId] || DEFAULT_STARTERS;
+    return list.some((s) => s === text);
+}
+
 const INWORLD_CHARACTERS = {
     oedipus: {
         id: "oedipus",
@@ -2554,6 +2693,13 @@ function adminIndexPageHtml() {
      Meta&rsquo;s link-preview crawler, so it reads high.</div>
 </a>
 
+<a class="card" href="/admin/sessions">
+  <div class="t">User sessions <span class="em">one row per arrival</span></div>
+  <div class="d">Every session, longest dwell first: how long they stayed, how
+     long they hesitated on a character, and how many messages they sent —
+     split into tapped starters and messages they wrote themselves.</div>
+</a>
+
 <a class="card" href="/admin/logs">
   <div class="t">Chat logs</div>
   <div class="d">Conversation transcripts by user and character.</div>
@@ -2565,6 +2711,171 @@ function adminIndexPageHtml() {
   and includes bots. A big gap between them is usually crawlers, not lost users.
 </footer>
 </div></body></html>`;
+}
+
+function adminSessionsPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — User sessions</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #14101a; color: #eee; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #999; margin: 0 0 12px; max-width: 70ch; }
+  select { background: #241d2e; color: #eee; border: 1px solid #443; padding: 6px 10px;
+           border-radius: 6px; margin-bottom: 18px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #2c2438; }
+  th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: #777; }
+  .warn { color: #e5a373; }
+  .wrap { overflow-x: auto; }
+  a.drill { color: #b39ddb; }
+  tr.chat td { background: #191322; }
+  .note { color: #777; font-size: 12px; max-width: 78ch; line-height: 1.5; }
+</style></head><body>
+<p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a>
+   &nbsp;·&nbsp; <a href="/admin/visits" style="color:#b39ddb">Site visits</a></p>
+<h1>User sessions</h1>
+<p class="sub">One row per arrival — every time someone opens the app, whether or
+   not they ever reached a character. Longest dwell first; sessions the browser
+   never reported a leave for sort last, since those are unknown rather than
+   zero.</p>
+<select id="days" onchange="pick()">
+  <option value="1">Last 24 hours</option>
+  <option value="7" selected>Last 7 days</option>
+  <option value="30">Last 30 days</option>
+  <option value="90">Last 90 days</option>
+</select>
+<div id="out">Loading…</div>
+<p class="note" id="footnote"></p>
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function dur(ms) {
+  if (ms === null || ms === undefined) return '<span class="muted">—</span>';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms/1000).toFixed(1) + 's';
+  return Math.floor(ms/60000) + 'm ' + Math.round((ms%60000)/1000) + 's';
+}
+// A day drilled into from the Visits page pins the range; the selector then has
+// nothing to control, so it is hidden rather than left there looking live.
+const DAY = new URLSearchParams(location.search).get('day');
+function pick() { load(); }
+function load() {
+  const out = document.getElementById('out');
+  out.textContent = 'Loading…';
+  render(out).catch(function (err) {
+    console.error('sessions page failed', err);
+    out.innerHTML = '<p style="color:#e57373">Could not load this page: ' +
+      esc(err && err.message ? err.message : err) + '</p>';
+  });
+}
+async function render(out) {
+  const q = DAY ? 'day=' + encodeURIComponent(DAY)
+                : 'days=' + document.getElementById('days').value;
+  const res = await fetch('/api/admin/sessions?' + q);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const d = await res.json();
+  const rows = d.sessions || [];
+
+  let h = '<div class="wrap"><table><tr><th>When (UTC)</th><th>Source</th><th>Path</th>' +
+          '<th>Character</th><th>Country</th><th>Load</th><th>Dwell</th><th>Ticks</th>' +
+          '<th>Messages</th><th>Tapped</th><th>Typed</th><th>Failed</th><th>Chat</th></tr>';
+  for (const r of rows) {
+    // Ticks stop the moment a visitor engages, so they only mean anything for
+    // a session that opened a character and are silent about one that went on
+    // to send messages. "—" for a session that never opened one at all.
+    const ticks = r.opened_character
+      ? '<span title="ticks on the chat screen before engaging">' + (r.ticks || 0) + '</span>'
+      : '<span class="muted">—</span>';
+    const tapped = r.starter_unmatched
+      ? '<span class="warn" title="the funnel recorded a starter tap but no message matches a known starter — backend/src/starters.generated.js is probably stale">starter (unmatched)</span>'
+      : '<span class="num">' + (r.tapped || 0) + '</span>';
+    h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.source) +
+         '</td><td>' + esc(r.path) + '</td><td>' + esc(r.character_id || '') +
+         '</td><td>' + esc(r.country) +
+         '</td><td class="num">' + dur(r.load_ms) +
+         '</td><td class="num">' + dur(r.dwell_ms) +
+         '</td><td class="num">' + ticks +
+         '</td><td class="num">' + (r.messages || 0) +
+         '</td><td class="num">' + tapped +
+         '</td><td class="num">' + (r.typed || 0) +
+         '</td><td class="num">' +
+         ((r.failed || r.send_failed)
+           ? '<span class="warn">' + ((r.failed || 0) + (r.send_failed || 0)) + '</span>'
+           : '<span class="muted">0</span>') +
+         '</td><td>' +
+         (r.messages
+           ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
+           : '<span class="muted">—</span>') +
+         '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
+         '" style="display:none"><td colspan="13"></td></tr>';
+  }
+  if (!rows.length) h += '<tr><td colspan="13" class="muted">No sessions in this range.</td></tr>';
+  h += '</table></div>';
+  out.innerHTML = h;
+
+  const scope = d.day ? 'on ' + d.day + ' (UTC)' : 'in the last ' + d.days + ' days';
+  document.getElementById('footnote').innerHTML =
+    esc(rows.length + ' session(s) ' + scope + '.') +
+    (d.truncated
+      ? ' <span class="warn">Showing the first ' + d.limit + ' by dwell — there are more.</span>'
+      : '') +
+    '<br>Web sessions only: the App Store build sends no visit id, so its usage never appears here. ' +
+    // Interpolated from the tick constants, not written out: a hardcoded "30s"
+    // here would be wrong the moment the cadence moves, which is the same trap
+    // the dwell-bucket headers fell into.
+    'Ticks stop at the first sign of engagement and cap at ${screenPingSeconds(SCREEN_PING_MAX_TICKS)}s, so they measure hesitation, not session length. ' +
+    'Dwell is reported by the browser on page hide and latches at the first tab switch — treat it as directional. ' +
+    'Tapped vs typed is decided by matching the message against the starters that character offers.';
+
+  out.querySelectorAll('a.drill').forEach(function (a) {
+    a.addEventListener('click', async function (ev) {
+      ev.preventDefault();
+      const vid = a.getAttribute('data-v');
+      const row = document.getElementById('chat-' + vid);
+      if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+      row.style.display = '';
+      const cell = row.firstElementChild;
+      cell.innerHTML = '<span class="muted">Loading…</span>';
+      try {
+        const res = await fetch('/api/admin/visit-chat?visit_id=' + encodeURIComponent(vid));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!data.messages.length) {
+          cell.innerHTML = '<span class="muted">No messages recorded for this visit.</span>';
+          return;
+        }
+        let c = '<div style="padding:6px 0 10px">';
+        for (const m of data.messages) {
+          c += '<div style="margin:0 0 12px;padding-left:10px;border-left:2px solid #7e57c2">' +
+               '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
+               esc(m.created_at) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
+               (m.status && m.status !== 'completed' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
+               '</div>' +
+               '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
+               '<div class="muted"><b>Reply:</b> ' + esc(m.assistant_message) + '</div>' +
+               '</div>';
+        }
+        cell.innerHTML = c + '</div>';
+      } catch (err) {
+        cell.innerHTML = '<span style="color:#e57373">Could not load: ' +
+          esc(err && err.message ? err.message : err) + '</span>';
+      }
+    });
+  });
+}
+if (DAY) {
+  document.getElementById('days').style.display = 'none';
+  document.querySelector('h1').textContent = 'User sessions — ' + DAY;
+}
+load();
+</script></body></html>`;
 }
 
 function adminVisitsPageHtml() {
@@ -2717,8 +3028,16 @@ async function render(out) {
   if (!d.bySource.length) h += '<tr><td colspan="7" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
-  h += '<h2>By day</h2><div class="wrap"><table><tr><th>Day</th><th>Visits</th></tr>';
-  for (const r of d.byDay) h += '<tr><td>' + esc(r.day) + '</td><td class="num">' + r.visits + '</td></tr>';
+  // Each day drills into the sessions that made up its count. Same
+  // date(created_at) grouping on both sides, so the number here and the number
+  // of rows there agree.
+  h += '<h2>By day</h2><p class="muted" style="margin:0 0 8px">' +
+       'Pick a day to see its individual sessions, longest dwell first.</p>' +
+       '<div class="wrap"><table><tr><th>Day</th><th>Visits</th></tr>';
+  for (const r of d.byDay) {
+    h += '<tr><td><a class="drill" href="/admin/sessions?day=' + encodeURIComponent(r.day) +
+         '">' + esc(r.day) + '</a></td><td class="num">' + r.visits + '</td></tr>';
+  }
   h += '</table></div>';
 
   h += '<h2>Recent arrivals</h2><div class="wrap"><table><tr><th>When (UTC)</th><th>Path</th>' +
@@ -2774,7 +3093,7 @@ async function render(out) {
         c += '<div style="margin:0 0 12px;padding-left:10px;border-left:2px solid #7e57c2">' +
              '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
              esc(m.created_at) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
-             (m.status && m.status !== 'ok' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
+             (m.status && m.status !== 'completed' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
              '</div>' +
              '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
              '<div class="muted"><b>Reply:</b> ' + esc(m.assistant_message) + '</div>' +
