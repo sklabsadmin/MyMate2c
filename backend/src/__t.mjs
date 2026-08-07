@@ -3558,3 +3558,5 @@ function adminLogsPageHtml() {
 </body>
 </html>`;
 }
+
+export { isStarterText, characterIdFromScenario, adminSessionsPageHtml };
