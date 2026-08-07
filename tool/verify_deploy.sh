@@ -29,6 +29,11 @@ cd "$(dirname "$0")/.."
 URL="${1:?Usage: verify_deploy.sh <deployed-url>}"
 LOCAL_FILE="build/web/main.dart.js"
 
+# Shared with smoke_test.sh: both run after the deploy, so a failure here is
+# also a failure that is already live. See tool/rollback_hint.sh.
+# shellcheck source=tool/rollback_hint.sh
+. "$(dirname "$0")/rollback_hint.sh"
+
 if [[ ! -f "$LOCAL_FILE" ]]; then
   echo "ERROR: $LOCAL_FILE not found — build before verifying." >&2
   exit 1
@@ -57,4 +62,5 @@ echo "       live:   $live_hash" >&2
 echo "       The deployed bundle is stale or mismatched — every real chat" >&2
 echo "       request will likely fail 'Invalid signature' even though the" >&2
 echo "       worker and secret are both correct. Re-run 'npm run deploy'." >&2
+rollback_hint
 exit 1

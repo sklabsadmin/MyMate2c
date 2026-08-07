@@ -87,6 +87,11 @@ fi
 fail=0
 note() { printf '  %-34s %s\n' "$1" "$2"; }
 
+# Shared with verify_deploy.sh: both run after the deploy, so both need to
+# offer the undo. See tool/rollback_hint.sh for why it is printed, not run.
+# shellcheck source=tool/rollback_hint.sh
+. "$(dirname "$0")/rollback_hint.sh"
+
 # --- the app's own contract -------------------------------------------------
 # Signs exactly as openai_service.dart does: HMAC-SHA256(secret, body+timestamp),
 # hex, sent as x-signature with the millisecond timestamp in x-timestamp.
@@ -193,6 +198,7 @@ fi
 echo
 if [[ "$fail" -ne 0 ]]; then
   echo "SMOKE TEST FAILED — the deploy is live but not working. See above." >&2
+  rollback_hint
   exit 1
 fi
 echo "==> smoke test passed: ${URL} is serving and its secrets line up"
