@@ -2187,12 +2187,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final authed = ref.watch(authProvider).value?.authenticated ?? false;
     final remaining =
         (AppConfig.freeRepliesPerCharacter - _replyCount).clamp(0, 9999);
-    // Only signed-out users are gated, so only they see the counter — and not
-    // before they have sent anything. "0/20 anonymous messages" was the first
-    // thing a visitor from a campaign link read above the message box, which
-    // announces a limit to someone who has not yet worked out that they are
-    // allowed to type at all.
-    final showCounter = !authed && _replyCount > 0;
+    // Only the notice that the gate has closed, never a running count.
+    //
+    // "N/20 anonymous messages" spent a line of a phone-height chat panel on
+    // every single message, to tell a visitor about a ceiling that the data
+    // says almost nobody comes near — the funnel's whole difficulty is getting
+    // people to a *first* message, and login_gate does not fire until twenty.
+    // So it charged everyone screen space to answer a question only a handful
+    // of visitors will ever have, while quietly framing the conversation as
+    // metered from the first reply.
+    //
+    // What has to survive is the sign-in prompt itself: when the gate does
+    // close, it is the only thing on screen saying why the character stopped
+    // answering.
+    final showCounter = !authed && remaining == 0 && _replyCount > 0;
     // No fixed height. This used to be a SizedBox of 100 (118 with the
     // counter), which had to cover the tallest case — content plus a notched
     // phone's bottom inset — and so left ~34px of empty glass above the
@@ -2235,13 +2243,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
                       child: Text(
-                        remaining > 0
-                            ? '$_replyCount/${AppConfig.freeRepliesPerCharacter} anonymous messages'
-                            : 'Sign in to keep chatting with $_characterDisplayName',
+                        'Sign in to keep chatting with $_characterDisplayName',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: remaining > 0
-                              ? Colors.white38
-                              : theme.primaryColor,
+                          color: theme.primaryColor,
                           fontSize: 11,
                         ),
                       ),
