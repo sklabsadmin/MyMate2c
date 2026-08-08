@@ -14,7 +14,49 @@ export const CHARACTER_STARTERS = {
     "odysseus": [
         "How do you love someone you can't reach?",
         "Be honest — how much of that was your own fault?",
-        "How do you know when to stop sailing?"
+        "How do you know when to stop sailing?",
+        "Are you really that Odysseus?",
+        "What should I know about you first?",
+        "Were you always this confident?",
+        "Which story about you is completely wrong?",
+        "Did the Trojan Horse really happen?",
+        "What is your proudest adventure?",
+        "I love Greek stories.",
+        "Honestly? You looked interesting.",
+        "I wanted to hear your side of the story.",
+        "Does waiting come easily to you now?",
+        "What kept you going for all those years?",
+        "Were you ever afraid you would never get home?",
+        "What did you miss most about home?",
+        "Did you ever stop thinking about Penelope?",
+        "What was the hardest part of getting home?",
+        "Getting wonderfully lost somewhere new.",
+        "Doing something a little reckless.",
+        "A journey with someone interesting.",
+        "What was your worst decision?",
+        "Which adventure makes you laugh now?",
+        "Did you ever actually have a plan?",
+        "Tell me about the Cyclops.",
+        "What kind of person do you find interesting?",
+        "Do you always charm your way out of trouble?",
+        "Maybe I am. 😉",
+        "What makes someone interesting to you?",
+        "Are you trying to charm me, Odysseus?",
+        "What kind of trouble are we talking about?",
+        "I'd probably keep you out of trouble.",
+        "I think we'd make a good team.",
+        "Courage.",
+        "Cleverness.",
+        "You need both - and good timing.",
+        "What lesson did you learn the hard way?",
+        "What would your younger self think of you now?",
+        "Would you make the same choices again?",
+        "Give me the blank map.",
+        "I'll take the safe route, thank you.",
+        "Depends who is sailing with me. 😉",
+        "Then I'm glad I stopped here.",
+        "Tell me another story.",
+        "Ask me another captain's question."
     ],
     "oedipus": [
         "Rate my life choices. You're qualified.",
@@ -251,6 +293,78 @@ export const CHARACTER_QUICK_REPLY_SETS = {
             "Do you still believe in love after everything that happened?",
             "How do you know when loving someone means letting them go?",
             "If you met Odysseus today, what would you say to him?"
+        ]
+    ],
+    "odysseus": [
+        [
+            "Are you really that Odysseus?",
+            "What should I know about you first?",
+            "Were you always this confident?"
+        ],
+        [
+            "Which story about you is completely wrong?",
+            "Did the Trojan Horse really happen?",
+            "What is your proudest adventure?"
+        ],
+        [
+            "I love Greek stories.",
+            "Honestly? You looked interesting.",
+            "I wanted to hear your side of the story."
+        ],
+        [
+            "Does waiting come easily to you now?",
+            "What kept you going for all those years?",
+            "Were you ever afraid you would never get home?"
+        ],
+        [
+            "What did you miss most about home?",
+            "Did you ever stop thinking about Penelope?",
+            "What was the hardest part of getting home?"
+        ],
+        [
+            "Getting wonderfully lost somewhere new.",
+            "Doing something a little reckless.",
+            "A journey with someone interesting."
+        ],
+        [
+            "What was your worst decision?",
+            "Which adventure makes you laugh now?",
+            "Did you ever actually have a plan?"
+        ],
+        [
+            "Tell me about the Cyclops.",
+            "What kind of person do you find interesting?",
+            "Do you always charm your way out of trouble?"
+        ],
+        [
+            "Maybe I am. 😉",
+            "What makes someone interesting to you?",
+            "Are you trying to charm me, Odysseus?"
+        ],
+        [
+            "What kind of trouble are we talking about?",
+            "I'd probably keep you out of trouble.",
+            "I think we'd make a good team."
+        ],
+        [
+            "Courage.",
+            "Cleverness.",
+            "You need both - and good timing."
+        ],
+        [
+            "What lesson did you learn the hard way?",
+            "What would your younger self think of you now?",
+            "Would you make the same choices again?"
+        ],
+        [
+            "Give me the blank map.",
+            "I'll take the safe route, thank you.",
+            "Depends who is sailing with me. 😉"
+        ],
+        [
+            "Then I'm glad I stopped here.",
+            "Tell me another story.",
+            "Ask me another captain's question."
         ]
     ]
 };

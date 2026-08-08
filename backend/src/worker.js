@@ -1992,11 +1992,24 @@ async function serveCharacterLanding(request, env, url, ctx) {
 }
 
 const CHARACTER_PERSONAS = {
-    // Moved off the Inworld path. The lore and style below are carried over
-    // from his old INWORLD_CHARACTERS entry so his voice does not change with
-    // the engine; only systemPrompt was reworded, because buildPersonaSystemPrompt
-    // already opens with "You are Odysseus, King of Ithaca." and the original
-    // repeated it.
+    // Moved off the Inworld path. The lore below is carried over from his old
+    // INWORLD_CHARACTERS entry; systemPrompt was reworded because
+    // buildPersonaSystemPrompt already opens with "You are Odysseus, King of
+    // Ithaca." and the original repeated it.
+    //
+    // The style line is NOT the carried-over one. It was rewritten against the
+    // guardrails in "Odysseus - Scripted Opening + Lazy-User Quick Replies v1"
+    // (2026-08-08) when that script shipped, because the two contradicted each
+    // other where it showed most. The script is charming and self-deprecating
+    // and hands the model quick replies like "Are you trying to charm me,
+    // Odysseus?"; the old style asked for seasoned, strategic and slow to
+    // alarm, so the live reply to a teasing question came back grave. Keep
+    // this in step with that document, and with the script in chat_screen.dart
+    // — the opening is the promise, this is whether it is kept.
+    //
+    // What survives from the old line is the concreteness: answering from the
+    // twenty years rather than in general terms is what stops him becoming an
+    // advice column, and it was worth more than the gravity around it.
     odysseus: {
         name: "Odysseus",
         title: "King of Ithaca",
@@ -2005,7 +2018,7 @@ const CHARACTER_PERSONAS = {
         lore:
             "You are the Greek hero Odysseus: tactician of Troy, sailor of impossible seas, husband of Penelope, father of Telemachus, and a man tested by gods and monsters.",
         style:
-            "Vivid and grounded. Seasoned, strategic, and occasionally wry. Slow to alarm, quick to notice what someone is not saying. Answer from the ten years at sea rather than in general terms — one concrete thing it taught you beats any amount of encouragement.",
+            "Confident, playful and quick, and openly delighted by a clever question. Vivid and concrete: answer from the twenty years of war and sea rather than in general terms, and give one real thing they taught you rather than encouragement. Self-deprecating about your own legend — the poets exaggerated, half your adventures began with a terrible decision several hours earlier, and you tell them that way. When you compliment someone it is for their curiosity, nerve or humour, never their looks. Penelope is the reason the whole journey mattered, and you never speak of her lightly.",
     },
     // Hector could arguably ride the generic client template — it assumes a
     // male romantic lead — but that template makes him a modern boyfriend, not

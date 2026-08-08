@@ -118,6 +118,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// rest of the document's pause points in order.
   int _quickReplyIndex = 0;
 
+  /// How many turns of the opening script this conversation actually got
+  /// through — the frontier [_setQuickReplyIndex] refuses to walk past while
+  /// the script is unfinished.
+  ///
+  /// The moment the visitor speaks, the rest of the script is dropped and never
+  /// said. Its later quick replies are written as answers to those unsaid
+  /// turns, so advancing into them puts words in the visitor's mouth about a
+  /// conversation that did not happen: interrupt Odysseus at turn 2 and the
+  /// strip would offer "Courage." / "Cleverness." — a reply to a captain's
+  /// question he never asked. Once someone is talking, the chat is theirs and
+  /// the script has nothing further to say about it.
+  ///
+  /// Only a *finished* script releases the frontier, which is what lets
+  /// Calypso's sets 10-16 keep walking: they are an arc past her script rather
+  /// than answers to it.
+  int _scriptPausesReached = 0;
+
   /// Ceilings on the welcome sequence's simulated typing, in milliseconds.
   static const int _openerTypingCapMs = 2200;
   static const int _followUpTypingCapMs = 1200;
@@ -409,22 +426,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (history.isNotEmpty) {
         // Put the quick replies back roughly where the conversation left them,
         // or coming back to a long chat would offer "Are you really the
-        // Calypso from the Odyssey?" again. Stored history means the opening
-        // script has already run (it only plays into an empty chat), so its
-        // nine pauses are spent; each exchange since then is one more.
-        // Approximate by design — the index is not persisted, so this
-        // reconstructs it from what the history can actually show.
+        // Calypso from the Odyssey?" again. Approximate by design — the index
+        // is not persisted, so this reconstructs it from what the history can
+        // actually show: the pauses the script got through, plus one for each
+        // exchange since.
+        //
+        // It used to assume the whole script had run, on the reasoning that a
+        // script only plays into an empty chat so any history means it
+        // finished. That is wrong whenever someone closes the tab part-way
+        // through one — the script does not resume on their next visit, so
+        // their history holds two bubbles and the strip was jumping to the
+        // last set in the list. Calypso hid it (her last set, about the sea,
+        // is vague enough to survive landing early); Odysseus would not have,
+        // since his is "Then I'm glad I stopped here." under a chat where he
+        // has said "Well now..." and nothing else.
         final sets = _quickRepliesFor(widget.characterId);
         final spoken = history.where((m) => m.isUser).length;
+        final scriptPauses = _scriptPausesIn(history);
         setState(() {
           _messages.addAll(history);
           // A conversation they have already spoken in doesn't need the
           // first-message scaffolding put back in front of it on every return.
           _userHasSent = history.any((m) => m.isUser);
-          if (sets != null) {
-            _quickReplyIndex = (8 + spoken).clamp(0, sets.length - 1);
-          }
+          // Carries the frontier across the reload too, so a visitor who
+          // interrupted the script and came back does not get the sets it
+          // stopped them seeing simply because the counter started over.
+          _scriptPausesReached = scriptPauses;
         });
+        // After the frontier is set, so this lands inside it. Left to
+        // _setQuickReplyIndex rather than assigned here: it owns both clamps,
+        // and a second copy of them is exactly how the two would drift apart.
+        if (sets != null) _setQuickReplyIndex(scriptPauses - 1 + spoken);
         _aiService = OpenAIService(
           history: history,
           scenario: widget.scenario,
@@ -823,6 +855,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ];
   }
 
+  /// How many turns of this character's opening script are present in
+  /// [history] — that is, how many of its pause points the visitor actually
+  /// reached before whatever ended the script.
+  ///
+  /// A turn counts once its LAST line is in the history, which is the moment
+  /// [_playOpeningScript] treats as that turn's pause. Matching on text is
+  /// what makes this work across a reload: message ids are timestamps, so
+  /// there is nothing else in a stored message tying it back to the script.
+  ///
+  /// Returns 0 for a character with no script, and for any chat old enough to
+  /// predate the script it opens with — both of which want the strip at the
+  /// start of the list rather than the end of it.
+  int _scriptPausesIn(List<ChatMessage> history) {
+    final script = _openingScriptFor(widget.characterId);
+    if (script == null) return 0;
+    final said = history
+        .where((m) => !m.isUser && !m.isSystem)
+        .map((m) => m.text)
+        .toSet();
+    var pauses = 0;
+    for (final segment in script) {
+      if (said.contains(segment.lines.last)) pauses++;
+    }
+    return pauses;
+  }
+
   /// The scripted opening for a character, or null if they open the usual way
   /// with a single question.
   ///
@@ -839,14 +897,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     String? characterId,
   ) {
     if (characterId == 'calypso') return _calypsoOpeningScript;
+    if (characterId == 'odysseus') return _odysseusOpeningScript;
     return null;
   }
 
   /// Whether this character opens with a script rather than the single
   /// question everyone else opens with.
   ///
-  /// Gates the behaviour that only a script needs, so adding Calypso's opening
-  /// changed nothing for the other twenty characters. They keep the one-bubble
+  /// Gates the behaviour that only a script needs, so adding an opening for
+  /// Calypso and then Odysseus changed nothing for anyone else. They keep the
+  /// one-bubble
   /// opener, and it keeps landing even if the visitor starts typing over it —
   /// suppressing that would leave a chat with no greeting in it at all, which
   /// is a regression for an opener that arrives in under three seconds and a
@@ -1099,12 +1159,289 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ],
   ];
 
+  /// Odysseus's scripted opening — "Odysseus - Scripted Opening + Lazy-User
+  /// Quick Replies v1", 2026-08-08. Its fourteen pause points are the fourteen
+  /// segments below, in order, and their `pause_id`s are ODYSSEUS_P01..P14.
+  ///
+  /// Same shape as [_calypsoOpeningScript]: one string per bubble, `pauseMs`
+  /// from the document's `delay_seconds`.
+  ///
+  /// Two of the document's four metadata fields have no field here because the
+  /// player already guarantees them for every script: `continue_if_silent` is
+  /// what [_playOpeningScript] does by default, and `interrupt_on_user_input`
+  /// is the abandon check it runs after every await. They are true for all
+  /// fourteen pauses, so nothing is lost by not storing them.
+  ///
+  /// `typing_indicator_seconds` (1.4–1.8s) is also not stored, and this is the
+  /// one real departure from the document. It specifies one value per turn;
+  /// the player derives a typing time per *line* from that line's length and
+  /// caps it at [_scriptTypingMaxMs] = 1.4s. Per-line is what makes a long
+  /// sentence read as composed rather than stalled, and the cap is shared with
+  /// Calypso — honouring the document's 1.8s here would mean either a new
+  /// field or raising a cap that is already tuned. The gap is 0.4s at its
+  /// widest. Raise [_scriptTypingMaxMs] if he reads as hurried, knowing it
+  /// moves her too.
+  ///
+  /// He opens by talking, like Calypso and unlike everyone else — but for the
+  /// opposite reason. Hers is an immortal with nowhere to be; his is a man who
+  /// introduces himself before you can ask, because being underestimated has
+  /// never once been his problem.
+  static const List<({List<String> lines, int pauseMs})>
+      _odysseusOpeningScript = [
+    // 1 — ODYSSEUS_P01
+    (
+      pauseMs: 3000,
+      lines: [
+        'Well now...',
+        "I wasn't expecting company today.",
+        "I'm Odysseus.",
+        'King of Ithaca. Sailor. Occasional troublemaker. Professional '
+            'survivor.',
+      ],
+    ),
+    // 2 — ODYSSEUS_P02
+    (
+      pauseMs: 3000,
+      lines: [
+        "If you've heard stories about me, I should warn you...",
+        'the poets had a habit of making me sound far more impressive than I '
+            'actually am.',
+        "Although... they weren't entirely wrong. 😉",
+      ],
+    ),
+    // 3 — ODYSSEUS_P03. First question. Holds; turn 4 is the no-answer
+    // continuation.
+    (
+      pauseMs: 3000,
+      lines: [
+        'May I ask you something?',
+        'What made you stop here instead of visiting one of the others?',
+      ],
+    ),
+    // 4 — ODYSSEUS_P04
+    (
+      pauseMs: 3000,
+      lines: [
+        'No hurry.',
+        "I've crossed seas that took years.",
+        'I can certainly wait a few moments.',
+      ],
+    ),
+    // 5 — ODYSSEUS_P05
+    (
+      pauseMs: 4000,
+      lines: [
+        'People always ask about the Trojan Horse.',
+        'Almost nobody asks about the journey home.',
+        "Truthfully... that's where my real story begins.",
+        'Winning a war is simple.',
+        "Coming home to the people you love... that's the difficult part.",
+      ],
+    ),
+    // 6 — ODYSSEUS_P06. Second question; turn 7 answers it himself.
+    (
+      pauseMs: 3000,
+      lines: [
+        'Tell me...',
+        'when you hear the word adventure... what comes to mind?',
+      ],
+    ),
+    // 7 — ODYSSEUS_P07
+    (
+      pauseMs: 4000,
+      lines: [
+        'For me?',
+        'Adventure usually meant I had made a terrible decision several hours '
+            'earlier.',
+        'Somehow those become the stories everyone wants to hear.',
+      ],
+    ),
+    // 8 — ODYSSEUS_P08
+    (
+      pauseMs: 4000,
+      lines: [
+        "I've sailed through storms. Argued with kings. Outwitted monsters.",
+        'I escaped a Cyclops with a ridiculous plan and far too much '
+            'confidence.',
+        'Yet conversations with interesting people can still be the most '
+            'unpredictable adventures.',
+      ],
+    ),
+    // 9 — ODYSSEUS_P09
+    (
+      pauseMs: 3000,
+      lines: [
+        'I have a weakness for curious people.',
+        'They usually lead to the best conversations.',
+        'You seem curious.',
+      ],
+    ),
+    // 10 — ODYSSEUS_P10. The document's one acknowledgement that they stayed
+    // this long without saying anything, and the only turn that would read
+    // oddly to someone who just arrived. It cannot reach anyone who spoke:
+    // the script is abandoned at the first keystroke.
+    (
+      pauseMs: 4000,
+      lines: [
+        "Ah... you're still here.",
+        'Good.',
+        "I suspect we'd either become excellent friends... or get into "
+            'terrible trouble together.',
+        'Possibly both.',
+      ],
+    ),
+    // 11 — ODYSSEUS_P11. Third question; turn 12 answers it himself.
+    (
+      pauseMs: 4000,
+      lines: [
+        "Let me ask you a captain's question.",
+        'Which matters more when things go wrong: courage... or cleverness?',
+      ],
+    ),
+    // 12 — ODYSSEUS_P12
+    (
+      pauseMs: 4000,
+      lines: [
+        'Interesting.',
+        'I spent half my life believing cleverness could solve almost '
+            'anything.',
+        'Age taught me something less flattering: sometimes wisdom is knowing '
+            'when not to be clever at all.',
+      ],
+    ),
+    // 13 — ODYSSEUS_P13
+    (
+      pauseMs: 4000,
+      lines: [
+        "If we were setting sail tomorrow, I'd give you one choice.",
+        'A map to somewhere safe...',
+        'or a blank map and the promise of a story worth telling.',
+      ],
+    ),
+    // 14 — ODYSSEUS_P14, last turn, so its pause is never spent.
+    (
+      pauseMs: 0,
+      lines: [
+        'You know, I think modern people misunderstand adventure.',
+        "It isn't always monsters and storms.",
+        "Sometimes it's simply saying yes to a conversation you almost didn't "
+            'begin.',
+      ],
+    ),
+  ];
+
+  /// Odysseus's pause-point quick replies, from the same document — its
+  /// "Quick replies shown to silent / low-effort user" block for each pause.
+  ///
+  /// Fourteen sets, one per script turn, so unlike [_calypsoQuickReplies]
+  /// there is nothing here for the conversation past the script: hers carries
+  /// seven extra sets walking an arc the script never reaches, his stops where
+  /// the script does. [_setQuickReplyIndex] clamps, so set 14 stays on offer
+  /// for the rest of the conversation rather than the strip disappearing. That
+  /// happens to work — "Tell me another story" and "Ask me another captain's
+  /// question" are worth tapping more than once, which is not true of most of
+  /// these — but it is luck, not design. Extra sets can be appended here later
+  /// without touching anything else.
+  static const List<List<String>> _odysseusQuickReplies = [
+    // 1 — ODYSSEUS_P01, after he introduces himself
+    [
+      'Are you really that Odysseus?',
+      'What should I know about you first?',
+      'Were you always this confident?',
+    ],
+    // 2 — ODYSSEUS_P02, the poets exaggerated
+    [
+      'Which story about you is completely wrong?',
+      'Did the Trojan Horse really happen?',
+      'What is your proudest adventure?',
+    ],
+    // 3 — ODYSSEUS_P03, after he asks why they stopped here
+    [
+      'I love Greek stories.',
+      'Honestly? You looked interesting.',
+      'I wanted to hear your side of the story.',
+    ],
+    // 4 — ODYSSEUS_P04, no hurry
+    [
+      'Does waiting come easily to you now?',
+      'What kept you going for all those years?',
+      'Were you ever afraid you would never get home?',
+    ],
+    // 5 — ODYSSEUS_P05, coming home is the difficult part
+    [
+      'What did you miss most about home?',
+      'Did you ever stop thinking about Penelope?',
+      'What was the hardest part of getting home?',
+    ],
+    // 6 — ODYSSEUS_P06, after he asks what adventure means
+    [
+      'Getting wonderfully lost somewhere new.',
+      'Doing something a little reckless.',
+      'A journey with someone interesting.',
+    ],
+    // 7 — ODYSSEUS_P07, adventure as a terrible decision
+    [
+      'What was your worst decision?',
+      'Which adventure makes you laugh now?',
+      'Did you ever actually have a plan?',
+    ],
+    // 8 — ODYSSEUS_P08, storms, kings, monsters
+    [
+      'Tell me about the Cyclops.',
+      'What kind of person do you find interesting?',
+      'Do you always charm your way out of trouble?',
+    ],
+    // 9 — ODYSSEUS_P09, a weakness for curious people
+    [
+      'Maybe I am. 😉',
+      'What makes someone interesting to you?',
+      'Are you trying to charm me, Odysseus?',
+    ],
+    // 10 — ODYSSEUS_P10, friends or terrible trouble
+    [
+      'What kind of trouble are we talking about?',
+      "I'd probably keep you out of trouble.",
+      "I think we'd make a good team.",
+    ],
+    // 11 — ODYSSEUS_P11, after the captain's question
+    [
+      'Courage.',
+      'Cleverness.',
+      'You need both - and good timing.',
+    ],
+    // 12 — ODYSSEUS_P12, knowing when not to be clever
+    [
+      'What lesson did you learn the hard way?',
+      'What would your younger self think of you now?',
+      'Would you make the same choices again?',
+    ],
+    // 13 — ODYSSEUS_P13, the safe map or the blank one
+    [
+      'Give me the blank map.',
+      "I'll take the safe route, thank you.",
+      'Depends who is sailing with me. 😉',
+    ],
+    // 14 — ODYSSEUS_P14, last scripted turn
+    [
+      "Then I'm glad I stopped here.",
+      'Tell me another story.',
+      "Ask me another captain's question.",
+    ],
+  ];
+
   /// The pause-point quick replies for [characterId], or null for a character
   /// that has none and therefore keeps the old fixed starter strip.
   ///
   /// Keyed on the id for the same reason as [_openingScriptFor].
+  ///
+  /// Must stay *below* [_openingScriptFor] in this file: tool/gen_starters.mjs
+  /// finds both by the same `characterId == '<id>') return _x;` pattern and
+  /// keeps the last match per id, so whichever function comes second is the
+  /// one it reads as the quick replies. Swap the order and the admin starts
+  /// matching taps against the script's own lines.
   static List<List<String>>? _quickRepliesFor(String? characterId) {
     if (characterId == 'calypso') return _calypsoQuickReplies;
+    if (characterId == 'odysseus') return _odysseusQuickReplies;
     return null;
   }
 
@@ -1118,11 +1455,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   /// Moves the strip to [index], clamped to the last pause so the final set
-  /// stays on offer rather than the strip vanishing mid-conversation.
+  /// stays on offer rather than the strip vanishing mid-conversation, and to
+  /// [_scriptPausesReached] while the script is unfinished so it never offers
+  /// an answer to something that was never said.
+  ///
+  /// The second clamp is why an interrupted script leaves the strip parked on
+  /// the last set the visitor actually heard, repeating it for the rest of the
+  /// conversation. That is deliberate: they are talking now, so the strip is a
+  /// convenience rather than the thing carrying the chat, and a stale-but-true
+  /// question beats a fresh non sequitur.
   void _setQuickReplyIndex(int index) {
     final sets = _quickRepliesFor(widget.characterId);
     if (sets == null || !mounted) return;
-    final next = index.clamp(0, sets.length - 1);
+    final script = _openingScriptFor(widget.characterId);
+    final unfinished = script != null && _scriptPausesReached < script.length;
+    final int ceiling =
+        unfinished ? _scriptPausesReached - 1 : sets.length - 1;
+    final int top = ceiling < 0
+        ? 0
+        : (ceiling < sets.length - 1 ? ceiling : sets.length - 1);
+    final int next = index < 0 ? 0 : (index > top ? top : index);
     if (next == _quickReplyIndex) return;
     setState(() => _quickReplyIndex = next);
   }
@@ -1200,6 +1552,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           flushTurn();
           // The turn is complete, so this is the pause the document names —
           // swap the strip to the questions that follow what she just said.
+          // Move the frontier first: _setQuickReplyIndex will not step past it,
+          // and this turn is now one the visitor has genuinely heard.
+          _scriptPausesReached = s + 1;
           _setQuickReplyIndex(s);
         }
         if (lastLine && lastSegment) return;
@@ -1504,6 +1859,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // reset them.
       _userHasSent = false;
       _quickReplyIndex = 0;
+      // The script is about to replay from the top, so the frontier goes back
+      // with it — otherwise a conversation that finished the script once would
+      // let the strip run ahead of the replay.
+      _scriptPausesReached = 0;
       _aiService = OpenAIService(
         history: const [],
         scenario: widget.scenario,
@@ -1567,6 +1926,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // reset them.
       _userHasSent = false;
       _quickReplyIndex = 0;
+      // The script is about to replay from the top, so the frontier goes back
+      // with it — otherwise a conversation that finished the script once would
+      // let the strip run ahead of the replay.
+      _scriptPausesReached = 0;
       _aiService = OpenAIService(
         history: const [],
         scenario: widget.scenario,
