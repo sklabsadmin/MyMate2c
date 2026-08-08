@@ -452,10 +452,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // interrupted the script and came back does not get the sets it
           // stopped them seeing simply because the counter started over.
           _scriptPausesReached = scriptPauses;
+          // There is history, so the script will not run on this screen — the
+          // welcome sequence is only triggered into an empty chat. Saying so
+          // is what lets _setQuickReplyIndex tell a part-heard script from one
+          // that is still playing.
+          _welcomeAbandoned = true;
         });
-        // After the frontier is set, so this lands inside it. Left to
-        // _setQuickReplyIndex rather than assigned here: it owns both clamps,
-        // and a second copy of them is exactly how the two would drift apart.
+        // After the frontier is set, so it can be read here. Left to
+        // _setQuickReplyIndex rather than assigned directly: it owns the
+        // skipping rule, and a second copy of it is how the two would drift.
         if (sets != null) _setQuickReplyIndex(scriptPauses - 1 + spoken);
         _aiService = OpenAIService(
           history: history,
@@ -1454,27 +1459,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return sets[_quickReplyIndex];
   }
 
-  /// Moves the strip to [index], clamped to the last pause so the final set
-  /// stays on offer rather than the strip vanishing mid-conversation, and to
-  /// [_scriptPausesReached] while the script is unfinished so it never offers
-  /// an answer to something that was never said.
+  /// Whether every question in [set] can be asked cold.
   ///
-  /// The second clamp is why an interrupted script leaves the strip parked on
-  /// the last set the visitor actually heard, repeating it for the rest of the
-  /// conversation. That is deliberate: they are talking now, so the strip is a
-  /// convenience rather than the thing carrying the chat, and a stale-but-true
-  /// question beats a fresh non sequitur.
+  /// The sets are written to sit at a specific pause, and a lot of them are
+  /// answers rather than questions — "Courage.", "Give me the blank map.",
+  /// "Maybe I am. 😉". Those only read correctly directly after the line they
+  /// reply to. The ones written as questions read fine at any point, so the
+  /// question mark is the test: it costs nothing to maintain and it has no
+  /// false positives, only the odd false negative ("Tell me about the
+  /// Cyclops." is fine cold and is skipped anyway), which is the harmless
+  /// direction to be wrong in.
+  static bool _setStandsAlone(List<String> set) =>
+      set.every((q) => q.trimRight().endsWith('?'));
+
+  /// Moves the strip to [index].
+  ///
+  /// While the script is playing, and for any conversation that heard it out,
+  /// [index] is used as given: the sets line up with the turns, and after the
+  /// last one they walk whatever the list has past it.
+  ///
+  /// Once a visitor interrupts, the rest of the script is never said, so its
+  /// remaining sets would hand them replies to lines they never saw. Those are
+  /// skipped and only the self-contained sets are offered, cycling rather than
+  /// running out — a strip that stops changing stops working, because the
+  /// chosen-row latch in [_StarterPrompts] is released by a change of prompts.
   void _setQuickReplyIndex(int index) {
     final sets = _quickRepliesFor(widget.characterId);
     if (sets == null || !mounted) return;
     final script = _openingScriptFor(widget.characterId);
-    final unfinished = script != null && _scriptPausesReached < script.length;
-    final int ceiling =
-        unfinished ? _scriptPausesReached - 1 : sets.length - 1;
-    final int top = ceiling < 0
-        ? 0
-        : (ceiling < sets.length - 1 ? ceiling : sets.length - 1);
-    final int next = index < 0 ? 0 : (index > top ? top : index);
+
+    // Mid-playback the script is unfinished but not abandoned, and the exact
+    // set is wanted — hence _welcomeAbandoned rather than the pause count
+    // alone.
+    final interrupted = script != null &&
+        _welcomeAbandoned &&
+        _scriptPausesReached < script.length;
+
+    int next;
+    if (!interrupted) {
+      next = index < 0 ? 0 : (index >= sets.length ? sets.length - 1 : index);
+    } else {
+      final usable = <int>[
+        for (var i = 0; i < sets.length; i++)
+          if (_setStandsAlone(sets[i])) i,
+      ];
+      if (usable.isEmpty) return;
+      next = usable[(index < 0 ? 0 : index) % usable.length];
+    }
+
     if (next == _quickReplyIndex) return;
     setState(() => _quickReplyIndex = next);
   }
@@ -2827,6 +2859,17 @@ class _StarterPromptsState extends State<_StarterPrompts>
     await Future.delayed(_selectionHold);
     if (!mounted) return;
     widget.onTap(prompt);
+
+    // Release the latch here rather than leaving it to didUpdateWidget.
+    //
+    // That only fires when the prompt list actually changes, which is not
+    // guaranteed: the strip parks on its last set once the conversation walks
+    // off the end of the list, and then the same three prompts are rebuilt
+    // forever. With the latch still set, the tapped row stays drawn as chosen
+    // and the guard above rejects every later tap — one tap and the strip is
+    // dead furniture, which is exactly what didUpdateWidget's comment was
+    // written to prevent and could not, from where it sits.
+    if (mounted) setState(() => _selected = null);
   }
 
   @override
