@@ -184,18 +184,104 @@ Do not delete anything for a few days. Rolling back is: restore the old `name`
 in `wrangler.jsonc` and `npm run deploy`, answering **Y** to take the domains
 back.
 
-### 9. Clean up
+Read section 9 before deciding how long that window should be. Every day the
+old Workers stay deployed is a day one of them can take production back.
 
-Once settled, delete the orphaned Workers so nobody inherits this confusion:
+### 9. Clean up — this is a mitigation, not tidying
+
+Once settled, delete the orphaned Workers:
 
 ```bash
 npx wrangler delete --name mymate2c
 npx wrangler delete --name mymate-v2
 ```
 
+This used to read as housekeeping. It is not. See "An old Worker taking the
+domains back" below — on 2026-08-07 an old Worker did exactly that, five times,
+and took production down twice.
+
 Also update the stale comments in `wrangler.jsonc` and `.env.example`, which
 still describe `mymate-v2` as the active target and `mymate2c` as the frozen
 checkpoint.
+
+## An old Worker taking the domains back
+
+Everything above guards the forward direction: you rename, a *new* Worker is
+created, and the old one keeps the domains. This section is the reverse, and it
+is worse, because it happens after the migration is finished and believed safe.
+
+**What happened (2026-08-07).** Five deploys of `mymate2c` and `mymate-v2`
+between 12:03 and roughly 14:00 UTC. A custom domain belongs to whichever
+Worker most recently claims it, so each of those deploys silently moved all
+three domains off `mythoslive`. Production spent about twenty minutes, and
+later most of an hour, being served by a two-week-old Worker with its own
+build, its own secrets and its own D1. Cloudflare records nothing on the losing
+side: `wrangler deployments list --name mythoslive` still showed our deploy as
+current, and the dashboard showed the Worker as healthy.
+
+**Why it is hard to diagnose.** Every symptom points at secrets:
+
+- `npm run smoke` fails `401 Invalid signature`, because it signs with the
+  `APP_SECRET` from `.env` and is talking to a different Worker entirely.
+- Visitors see "&lt;character&gt; is having trouble thinking right now", the same
+  sentence that four unrelated secret failures produce.
+- `verify_deploy.sh` passed minutes earlier and was telling the truth at the
+  time — the domains moved afterwards.
+
+The first hour of this incident was spent rotating and re-checking secrets. The
+secrets were never wrong.
+
+**The check that settles it in one command.** Ask who owns the domains, not
+what the Worker contains:
+
+```bash
+npx wrangler deployments list --name mythoslive   # says nothing useful — it is not the loser's job to notice
+```
+
+Use the API instead; there is no wrangler command for this:
+
+```bash
+TOKEN=$(sed -n 's/.*oauth_token *= *"\([^"]*\)".*/\1/p' \
+        ~/Library/Preferences/.wrangler/config/default.toml)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/domains" \
+  | python3 -c 'import json,sys; [print(d["hostname"], "->", d["service"]) for d in json.load(sys.stdin)["result"]]'
+```
+
+All three hostnames must say `mythoslive`. Anything else is this failure, and
+no amount of secret rotation will help. Note the OAuth token in that file
+expires every twenty minutes or so and only a `wrangler` command renews it — a
+`401` from this call usually means run `npx wrangler whoami` and retry, not
+that access was revoked.
+
+**The fix** is `npm run deploy`, which reclaims the domains as a side effect of
+declaring them in `wrangler.jsonc`. It takes about two minutes and holds until
+something claims them again.
+
+**Confirm with the UI, not just the API.** A build served by an old Worker
+looks plausible. Two tells that cost nothing: the chat screen showing
+"N/20 anonymous messages" above the message box (removed 2026-08-07), and
+`/admin/sessions` returning 404 instead of prompting for a password.
+
+**What actually ends it** is removing the Workers that can win the race — the
+`wrangler delete` commands in section 9 — *after* whatever is deploying them
+has stopped. Deleting first does not help: `wrangler deploy` recreates a
+deleted Worker and takes the domains with it.
+
+**Finding the deployer.** Cloudflare attributes every version to the account
+email and `source: wrangler`, which is the same for every machine sharing the
+login, so it does not identify anyone. Two things that do narrow it:
+
+- Wrangler writes a log per run to `~/Library/Preferences/.wrangler/logs/`
+  (filenames are UTC). If there is no local log matching a deploy's timestamp,
+  it did not come from that machine.
+- The account audit log (dashboard → Manage Account → Audit Log) carries the
+  actor's IP and user agent. The OAuth token from `wrangler login` cannot read
+  it over the API — it returns 403 — so use the dashboard or an API token with
+  audit-log read.
+
+As of writing, the machine responsible for the 2026-08-07 deploys has not been
+identified.
 
 ## After migrating
 
@@ -219,4 +305,6 @@ use a private window, which bypasses the service worker entirely.
 - [ ] `version.json` correct on all three domains
 - [ ] Signed `/api/chat` returns 200 on `chat.deeplovepoems.com`
 - [ ] Old Workers left deployed for rollback
+- [ ] Domain ownership re-checked after the rollback window (see "An old Worker
+      taking the domains back") — all three hostnames still on the new Worker
 - [ ] Old Workers deleted, comments updated
