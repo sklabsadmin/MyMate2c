@@ -210,14 +210,20 @@ Everything above guards the forward direction: you rename, a *new* Worker is
 created, and the old one keeps the domains. This section is the reverse, and it
 is worse, because it happens after the migration is finished and believed safe.
 
-**What happened (2026-08-07).** Five deploys of `mymate2c` and `mymate-v2`
-between 12:03 and roughly 14:00 UTC. A custom domain belongs to whichever
-Worker most recently claims it, so each of those deploys silently moved all
-three domains off `mythoslive`. Production spent about twenty minutes, and
-later most of an hour, being served by a two-week-old Worker with its own
-build, its own secrets and its own D1. Cloudflare records nothing on the losing
-side: `wrangler deployments list --name mythoslive` still showed our deploy as
-current, and the dashboard showed the Worker as healthy.
+**What happened (2026-08-07 to 08-08).** Repeated deploys of `mymate2c` and
+`mymate-v2`. A custom domain belongs to whichever Worker most recently claims
+it, so each of those deploys silently moved all three domains off `mythoslive`.
+The longest stretch ran from 20:14 ICT on 07 Aug to 15:39 ICT on 08 Aug —
+roughly **nineteen hours** — served by a frozen Worker with its own build, its
+own secrets and its own D1. It recurred the same evening at 21:26, seconds after
+a push. Cloudflare records nothing on the losing side: `wrangler deployments
+list --name mythoslive` still showed our deploy as current, and the dashboard
+showed the Worker as healthy.
+
+Do not trust an early estimate of the duration. This was first believed to be
+"about twenty minutes, and later most of an hour", because it was measured from
+the deploys that were noticed rather than from the domain ownership, which
+nothing was recording. The honest measure is the `conversation_logs` gap.
 
 **Why it is hard to diagnose.** Every symptom points at secrets:
 
@@ -258,30 +264,80 @@ that access was revoked.
 declaring them in `wrangler.jsonc`. It takes about two minutes and holds until
 something claims them again.
 
+When production is down and two minutes matters, reclaim the hostnames directly
+instead — no rebuild, no deploy, seconds rather than minutes. The API refuses a
+plain `PUT` with `already in use by other custom domain`; the flag it wants is
+`override_existing_origin`:
+
+```bash
+for pair in "chat.deeploveechoes.com:$ECHOES_ZONE" \
+            "chat.deeplovepoems.com:$POEMS_ZONE" \
+            "logs.deeplovepoems.com:$POEMS_ZONE"; do
+  curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    --data "{\"environment\":\"production\",\"hostname\":\"${pair%%:*}\",
+             \"service\":\"mythoslive\",\"zone_id\":\"${pair##*:}\",
+             \"override_existing_origin\":true}" \
+    "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/domains"
+done
+```
+
+Then smoke test. Reclaiming the hostnames is enough on its own — the Worker
+already has the right code; it had simply stopped receiving the traffic.
+
 **Confirm with the UI, not just the API.** A build served by an old Worker
 looks plausible. Two tells that cost nothing: the chat screen showing
 "N/20 anonymous messages" above the message box (removed 2026-08-07), and
 `/admin/sessions` returning 404 instead of prompting for a password.
 
-**What actually ends it** is removing the Workers that can win the race — the
-`wrangler delete` commands in section 9 — *after* whatever is deploying them
-has stopped. Deleting first does not help: `wrangler deploy` recreates a
-deleted Worker and takes the domains with it.
+**The cause: Cloudflare Workers Builds (found 2026-08-08).** No machine was
+responsible. `mymate2c` and `mymate-v2` each had Cloudflare's git integration
+connected to `sklabsadmin/MyMate2c`. Every push to `main` made Cloudflare run
+`wrangler deploy` server-side, from the repo's root `wrangler.jsonc` — routes
+block included — so **every push handed production to a frozen Worker.**
+`mythoslive` had no such connection, which is why it always lost: the builds
+deployed last, automatically, a minute or two after each push.
 
-**Finding the deployer.** Cloudflare attributes every version to the account
-email and `source: wrangler`, which is the same for every machine sharing the
-login, so it does not identify anyone. Two things that do narrow it:
+The correlation is what identifies it. Ten pushes, ten paired deploys, no
+exceptions:
 
-- Wrangler writes a log per run to `~/Library/Preferences/.wrangler/logs/`
-  (filenames are UTC). If there is no local log matching a deploy's timestamp,
-  it did not come from that machine.
-- The account audit log (dashboard → Manage Account → Audit Log) carries the
-  actor's IP and user agent. The OAuth token from `wrangler login` cannot read
-  it over the API — it returns 403 — so use the dashboard or an API token with
-  audit-log read.
+| push (ICT) | mymate2c | mymate-v2 | lag |
+| --- | --- | --- | --- |
+| 08-08 21:26:15 | 21:27:07 | 21:26:53 | +52s / +38s |
+| 08-08 19:59:31 | 20:01:41 | 20:01:49 | +2m10s |
+| 08-07 20:10:59 | 20:14:11 | 20:14:00 | +3m |
+| 08-07 19:16:03 | 19:19:03 | 19:18:16 | +3m |
+| 08-07 17:14:55 | 17:17:55 | 17:17:53 | +3m |
 
-As of writing, the machine responsible for the 2026-08-07 deploys has not been
-identified.
+Two false trails cost hours, both worth recognising:
+
+- **`source: wrangler` does not mean a human ran wrangler.** Workers Builds runs
+  wrangler too, and Cloudflare attributes the version to the account email — the
+  same as every machine sharing the login. It identifies nobody.
+- **"No local wrangler log, therefore another machine"** is the wrong inference.
+  Wrangler writes a log per run to `~/Library/Preferences/.wrangler/logs/`
+  (filenames are UTC), and its *absence* does correctly rule out this Mac — but
+  the alternative is a server-side build, not a second laptop. Several hours went
+  into hunting a phantom Windows checkout and then a phantom cloud session, on
+  timing that happened to correlate.
+
+**What actually ends it** is deleting the Workers that can win the race. The
+build configuration belongs to the Worker, so deleting the Worker deletes its
+trigger, and a push can no longer resurrect it. Both were deleted 2026-08-08.
+This corrects the earlier advice in this section that deleting first does not
+help — that is true of a human running `wrangler deploy --name`, and false of a
+git-triggered build, which is what this actually was.
+
+Before blaming anyone, check for git connections: dashboard → Workers & Pages →
+the Worker → Settings → Builds. The API path is scope-blocked for a
+`wrangler login` OAuth token (`Authentication error`), so this needs the
+dashboard or an API token with builds read.
+
+**Impact, for calibration.** Visits kept being logged throughout; chats stopped
+dead. `site_visits` recorded ~210 arrivals between 08-07 20:14 and 08-08 15:39
+and `conversation_logs` recorded **zero** over the same window, against 8 in the
+healthy hour before it. The site loads and looks fine while nobody can talk to
+anyone — so a quiet chat log during a traffic-normal period is itself a symptom
+worth checking domain ownership over.
 
 ## After migrating
 
@@ -305,6 +361,12 @@ use a private window, which bypasses the service worker entirely.
 - [ ] `version.json` correct on all three domains
 - [ ] Signed `/api/chat` returns 200 on `chat.deeplovepoems.com`
 - [ ] Old Workers left deployed for rollback
+- [ ] **No git connection on any old Worker** (dashboard → the Worker → Settings
+      → Builds). One connected build turns every push into a domain hijack — see
+      "An old Worker taking the domains back"
 - [ ] Domain ownership re-checked after the rollback window (see "An old Worker
       taking the domains back") — all three hostnames still on the new Worker
+- [ ] Domain ownership re-checked again after the *next push*, not just after the
+      deploy — a git-triggered build lands minutes later and `verify_deploy.sh`
+      will have already passed
 - [ ] Old Workers deleted, comments updated
