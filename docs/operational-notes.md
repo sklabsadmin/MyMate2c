@@ -35,8 +35,38 @@ and Flutter. There is a second checkout on Windows at
 
 Always `npm run deploy`. Never a bare `wrangler deploy` — that republishes
 whatever happens to be sitting in `build/web`, which has shipped a stale bundle
-before. The npm script chains build → deploy → `verify_deploy.sh` →
-`smoke_test.sh`.
+before. The npm script chains `preflight_deploy.sh` → build → deploy →
+`verify_deploy.sh` → `smoke_test.sh` → `assert_domains.sh`.
+
+`preflight_deploy.sh` refuses, rather than warns, on the three things that have
+gone wrong: a worker name that is not `mythoslive`, a dirty working tree (the
+build comes from the tree, not from HEAD), and a `--name` override. `ALLOW_DIRTY=1`
+overrides the second for an emergency you are watching.
+
+`assert_domains.sh` answers the question `verify_deploy.sh` cannot: *which
+worker owns the hostnames now*. Custom domains bind to one worker at a time and
+every deploy declaring them re-asserts them, taking them from whoever held them
+— see `docs/worker-migration-runbook.md`. It needs `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`; the `wrangler login` OAuth token cannot read that API.
+Without them it prints loudly and passes, so it is currently a no-op. Run
+`npm run deploy:recheck` five minutes after a deploy too — anything
+git-triggered lands after the deploy script has already declared success.
+
+## grep lies about backend/src/worker.js
+
+`backend/src/worker.js` has a non-ASCII byte early enough that grep treats the
+whole file as binary. `grep -c pattern backend/src/worker.js` returns nothing
+and exits 1 — indistinguishable from "no matches" — and **`grep -q` reports no
+match too**, so it breaks conditionals, not just counts. This has twice led to
+the conclusion that a function was missing when it was present.
+
+Always pass `-a` when searching that file:
+
+    grep -an "CHARACTER_PERSONAS" backend/src/worker.js
+
+`build/web/main.dart.js` is unaffected (it stays pure ASCII, emoji included), so
+the `APP_SECRET` guard in `build_web.sh` is sound. Nothing in `tool/` greps
+`worker.js` today — the trap is latent, not live. Keep it that way, or use `-a`.
 
 **`wrangler secret put` does not take effect until the next deploy, and then
 needs a moment to propagate.** This cost hours across three separate incidents.
