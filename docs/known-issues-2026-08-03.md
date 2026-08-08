@@ -126,14 +126,21 @@ correct and live.
 **Severity:** low today (web-only deploys don't read this), but a real
 blocker whenever a native build is next submitted.
 
-**Where:** [`pubspec.yaml`](../pubspec.yaml) line 19: `version: 1.5.55+55`.
+**Where:** [`pubspec.yaml`](../pubspec.yaml) line 19: `version: 1.6.2+58`.
+(Was `1.5.55+55` when this was written; the minor has moved 5 -> 6 across
+several web deploys since, which changes nothing here — see below.)
 
 **Mechanism:** app stores compare version strings component-by-component as
-integers, not as whole numbers or semver. `1.5.55` has a minor version of
-`5`, which is *less than* the live App Store version's minor of `49`
-(`1.49.4`) — so `1.5.55` reads as an **older** version than what's live, and
+integers, not as whole numbers or semver. `1.6.2` has a minor version of
+`6`, which is *less than* the live App Store version's minor of `49`
+(`1.49.4`) — so `1.6.2` reads as an **older** version than what's live, and
 the store will reject the submission outright, regardless of the build
 number.
+
+Note that ordinary patch bumps do not walk out of this: going 1.6.1 -> 1.6.2
+raises the patch, while the comparison fails on the minor. Only a deliberate
+jump past 49 fixes it, so this issue survives every routine bump and will
+still be here at the next submission unless someone acts on it on purpose.
 
 **Fix:** bump the minor version above 49 — e.g. `1.50.x` — before any native
 build is submitted. Not urgent for web deploys, but should not be left
