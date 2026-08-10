@@ -86,6 +86,7 @@ and irrelevant to the data). Use these as query boundaries.
 | 2026-07-30 17:02 | `visit_id` on chat logs, `latency_ms`, `viewport_w`, `send_failed`; **visit-id bug fixed** | New columns start populating. Dwell/visit counts become trustworthy. |
 | 2026-07-31 07:42 | Splash 3s dwell removed; **no splash at all on `/c/` links** | Expect bounce-under-3s to change. This is the big before/after. |
 | 2026-07-31 09:50 | New dark splash logo as WebP (886KB → 78KB at 3x) | Load times on `/` should improve. |
+| 2026-08-10 | Real-user-id guard on writes + 57 junk rows deleted (see 4.5) | `conversation_logs` stops accepting invented ids; `site_visits.app_user_id` stops storing them. 2026-08-03..05 message counts drop sharply — that is the fake traffic leaving, not real usage falling. |
 
 ---
 
@@ -157,11 +158,53 @@ from a manual QA pass on the Calypso persona, 2026-07-30 11:42–11:51 UTC. Thes
 are **not real users** and will dominate any unfiltered analysis. Exclude with
 `user_id NOT LIKE 'user_test_%'`.
 
-Going forward, synthetic traffic sends header `X-Synthetic-Test: 1` and is not
-written to the DB at all.
-
 Real user ids look like `user_<13-digit-epoch-ms>` (anonymous, client-generated)
-or `google:<sub>` (signed in). Anything else is almost certainly test traffic.
+or `google:<sub>` (signed in), plus `instagram:<id>` since Instagram login
+landed. Anything else is test traffic.
+
+**The `X-Synthetic-Test: 1` header did not hold on its own.** It shipped
+2026-07-30 and works — every logging path checks it — but it is opt-in, and only
+`tool/smoke_test.sh` ever sent it. Ad-hoc verification (curl by hand, a browser
+console, an agent checking a deploy) invented a user id and skipped the header,
+so **57 more junk rows arrived after the gate existed**, across 2026-08-03..05:
+
+| Date | Ids |
+|---|---|
+| 2026-08-03 | `check_*` (11 characters), `fin_*`, `fin2_1`, `fin3_1`, `fin4_*`, `oedbug`, `oedbug1`–`oedbug5`, `h1`, `browsertest` — 27 rows |
+| 2026-08-04 | `livecheck` |
+| 2026-08-05 | `migration-check` (12), `synthetic-diagnostic` (10), `postmigration` (4), `healthcheck` (2) |
+
+They dominate the raw counts: 2026-08-03 reads as 33 messages from 33 "users"
+when only 6 of those ids were real people.
+
+Since 2026-08-10 the id shape decides, not the header. `writeConversationLogRow`
+drops any row whose `user_id` is not one of the three shapes above, and
+`recordSiteVisit` stores `NULL` for an unrecognised `app_user_id` (the visit row
+itself is kept — a funnel event with no user attached is still true). Both log
+`{"event":"chat_log_skipped","reason":"unrecognised_user_id"}` to `wrangler
+tail`, so a dropped row is visible rather than silent.
+
+Send `X-Synthetic-Test: 1` anyway when testing — it skips the write before it is
+attempted, and it also covers `site_visits` and `referral_visits`, which the id
+guard cannot (they have no user id of their own). It is now in the CORS
+allow-list too, so a browser-driven test can actually send it; before, preflight
+rejected it, which is how `browsertest` ended up in the table.
+
+**Those 57 rows were deleted on 2026-08-10**, backed up first to
+`dev/deleted_synthetic_rows_2026-08-10.json` (all 20 columns, restorable). The
+table went 251 → 194 rows, and 2026-08-03 now reads 6 messages from 6 users
+instead of 33 from 33.
+
+**The 105 `user_test_*` rows are still there** — kept deliberately, see above.
+Exclude them (and anything else that ever slips in) with:
+
+```sql
+WHERE user_id GLOB 'user_[0-9]*' AND length(user_id) = 18
+   OR user_id LIKE 'google:%' OR user_id LIKE 'instagram:%'
+```
+
+The admin dashboards do **not** apply this yet, so any count that spans
+2026-07-30 11:42–11:51 UTC is still inflated by the Calypso QA pass.
 
 ### 4.6 Source attribution is fragmented
 

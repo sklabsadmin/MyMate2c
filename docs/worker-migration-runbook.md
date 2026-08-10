@@ -137,6 +137,14 @@ The signed request is the one that matters — it is the exact check that would
 have caught the 21 July failure on day one. `tool/verify_deploy.sh` does not
 exercise the client's own signing path.
 
+Run it with `bash tool/smoke_test.sh <url>` rather than hand-rolling the curl.
+Hand-rolled checks pick an `x-user-id` on the spot and omit
+`X-Synthetic-Test: 1`, and this step is where the `migration-check` /
+`postmigration` / `healthcheck` rows in `conversation_logs` came from — 28 fake
+"users" on 2026-08-05 alone. The worker now refuses to log a made-up id
+(docs/ANALYTICS_HANDOFF.md §4.5), so such a check no longer pollutes the data,
+but it also no longer leaves the row you might go looking for afterwards.
+
 ### 6. Repoint the domains
 
 Restore the `routes` array in `wrangler.jsonc`, then:

@@ -1053,7 +1053,12 @@ function corsHeaders(request) {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id",
+        // x-synthetic-test belongs here even though the app never sends it:
+        // without it a browser-driven verification call cannot send the header
+        // at all (preflight rejects it), so the tester drops the header to make
+        // the request work and their traffic lands in the analytics tables —
+        // which is how a "browsertest" user id got into conversation_logs.
+        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test",
         "Vary": "Origin",
     };
 }
@@ -1337,6 +1342,27 @@ async function persistConversationLog(env, entry) {
 
 async function writeConversationLogRow(env, entry) {
     if (entry.synthetic) return;
+
+    // The header above is opt-in, and every ad-hoc verification call that
+    // forgot it wrote a row: 57 of them across 2026-08-03..05 under invented
+    // ids (check_zeus, fin_calypso, oedbug, migration-check, healthcheck,
+    // browsertest, ...), which is why 2026-08-03 reads as 33 messages from 33
+    // "users" when 6 of those ids were real people. Remembering a header is not
+    // something a report's accuracy should depend on, so the id shape decides
+    // too: no recognised shape, no row.
+    //
+    // Deliberately not rethrown under REQUIRE_CHAT_LOGS — this is a row we
+    // chose not to keep, not a write that failed.
+    if (!isRealUserId(entry.userId)) {
+        console.error(JSON.stringify({
+            event: "chat_log_skipped",
+            reason: "unrecognised_user_id",
+            userId: entry.userId,
+            requestId: entry.id,
+        }));
+        return;
+    }
+
     if (!env.CHAT_LOGS_DB) {
         if (env.REQUIRE_CHAT_LOGS === "true") {
             throw new Error("CHAT_LOGS_DB binding is required when REQUIRE_CHAT_LOGS=true");
@@ -1760,7 +1786,13 @@ async function recordSiteVisit(raw, request, env) {
     const detail = String(payload.detail || "").slice(0, 80) || null;
     // Only the in-app events carry this; the splash beacon runs before Flutter
     // exists, so arrive/leave rows have it NULL by design.
-    const appUserId = String(payload.appUserId || "").slice(0, 120) || null;
+    //
+    // An unrecognised id is dropped rather than stored, but the visit itself is
+    // still recorded: unlike a conversation_logs row, a funnel event with no
+    // user attached is still true and still counts. Storing the invented id
+    // would instead let a verification call join itself onto the real cohort.
+    const rawAppUserId = String(payload.appUserId || "").slice(0, 120) || null;
+    const appUserId = isRealUserId(rawAppUserId) ? rawAppUserId : null;
     const visitId = String(payload.visitId || "").slice(0, 64);
     if (!visitId) return;
 
@@ -1871,6 +1903,26 @@ function escapeHtmlAttribute(value) {
 /// of every report.
 function isSyntheticTest(request) {
     return request.headers.get("x-synthetic-test") === "1";
+}
+
+/// The id shapes this system actually mints for a person, and the only ones
+/// allowed into the analytics tables.
+///
+///   user_<13-digit epoch ms>  anonymous, generated once by the client and
+///                             kept in prefs (openai_service.dart)
+///   google:<sub>              signed in with Google (worker, from the session)
+///   instagram:<id>            signed in with Instagram (worker, same place)
+///
+/// Anything else arrived as a hand-typed x-user-id — which in practice means a
+/// verification call, and in the DB means a fake "user" inflating every count.
+///
+/// The 13 digits are deliberate rather than \d+: `user_1`, `user_test_smoke_1`
+/// and friends are exactly what the ad-hoc traffic looks like. (13 digits is
+/// correct for epoch-ms until the year 2286.)
+const REAL_USER_ID = /^(?:user_\d{13}|google:.+|instagram:.+)$/;
+
+function isRealUserId(userId) {
+    return typeof userId === "string" && REAL_USER_ID.test(userId);
 }
 
 /// Classifies where a visitor came from. Instagram and Facebook render links
