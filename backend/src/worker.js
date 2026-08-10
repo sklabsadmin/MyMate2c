@@ -1965,6 +1965,21 @@ function isRealUserId(userId) {
     return typeof userId === "string" && REAL_USER_ID.test(userId);
 }
 
+/// The SQL half of isRealUserId, for the rows written before the guard existed
+/// — the 105 `user_test_*` messages from the Calypso QA pass are still in the
+/// table on purpose, and they dominate any window covering 2026-07-30
+/// 11:42–11:51 UTC.
+///
+/// GLOB because SQLite has no regex, and `length = 18` rather than thirteen
+/// `[0-9]` classes because D1 rejects that with "LIKE or GLOB pattern too
+/// complex". Parenthesised as a whole: AND binds tighter than OR, so without
+/// the outer brackets this would silently mean something else when ANDed into
+/// a filter list.
+function realUserIdSql(column) {
+    return `(${column} GLOB 'user_[0-9]*' AND length(${column}) = 18
+             OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
+}
+
 /// Classifies where a visitor came from. Instagram and Facebook render links
 /// in their own in-app browser, which identifies itself in the user-agent —
 /// that is the only signal for a link posted without utm parameters, since
@@ -2621,6 +2636,9 @@ async function listConversations(env, params) {
     const userId = params.get("user_id");
     const search = (params.get("q") || "").trim();
     const errorsOnly = params.get("errors_only") === "1";
+    // Test ids are hidden unless asked for. The rows are still in the table —
+    // this only decides whether the page counts them.
+    const includeTest = params.get("include_test") === "1";
     const show = params.get("show") === "engaged" || params.get("show") === "silent"
         ? params.get("show")
         : "all";
@@ -2636,6 +2654,10 @@ async function listConversations(env, params) {
     if (userId) { chatFilters.push("user_id = ?"); chatBinds.push(userId); }
     if (from) { chatFilters.push("created_at >= ?"); chatBinds.push(from); }
     if (toExclusive) { chatFilters.push("created_at < ?"); chatBinds.push(toExclusive); }
+    // Everything above, before the id shape is considered — kept so the hidden
+    // count below can ask the same question with the test rows put back.
+    const chatFiltersBase = [...chatFilters];
+    if (!includeTest) chatFilters.push(realUserIdSql("user_id"));
     const where = chatFilters.length ? `WHERE ${chatFilters.join(" AND ")}` : "";
 
     // Both post-aggregation conditions. A text match is asked of the whole
@@ -2696,6 +2718,17 @@ async function listConversations(env, params) {
     if (userId) { visitFilters.push("app_user_id = ?"); visitBinds.push(userId); }
     if (from) { visitFilters.push("sv.created_at >= ?"); visitBinds.push(from); }
     if (toExclusive) { visitFilters.push("sv.created_at < ?"); visitBinds.push(toExclusive); }
+    // Snapshot after every bound filter, so the hidden-count query below takes
+    // visitBinds in full. Taken before the date filters, it consumed two binds
+    // it had no placeholders for and D1 rejected the whole query.
+    const visitFiltersBase = [...visitFilters];
+    // NULL has to survive this. The splash beacon fires before Flutter exists,
+    // so arrive/leave rows carry no user id at all by design — filtering on the
+    // shape alone would delete the entire silent-visit half of the page, which
+    // is the population it was built to show.
+    if (!includeTest) {
+        visitFilters.push(`(sv.app_user_id IS NULL OR ${realUserIdSql("sv.app_user_id")})`);
+    }
 
     const unengaged = `
         SELECT MAX(sv.app_user_id) AS user_id,
@@ -2752,11 +2785,51 @@ async function listConversations(env, params) {
         LIMIT ? OFFSET ?
     `).bind(...binds, limit, offset).all();
 
+    // What the id filter cost, under the same filters the page is showing.
+    // Reported rather than silently dropped: a hidden row you cannot see the
+    // count of is indistinguishable from data that was never there, which is
+    // the mistake that made the raw numbers untrustworthy in the first place.
+    // Counted per half, and only for the halves this view is showing: with
+    // `show=silent` on screen, hidden conversations are not rows the page was
+    // going to list either way, and counting them reads as "1 visit hidden"
+    // being reported as 3.
+    let hidden = 0;
+    if (!includeTest && !silentOnly) {
+        const hiddenWhere = [...chatFiltersBase, `NOT ${realUserIdSql("user_id")}`];
+        const row = await env.CHAT_LOGS_DB.prepare(`
+            SELECT COUNT(*) AS n FROM (
+                SELECT user_id FROM conversation_logs
+                WHERE ${hiddenWhere.join(" AND ")}
+                GROUP BY user_id, chat_id
+                ${having}
+            )
+        `).bind(...chatBinds, ...havingBinds).first();
+        hidden += row ? row.n : 0;
+    }
+    if (!includeTest && !engagedOnly) {
+        // IS NOT NULL matters: an absent id is not a hidden one.
+        const hiddenVisitWhere = [
+            ...visitFiltersBase,
+            "sv.app_user_id IS NOT NULL",
+            `NOT ${realUserIdSql("sv.app_user_id")}`,
+        ];
+        const row = await env.CHAT_LOGS_DB.prepare(`
+            SELECT COUNT(*) AS n FROM (
+                SELECT sv.visit_id FROM site_visits sv
+                WHERE ${hiddenVisitWhere.join(" AND ")}
+                GROUP BY sv.visit_id, sv.detail
+            )
+        `).bind(...visitBinds).first();
+        hidden += row ? row.n : 0;
+    }
+
     return {
         conversations: results,
         limit,
         offset,
         total: totalRow ? totalRow.n : null,
+        hidden,
+        includeTest,
         sort: sortColumn,
         dir: sortDir.toLowerCase(),
     };
@@ -4163,6 +4236,7 @@ ${visitTimelineCss()}
         <option value="silent">silent visits only</option>
       </select>
       <label class="chk"><input type="checkbox" id="f-errors"> errors only</label>
+      <label class="chk" title="test ids (user_test_*, hand-typed ids) are hidden by default — they are still in the table, just not counted here"><input type="checkbox" id="f-include-test"> include test ids</label>
       <button id="search-btn">Search</button>
       <button id="reset-btn" class="ghost">Reset</button>
       <span class="spacer"></span>
@@ -4228,7 +4302,8 @@ ${visitTimelineJs()}
   // page entirely.
   var DEFAULTS = {
     character: "", user: "", q: "", from: "", to: "", show: "all",
-    errors: false, sort: "last_at", dir: "desc", offset: 0, limit: 50,
+    errors: false, includeTest: false, sort: "last_at", dir: "desc",
+    offset: 0, limit: 50,
   };
   var state = {};
   var view = { name: "list" };
@@ -4289,6 +4364,7 @@ ${visitTimelineJs()}
       to: sp.get("to") || "",
       show: sp.get("show") === "engaged" || sp.get("show") === "silent" ? sp.get("show") : "all",
       errors: sp.get("errors_only") === "1",
+      includeTest: sp.get("include_test") === "1",
       sort: sp.get("sort") || "last_at",
       dir: sp.get("dir") === "asc" ? "asc" : "desc",
       offset: Math.max(0, parseInt(sp.get("offset"), 10) || 0),
@@ -4315,6 +4391,7 @@ ${visitTimelineJs()}
     if (state.to) sp.set("to", state.to);
     if (state.show !== DEFAULTS.show) sp.set("show", state.show);
     if (state.errors) sp.set("errors_only", "1");
+    if (state.includeTest) sp.set("include_test", "1");
     if (state.sort !== DEFAULTS.sort) sp.set("sort", state.sort);
     if (state.dir !== DEFAULTS.dir) sp.set("dir", state.dir);
     if (state.offset) sp.set("offset", state.offset);
@@ -4347,6 +4424,7 @@ ${visitTimelineJs()}
     el("f-to").value = state.to;
     el("f-show").value = state.show;
     el("f-errors").checked = state.errors;
+    el("f-include-test").checked = state.includeTest;
     el("page-size").value = String(state.limit);
     el("f-range").value = rangePreset();
     // A date range and a rolling "last N days" export window would contradict
@@ -4376,6 +4454,7 @@ ${visitTimelineJs()}
     state.to = el("f-to").value;
     state.show = el("f-show").value;
     state.errors = el("f-errors").checked;
+    state.includeTest = el("f-include-test").checked;
     state.limit = parseInt(el("page-size").value, 10) || 50;
   }
 
@@ -4476,11 +4555,25 @@ ${visitTimelineJs()}
     pageInfoEl.textContent = typeof data.total === "number"
       ? first + "-" + last + " of " + data.total
       : "showing " + convs.length + " (offset " + state.offset + ")";
-    renderSummary(convs);
+    renderSummary(convs, data.hidden || 0);
   }
 
-  function renderSummary(convs) {
-    if (!convs.length) { summaryEl.textContent = ""; return; }
+  // hidden is what the test-id filter removed under these same filters. Always
+  // shown when non-zero, including when it removed everything — "no rows" and
+  // "no rows you are being shown" are different answers.
+  function renderSummary(convs, hidden) {
+    var note = hidden
+      ? "<span class=\\"sep\\">|</span><span class=\\"muted\\">" + hidden +
+        " test " + (hidden === 1 ? "id" : "ids") + " hidden</span>"
+      : "";
+    if (!convs.length) {
+      summaryEl.innerHTML = hidden
+        ? "<span class=\\"muted\\">Nothing here but " + hidden + " test " +
+          (hidden === 1 ? "id" : "ids") + " — tick \\"include test ids\\" to see " +
+          (hidden === 1 ? "it" : "them") + ".</span>"
+        : "";
+      return;
+    }
     var engaged = 0, silent = 0, messages = 0, errors = 0, tokens = 0, ticks = 0;
     convs.forEach(function (c) {
       if (c.engaged) { engaged++; messages += c.message_count || 0; }
@@ -4499,7 +4592,7 @@ ${visitTimelineJs()}
     if (ticks) parts.push("<b>" + ticks + "</b> ticks");
     if (errors) parts.push("<b class=\\"err-badge\\">" + errors + "</b> errors");
     parts.push("<b>" + tokens.toLocaleString() + "</b> tokens");
-    summaryEl.innerHTML = "On this page: " + parts.join("<span class=\\"sep\\">|</span>");
+    summaryEl.innerHTML = "On this page: " + parts.join("<span class=\\"sep\\">|</span>") + note;
   }
 
   function loadErrors() {
@@ -4826,7 +4919,7 @@ ${visitTimelineJs()}
       if (e.key === "Enter") apply();
     });
   });
-  ["f-show", "f-errors", "f-from", "f-to"].forEach(function (id) {
+  ["f-show", "f-errors", "f-include-test", "f-from", "f-to"].forEach(function (id) {
     el(id).addEventListener("change", function () { apply(); });
   });
 

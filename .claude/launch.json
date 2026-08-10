@@ -19,7 +19,8 @@
         "wrangler",
         "dev",
         "--port", "8801",
-        "--var", "REQUIRE_SIGNATURE:false"
+        "--var", "REQUIRE_SIGNATURE:false",
+        "--var", "ADMIN_TOKEN:localtest"
       ],
       "port": 8801
     },
