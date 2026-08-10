@@ -83,6 +83,19 @@ $(echo "$dirty" | sed 's/^/         /')
        ALLOW_DIRTY=1 overrides, for an emergency you are watching."
 fi
 
+# Untracked files are not fatal — most are scratch — but they are not harmless
+# either: an untracked .dart under lib/ that something imports gets compiled
+# into the bundle and shipped, and git records nothing about it. Gitignored
+# files are already excluded by git here, so this lists only genuine surprises.
+untracked="$(git ls-files --others --exclude-standard -- lib backend web 2>/dev/null)"
+if [[ -n "$untracked" ]]; then
+  {
+    echo "==> WARNING: untracked files under lib/, backend/ or web/ — these can be"
+    echo "    compiled into the build while git records nothing about them:"
+    echo "$untracked" | sed 's/^/      /'
+  } >&2
+fi
+
 # Not fatal: deploying an unpushed commit is recoverable, it is just invisible
 # to anyone else — including whoever has to work out what is live at 3am.
 if git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then

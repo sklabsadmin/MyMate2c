@@ -165,12 +165,30 @@ chat_check "penelope" "Penelope (Queen of Ithaca)" "chat via OpenAI"
 chat_check "oedipus"  "Oedipus (King of Thebes)"   "chat via Inworld"
 
 # --- everything else --------------------------------------------------------
-version="$(curl -s --max-time 30 -A "$UA" "$URL/version.json" || true)"
-if [[ "$version" == *'"version"'* ]]; then
-  note "version.json" "$(printf '%s' "$version" | tr -d '{}"' | tr ',' ' ')"
-else
+# Cache-busted, and compared against the local build rather than just echoed.
+#
+# Without the unique query this read the edge's cached copy: on 2026-08-10 it
+# reported 1.6.2+58 for a deploy that had actually shipped 1.6.3+59, i.e. it
+# said a release had not landed when it had. A version-only change is invisible
+# to verify_deploy.sh (which compares main.dart.js), so this is the ONLY check
+# that sees one — printing a stale value here means nothing checks it at all.
+#
+# Comparing to build/web/version.json is what turns it from a report into a
+# test. Only possible when run right after a build; when that file is absent
+# (smoke-testing a URL from elsewhere) fall back to reporting what is served.
+version="$(curl -s --max-time 30 -A "$UA" "$URL/version.json?smoke=$$-$(date +%s)" || true)"
+if [[ "$version" != *'"version"'* ]]; then
   fail=1
   note "version.json" "FAILED — not served"
+elif [[ -f build/web/version.json ]] && [[ "$version" != "$(cat build/web/version.json)" ]]; then
+  fail=1
+  note "version.json" "FAILED — served version is not the local build
+       served: $(printf '%s' "$version" | tr -d '{}\"' | tr ',' ' ')
+       built : $(tr -d '{}"' < build/web/version.json | tr ',' ' ')
+       Either the edge is still serving the previous copy (re-run in a minute)
+       or the build did not pick up the pubspec version."
+else
+  note "version.json" "$(printf '%s' "$version" | tr -d '{}"' | tr ',' ' ')"
 fi
 
 # Unauthenticated, so this only proves the admin surface is reachable AND
