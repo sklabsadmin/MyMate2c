@@ -17,6 +17,10 @@ import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../character/presentation/character_profile_screen.dart';
 
+/// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
+/// for what each field does and why there is more than one set of them.
+typedef _ScriptPacing = ({int msPerWord, int baseMs, int minMs, int maxMs});
+
 class ChatScreen extends ConsumerStatefulWidget {
   final String? scenario;
   final String? characterImage;
@@ -139,28 +143,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   static const int _openerTypingCapMs = 2200;
   static const int _followUpTypingCapMs = 1200;
 
-  /// How long a beat of a scripted opening takes, per word of that beat.
+  /// How long a beat of a scripted opening takes.
   ///
-  /// This is the main pacing dial: raise it to slow the whole script down,
-  /// lower it to speed it up. A flat interval was the first attempt and it was
-  /// wrong — "Those make better songs." and a thirty-word sentence about the
-  /// sea got the same one second each, so the short beats felt spat out and
+  /// [msPerWord] is the main pacing dial: raise it to slow the whole script
+  /// down, lower it to speed it up. A flat interval was the first attempt and
+  /// it was wrong — "Those make better songs." and a thirty-word sentence about
+  /// the sea got the same one second each, so the short beats felt spat out and
   /// the long ones were gone before they could be read. Time per word keeps a
   /// short line snappy and gives a long one room, which is also just how a
   /// person types.
   ///
+  /// [baseMs] is the fixed cost on every beat, for the pause between one line
+  /// and the next that has nothing to do with how long either is. [minMs] and
+  /// [maxMs] are the floor and ceiling: the floor stops a two-word line
+  /// snapping past unread, the ceiling stops the single longest sentence
+  /// stalling the script.
+  ///
   /// 260ms/word is roughly half of unhurried reading speed: fast enough to
-  /// feel live, slow enough to follow.
-  static const int _scriptMsPerWord = 260;
+  /// feel live, slow enough to follow. This is what a script gets unless it
+  /// asks for something else.
+  static const _ScriptPacing _readablePacing =
+      (msPerWord: 260, baseMs: 400, minMs: 900, maxMs: 4500);
 
-  /// Fixed cost on every beat, for the pause between one line and the next
-  /// that has nothing to do with how long either is.
-  static const int _scriptBeatBaseMs = 400;
+  /// Roughly 40% faster, for a script whose source document sets a target for
+  /// how soon it has to reach a question rather than for how comfortably it
+  /// reads.
+  ///
+  /// The document asks for the first question within 5–8s and another roughly
+  /// every 5–8s after it, on the production finding that v1 waited too long to
+  /// invite anyone to participate. At [_readablePacing] Odysseus v2 reaches its
+  /// first question at 10.0s and the rest 12.6–18.1s apart, so the opening
+  /// target is missed outright. These numbers reach it at 6.2s.
+  ///
+  /// The 5–8s *repeat* target is not met and cannot be, which is worth knowing
+  /// before anyone tunes this further: the later questions land 9.2–12.4s
+  /// apart. 3s of every gap is the document's own `pause_after_seconds`, and
+  /// what remains is a four-to-five bubble turn, so hitting 5–8s end to end
+  /// would mean roughly a second per bubble — back to the flat interval this
+  /// scheme was written to replace, with the long sentences going past unread.
+  /// Cutting bubbles from the turns, not speeding them up, is what would
+  /// actually close that gap.
+  static const _ScriptPacing _briskPacing =
+      (msPerWord: 150, baseMs: 300, minMs: 700, maxMs: 2800);
 
-  /// Floor and ceiling on a beat. The floor stops a two-word line snapping past
-  /// unread; the ceiling stops the single longest sentence stalling the script.
-  static const int _scriptBeatMinMs = 900;
-  static const int _scriptBeatMaxMs = 4500;
+  /// Scripts paced to a question cadence rather than to unhurried reading.
+  ///
+  /// Per character rather than global because the two scripts want opposite
+  /// things: Calypso is an immortal with nowhere to be and her document makes
+  /// silence comfortable on purpose, so speeding her up would be undoing her
+  /// design, not fixing it.
+  static const Set<String> _briskScriptCharacters = {'odysseus'};
+
+  _ScriptPacing get _scriptPacing =>
+      _briskScriptCharacters.contains(widget.characterId)
+          ? _briskPacing
+          : _readablePacing;
 
   /// Share of each beat spent showing the typing indicator before the message
   /// lands, bounded so it is always perceptible but never the whole beat.
@@ -221,11 +258,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _textController.addListener(_onDraftChanged);
     _loadHistory();
     _loadReplyCount();
-    // Refresh auth status in case the user just returned from an OAuth
-    // redirect back into this chat.
-    ref.read(authProvider.notifier).refresh();
     // Track active character
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Refresh auth status in case the user just returned from an OAuth
+      // redirect back into this chat.
+      //
+      // In the post-frame callback rather than directly in initState, where it
+      // used to sit: refresh() assigns to the provider's state synchronously,
+      // and Riverpod asserts against a provider being modified during a widget
+      // life-cycle. It is an assert, so release builds never saw it, but every
+      // debug run logged the error and it failed any widget test that mounted
+      // this screen. A frame later is soon enough for something that exists to
+      // catch an OAuth return.
+      ref.read(authProvider.notifier).refresh();
+
       ref
           .read(activeChatProvider.notifier)
           .setActive(widget.scenario ?? 'Unknown', _currentVibe);
@@ -1164,28 +1210,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ],
   ];
 
-  /// Odysseus's scripted opening — "Odysseus - Scripted Opening + Lazy-User
-  /// Quick Replies v1", 2026-08-08. Its fourteen pause points are the fourteen
-  /// segments below, in order, and their `pause_id`s are ODYSSEUS_P01..P14.
+  /// Odysseus's scripted opening — "Odysseus Conversation Script v2",
+  /// 2026-08-10. Its twelve pause points are the twelve segments below, in
+  /// order, and their `pause_id`s are ODY2_P01..P12.
+  ///
+  /// This replaced v1 outright rather than sitting beside it. v1's shape was a
+  /// man telling you about himself for ninety seconds and asking three
+  /// questions along the way; v2's is a man who asks something easy in the
+  /// first breath and spends the rest of the script getting the visitor to talk
+  /// about her own life. Every one of the twelve turns now ends on a question
+  /// to her, which is the entire point of the revision — the document's stated
+  /// production finding is that v1 waited too long to invite participation.
   ///
   /// Same shape as [_calypsoOpeningScript]: one string per bubble, `pauseMs`
-  /// from the document's `delay_seconds`.
+  /// from the document's `pause_after_seconds`.
   ///
-  /// Two of the document's four metadata fields have no field here because the
-  /// player already guarantees them for every script: `continue_if_silent` is
-  /// what [_playOpeningScript] does by default, and `interrupt_on_user_input`
-  /// is the abandon check it runs after every await. They are true for all
-  /// fourteen pauses, so nothing is lost by not storing them.
+  /// Three of the document's four per-pause flags have no field here because
+  /// the player already guarantees them for every script: `continue_if_silent`
+  /// is what [_playOpeningScript] does by default, `interrupt_on_user_input` is
+  /// the abandon check it runs after every await, and `show_quick_replies` is
+  /// the strip, which for a scripted character is on screen from the first
+  /// frame and never retires. All three are true for all twelve pauses, so
+  /// nothing is lost by not storing them.
   ///
-  /// `typing_indicator_seconds` (1.4–1.8s) is also not stored, and this is the
-  /// one real departure from the document. It specifies one value per turn;
-  /// the player derives a typing time per *line* from that line's length and
-  /// caps it at [_scriptTypingMaxMs] = 1.4s. Per-line is what makes a long
-  /// sentence read as composed rather than stalled, and the cap is shared with
-  /// Calypso — honouring the document's 1.8s here would mean either a new
-  /// field or raising a cap that is already tuned. The gap is 0.4s at its
-  /// widest. Raise [_scriptTypingMaxMs] if he reads as hurried, knowing it
-  /// moves her too.
+  /// The document's timing rules — first question in 5–8s, another every 5–8s
+  /// while the visitor stays quiet — are not met by the pacing the rest of the
+  /// scripts use, which is why he is in [_briskScriptCharacters]. See
+  /// [_briskPacing] for what that buys and where it still falls short.
   ///
   /// He opens by talking, like Calypso and unlike everyone else — but for the
   /// opposite reason. Hers is an immortal with nowhere to be; his is a man who
@@ -1193,244 +1244,287 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// never once been his problem.
   static const List<({List<String> lines, int pauseMs})>
       _odysseusOpeningScript = [
-    // 1 — ODYSSEUS_P01
+    // 1 — ODY2_P01. The question is in the opening turn now; in v1 it was the
+    // third, a minute in.
     (
-      pauseMs: 3000,
+      pauseMs: 2500,
       lines: [
         'Well now...',
-        "I wasn't expecting company today.",
-        "I'm Odysseus.",
-        'King of Ithaca. Sailor. Occasional troublemaker. Professional '
-            'survivor.',
+        "I wasn't expecting company.",
+        "I'm Odysseus — sailor, king of Ithaca, occasional troublemaker.",
+        'Although if you know the old stories, you may already have an opinion '
+            'of me.',
+        'What have you heard?',
       ],
     ),
-    // 2 — ODYSSEUS_P02
+    // 2 — ODY2_P02
     (
       pauseMs: 3000,
       lines: [
-        "If you've heard stories about me, I should warn you...",
-        'the poets had a habit of making me sound far more impressive than I '
-            'actually am.',
-        "Although... they weren't entirely wrong. 😉",
+        'No verdict yet? Fair enough.',
+        'People have been arguing about me for three thousand years. You '
+            'deserve at least a few seconds.',
+        'Let me make it easier:',
+        'Would you rather hear about a monster, a beautiful island... or one '
+            'of my truly terrible decisions?',
       ],
     ),
-    // 3 — ODYSSEUS_P03. First question. Holds; turn 4 is the no-answer
-    // continuation.
+    // 3 — ODY2_P03. He answers his own question so a silent visitor still gets
+    // the story, which is the pattern for every choice he offers.
     (
       pauseMs: 3000,
       lines: [
-        'May I ask you something?',
-        'What made you stop here instead of visiting one of the others?',
+        "Captain's privilege, then. I'll choose the terrible decision.",
+        'There are, unfortunately, quite a few candidates.',
+        "I've learned something since those days: the choices we regret often "
+            'become the stories that teach us the most.',
+        'Have you ever made a decision that looked foolish at the time but '
+            'changed your life for the better?',
       ],
     ),
-    // 4 — ODYSSEUS_P04
+    // 4 — ODY2_P04
     (
       pauseMs: 3000,
       lines: [
-        'No hurry.',
-        "I've crossed seas that took years.",
-        'I can certainly wait a few moments.',
+        "Ah, now we're getting somewhere.",
+        'I spent years believing courage meant charging forward.',
+        'Age taught me that sometimes courage is leaving, starting again, '
+            'changing your mind... or admitting that the life you planned '
+            "isn't the life you want.",
+        'Which are you better at — starting something new, or knowing when '
+            "it's time to let something go?",
       ],
     ),
-    // 5 — ODYSSEUS_P05
-    (
-      pauseMs: 4000,
-      lines: [
-        'People always ask about the Trojan Horse.',
-        'Almost nobody asks about the journey home.',
-        "Truthfully... that's where my real story begins.",
-        'Winning a war is simple.',
-        "Coming home to the people you love... that's the difficult part.",
-      ],
-    ),
-    // 6 — ODYSSEUS_P06. Second question; turn 7 answers it himself.
+    // 5 — ODY2_P05
     (
       pauseMs: 3000,
       lines: [
-        'Tell me...',
-        'when you hear the word adventure... what comes to mind?',
+        'That question would have confused the younger me.',
+        'I was very good at leaving.',
+        'Getting home was another matter.',
+        'For twenty years I thought about Ithaca — not because it was the '
+            "grandest place I'd seen, but because it was mine.",
+        "Is there a place that feels like home to you, even if you don't "
+            'live there now?',
       ],
     ),
-    // 7 — ODYSSEUS_P07
-    (
-      pauseMs: 4000,
-      lines: [
-        'For me?',
-        'Adventure usually meant I had made a terrible decision several hours '
-            'earlier.',
-        'Somehow those become the stories everyone wants to hear.',
-      ],
-    ),
-    // 8 — ODYSSEUS_P08
-    (
-      pauseMs: 4000,
-      lines: [
-        "I've sailed through storms. Argued with kings. Outwitted monsters.",
-        'I escaped a Cyclops with a ridiculous plan and far too much '
-            'confidence.',
-        'Yet conversations with interesting people can still be the most '
-            'unpredictable adventures.',
-      ],
-    ),
-    // 9 — ODYSSEUS_P09
+    // 6 — ODY2_P06
     (
       pauseMs: 3000,
       lines: [
-        'I have a weakness for curious people.',
-        'They usually lead to the best conversations.',
-        'You seem curious.',
+        "That's one thing humans and heroes seem to share: places become "
+            'tangled up with people and memories.',
+        'Sometimes I can remember a harbor more clearly because of one '
+            'conversation I had there than because of anything I saw.',
+        "What's a place you still think about?",
       ],
     ),
-    // 10 — ODYSSEUS_P10. The document's one acknowledgement that they stayed
-    // this long without saying anything, and the only turn that would read
-    // oddly to someone who just arrived. It cannot reach anyone who spoke:
-    // the script is abandoned at the first keystroke.
+    // 7 — ODY2_P07
     (
-      pauseMs: 4000,
+      pauseMs: 3000,
       lines: [
-        "Ah... you're still here.",
-        'Good.',
-        "I suspect we'd either become excellent friends... or get into "
-            'terrible trouble together.',
-        'Possibly both.',
+        'I like that question because travel reveals people.',
+        'Some want an itinerary. Some want a road and no plan at all.',
+        'I was very much the second kind... which explains several monsters.',
+        'When you travel, are you the planner or the one who says, '
+            '“Let\'s see what happens”?',
       ],
     ),
-    // 11 — ODYSSEUS_P11. Third question; turn 12 answers it himself.
+    // 8 — ODY2_P08
     (
-      pauseMs: 4000,
+      pauseMs: 3000,
       lines: [
-        "Let me ask you a captain's question.",
-        'Which matters more when things go wrong: courage... or cleverness?',
+        'A little unpredictability is healthy.',
+        'Too much and you end up tied to the mast of your own ship while '
+            'Sirens sing at you.',
+        'Long story.',
+        'What kind of adventure would tempt you today — somewhere beautiful, '
+            'somewhere completely new, or simply good company and no schedule?',
       ],
     ),
-    // 12 — ODYSSEUS_P12
+    // 9 — ODY2_P09
     (
-      pauseMs: 4000,
+      pauseMs: 3000,
       lines: [
-        'Interesting.',
-        'I spent half my life believing cleverness could solve almost '
-            'anything.',
-        'Age taught me something less flattering: sometimes wisdom is knowing '
-            'when not to be clever at all.',
+        'Good company is underrated.',
+        "After everything I've seen, I've come to think the person beside you "
+            'often matters more than the destination.',
+        "And the best companions aren't necessarily the loudest. They're the "
+            'ones who notice things.',
+        'What makes someone genuinely good company for you?',
       ],
     ),
-    // 13 — ODYSSEUS_P13
+    // 10 — ODY2_P10. The "she"/"her" below is deliberate and should stay.
+    //
+    // It reads as an assertion about the visitor rather than about a
+    // hypothetical third person, because the bubble after it ("I suspect you
+    // have a few stories of your own") points the description straight at her
+    // — so this is the one place the script tells the reader who she is
+    // instead of asking. That looks like it contradicts the document's own
+    // rule against assuming things about the audience, and it has been
+    // queried once on exactly those grounds. It is not an oversight: he is
+    // lightly flirty by design and the funnel is bought against women, so the
+    // flirtation is meant to land on the reader. Do not neutralise it to
+    // "they" without asking.
     (
-      pauseMs: 4000,
+      pauseMs: 3000,
       lines: [
-        "If we were setting sail tomorrow, I'd give you one choice.",
-        'A map to somewhere safe...',
-        'or a blank map and the promise of a story worth telling.',
+        "Now that's something worth knowing about a person.",
+        "For me, it's curiosity. I like someone who can tell me what she "
+            'thinks, disagree with me, laugh at my worst stories... and then '
+            'surprise me with one of her own.',
+        'I suspect you have a few stories of your own.',
+        "What's something about your life that would surprise me?",
       ],
     ),
-    // 14 — ODYSSEUS_P14, last turn, so its pause is never spent.
+    // 11 — ODY2_P11. Written as the answer to set 10's "You'll have to earn
+    // that story." — it reads as a graceful retreat to an easier ask, which is
+    // also what it is for anyone who said nothing at all.
+    (
+      pauseMs: 3000,
+      lines: [
+        'Ah. A little mystery.',
+        'I respect that.',
+        'People reveal themselves too quickly these days. A good story '
+            'deserves its proper moment.',
+        "So I'll ask something easier.",
+        'What could you happily talk about for an hour if someone were '
+            'genuinely interested?',
+      ],
+    ),
+    // 12 — ODY2_P12, last turn, so its pause is never spent.
     (
       pauseMs: 0,
       lines: [
-        'You know, I think modern people misunderstand adventure.',
-        "It isn't always monsters and storms.",
-        "Sometimes it's simply saying yes to a conversation you almost didn't "
-            'begin.',
+        "That's the kind of thing I'd rather hear than another retelling of "
+            'the Trojan Horse.',
+        'Everyone knows how that story ends.',
+        "I don't know yours yet.",
+        "And I think that's considerably more interesting.",
+        'Where should we begin?',
       ],
     ),
   ];
 
-  /// Odysseus's pause-point quick replies, from the same document — its
-  /// "Quick replies shown to silent / low-effort user" block for each pause.
+  /// Odysseus's pause-point quick replies, from the same document — its "Quick
+  /// replies" block for each pause, which specifies exactly three mixing an
+  /// easy personal answer, curiosity about him, and a "keep telling me".
   ///
-  /// Fourteen sets, one per script turn, so unlike [_calypsoQuickReplies]
-  /// there is nothing here for the conversation past the script: hers carries
-  /// seven extra sets walking an arc the script never reaches, his stops where
-  /// the script does. [_setQuickReplyIndex] clamps, so set 14 stays on offer
-  /// for the rest of the conversation rather than the strip disappearing. That
-  /// happens to work — "Tell me another story" and "Ask me another captain's
-  /// question" are worth tapping more than once, which is not true of most of
-  /// these — but it is luck, not design. Extra sets can be appended here later
-  /// without touching anything else.
+  /// The first twelve line up one-for-one with the twelve turns of
+  /// [_odysseusOpeningScript]. Unlike v1's, almost none of them are questions:
+  /// every turn now ends by asking her something, so the tappable line is her
+  /// *answer* ("Knowing when to let go.", "I like to improvise."). That is the
+  /// engagement bet of v2 — a one-tap answer about her own life is a far lower
+  /// bar than composing a question to ask a stranger.
+  ///
+  /// It is also why sets 13–16 exist, and they are not from the document.
+  /// [_setQuickReplyIndex] falls back to [_setStandsAlone] sets when a visitor
+  /// interrupts the script, because the unplayed turns' replies would otherwise
+  /// answer lines he never said. Answer-shaped sets never stand alone, so with
+  /// only the document's twelve there would be nothing at all to fall back to
+  /// and the strip would freeze on whichever set was showing when she spoke —
+  /// v2's own shape breaking the recovery path v1 did not need. Sets 13–16 are
+  /// written to be askable cold, so they serve both that fallback and the
+  /// conversation past a script that ran to the end, where v1 simply parked on
+  /// its last set forever. Their content is the document's post-handoff topic
+  /// bank turned back into things she can tap.
   static const List<List<String>> _odysseusQuickReplies = [
-    // 1 — ODYSSEUS_P01, after he introduces himself
+    // 1 — ODY2_P01, what have you heard
     [
-      'Are you really that Odysseus?',
-      'What should I know about you first?',
-      'Were you always this confident?',
+      'The Trojan Horse, of course.',
+      'Mostly your adventures.',
+      'I know about you and Penelope.',
     ],
-    // 2 — ODYSSEUS_P02, the poets exaggerated
+    // 2 — ODY2_P02, monster, island or terrible decision
     [
-      'Which story about you is completely wrong?',
-      'Did the Trojan Horse really happen?',
-      'What is your proudest adventure?',
+      'The terrible decision.',
+      'Tell me about the island.',
+      'Definitely the monster.',
     ],
-    // 3 — ODYSSEUS_P03, after he asks why they stopped here
+    // 3 — ODY2_P03, a foolish decision that turned out well
     [
-      'I love Greek stories.',
-      'Honestly? You looked interesting.',
-      'I wanted to hear your side of the story.',
+      'Yes — definitely.',
+      "I'm usually more careful than that.",
+      "I'll tell you if you tell me yours first.",
     ],
-    // 4 — ODYSSEUS_P04, no hurry
+    // 4 — ODY2_P04, starting something or letting go
     [
-      'Does waiting come easily to you now?',
-      'What kept you going for all those years?',
-      'Were you ever afraid you would never get home?',
+      'Starting something new.',
+      'Knowing when to let go.',
+      "I'm still learning both.",
     ],
-    // 5 — ODYSSEUS_P05, coming home is the difficult part
+    // 5 — ODY2_P05, a place that feels like home
     [
-      'What did you miss most about home?',
-      'Did you ever stop thinking about Penelope?',
-      'What was the hardest part of getting home?',
+      'Yes, there is.',
+      'Home has changed for me.',
+      "I haven't found that place yet.",
     ],
-    // 6 — ODYSSEUS_P06, after he asks what adventure means
+    // 6 — ODY2_P06, a place you still think about
     [
-      'Getting wonderfully lost somewhere new.',
-      'Doing something a little reckless.',
-      'A journey with someone interesting.',
+      'A place I used to live.',
+      'A favorite trip.',
+      'Somewhere I want to return to.',
     ],
-    // 7 — ODYSSEUS_P07, adventure as a terrible decision
+    // 7 — ODY2_P07, planner or improviser
     [
-      'What was your worst decision?',
-      'Which adventure makes you laugh now?',
-      'Did you ever actually have a plan?',
+      'I plan everything.',
+      'I like to improvise.',
+      'A little of both.',
     ],
-    // 8 — ODYSSEUS_P08, storms, kings, monsters
+    // 8 — ODY2_P08, what adventure would tempt you today
     [
-      'Tell me about the Cyclops.',
-      'What kind of person do you find interesting?',
-      'Do you always charm your way out of trouble?',
+      'Somewhere beautiful.',
+      'Somewhere completely new.',
+      'Good company, no schedule.',
     ],
-    // 9 — ODYSSEUS_P09, a weakness for curious people
+    // 9 — ODY2_P09, what makes good company
     [
-      'Maybe I am. 😉',
-      'What makes someone interesting to you?',
-      'Are you trying to charm me, Odysseus?',
+      'Someone who really listens.',
+      'Someone who makes me laugh.',
+      'Someone I can be myself around.',
     ],
-    // 10 — ODYSSEUS_P10, friends or terrible trouble
+    // 10 — ODY2_P10, something that would surprise him
     [
-      'What kind of trouble are we talking about?',
-      "I'd probably keep you out of trouble.",
-      "I think we'd make a good team.",
+      "I've had a few adventures.",
+      "I've reinvented myself more than once.",
+      "You'll have to earn that story.",
     ],
-    // 11 — ODYSSEUS_P11, after the captain's question
+    // 11 — ODY2_P11, what you could talk about for an hour
     [
-      'Courage.',
-      'Cleverness.',
-      'You need both - and good timing.',
+      "Travel and places I've been.",
+      'People and relationships.',
+      'My work, hobbies, or passions.',
     ],
-    // 12 — ODYSSEUS_P12, knowing when not to be clever
+    // 12 — ODY2_P12, where should we begin
     [
-      'What lesson did you learn the hard way?',
-      'What would your younger self think of you now?',
-      'Would you make the same choices again?',
+      'Ask me about my life now.',
+      "Ask me about an adventure I've had.",
+      'You tell me one more story first.',
     ],
-    // 13 — ODYSSEUS_P13, the safe map or the blank one
+    // 13 — past the script. Every line from here on is a question, and asks
+    // nothing that depends on a turn he may not have reached.
     [
-      'Give me the blank map.',
-      "I'll take the safe route, thank you.",
-      'Depends who is sailing with me. 😉',
+      'What happened when you finally reached Ithaca?',
+      'Will you tell me another story?',
+      'What do you want to know about me?',
     ],
-    // 14 — ODYSSEUS_P14, last scripted turn
+    // 14
     [
-      "Then I'm glad I stopped here.",
-      'Tell me another story.',
-      "Ask me another captain's question.",
+      'What is the strangest place you ever landed?',
+      'What surprises you most about how people live now?',
+      'What did the sea teach you that nothing else could?',
+    ],
+    // 15
+    [
+      'What have you changed your mind about?',
+      'Who did you miss most while you were away?',
+      'What are you still proud of?',
+    ],
+    // 16
+    [
+      'What should I ask you that nobody ever does?',
+      'What are you curious about in my life?',
+      'Where would you take me if we set sail tomorrow?',
     ],
   ];
 
@@ -1527,6 +1621,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     List<({List<String> lines, int pauseMs})> script,
     int run,
   ) async {
+    // Read once: it is fixed for the whole run, and the strip's own rebuilds
+    // must not be able to change the pacing halfway through a script.
+    final pacing = _scriptPacing;
+
     // Lines posted so far in the current turn, flushed to the model's history
     // as one assistant message at every exit from this loop.
     final delivered = <String>[];
@@ -1546,8 +1644,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         // Beat length comes from the line itself, so a four-word remark and a
         // thirty-word sentence are not given the same second.
         final words = line.trim().split(RegExp(r'\s+')).length;
-        final beatMs = (_scriptBeatBaseMs + (words * _scriptMsPerWord))
-            .clamp(_scriptBeatMinMs, _scriptBeatMaxMs);
+        final beatMs = (pacing.baseMs + (words * pacing.msPerWord))
+            .clamp(pacing.minMs, pacing.maxMs);
         final typingMs = (beatMs * 45 ~/ 100)
             .clamp(_scriptTypingMinMs, _scriptTypingMaxMs);
         final gapMs = max(0, beatMs - typingMs);

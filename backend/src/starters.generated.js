@@ -15,48 +15,54 @@ export const CHARACTER_STARTERS = {
         "How do you love someone you can't reach?",
         "Be honest — how much of that was your own fault?",
         "How do you know when to stop sailing?",
-        "Are you really that Odysseus?",
-        "What should I know about you first?",
-        "Were you always this confident?",
-        "Which story about you is completely wrong?",
-        "Did the Trojan Horse really happen?",
-        "What is your proudest adventure?",
-        "I love Greek stories.",
-        "Honestly? You looked interesting.",
-        "I wanted to hear your side of the story.",
-        "Does waiting come easily to you now?",
-        "What kept you going for all those years?",
-        "Were you ever afraid you would never get home?",
-        "What did you miss most about home?",
-        "Did you ever stop thinking about Penelope?",
-        "What was the hardest part of getting home?",
-        "Getting wonderfully lost somewhere new.",
-        "Doing something a little reckless.",
-        "A journey with someone interesting.",
-        "What was your worst decision?",
-        "Which adventure makes you laugh now?",
-        "Did you ever actually have a plan?",
-        "Tell me about the Cyclops.",
-        "What kind of person do you find interesting?",
-        "Do you always charm your way out of trouble?",
-        "Maybe I am. 😉",
-        "What makes someone interesting to you?",
-        "Are you trying to charm me, Odysseus?",
-        "What kind of trouble are we talking about?",
-        "I'd probably keep you out of trouble.",
-        "I think we'd make a good team.",
-        "Courage.",
-        "Cleverness.",
-        "You need both - and good timing.",
-        "What lesson did you learn the hard way?",
-        "What would your younger self think of you now?",
-        "Would you make the same choices again?",
-        "Give me the blank map.",
-        "I'll take the safe route, thank you.",
-        "Depends who is sailing with me. 😉",
-        "Then I'm glad I stopped here.",
-        "Tell me another story.",
-        "Ask me another captain's question."
+        "The Trojan Horse, of course.",
+        "Mostly your adventures.",
+        "I know about you and Penelope.",
+        "The terrible decision.",
+        "Tell me about the island.",
+        "Definitely the monster.",
+        "Yes — definitely.",
+        "I'm usually more careful than that.",
+        "I'll tell you if you tell me yours first.",
+        "Starting something new.",
+        "Knowing when to let go.",
+        "I'm still learning both.",
+        "Yes, there is.",
+        "Home has changed for me.",
+        "I haven't found that place yet.",
+        "A place I used to live.",
+        "A favorite trip.",
+        "Somewhere I want to return to.",
+        "I plan everything.",
+        "I like to improvise.",
+        "A little of both.",
+        "Somewhere beautiful.",
+        "Somewhere completely new.",
+        "Good company, no schedule.",
+        "Someone who really listens.",
+        "Someone who makes me laugh.",
+        "Someone I can be myself around.",
+        "I've had a few adventures.",
+        "I've reinvented myself more than once.",
+        "You'll have to earn that story.",
+        "Travel and places I've been.",
+        "People and relationships.",
+        "My work, hobbies, or passions.",
+        "Ask me about my life now.",
+        "Ask me about an adventure I've had.",
+        "You tell me one more story first.",
+        "What happened when you finally reached Ithaca?",
+        "Will you tell me another story?",
+        "What do you want to know about me?",
+        "What is the strangest place you ever landed?",
+        "What surprises you most about how people live now?",
+        "What did the sea teach you that nothing else could?",
+        "What have you changed your mind about?",
+        "Who did you miss most while you were away?",
+        "What are you still proud of?",
+        "What should I ask you that nobody ever does?",
+        "What are you curious about in my life?",
+        "Where would you take me if we set sail tomorrow?"
     ],
     "oedipus": [
         "Rate my life choices. You're qualified.",
@@ -297,74 +303,84 @@ export const CHARACTER_QUICK_REPLY_SETS = {
     ],
     "odysseus": [
         [
-            "Are you really that Odysseus?",
-            "What should I know about you first?",
-            "Were you always this confident?"
+            "The Trojan Horse, of course.",
+            "Mostly your adventures.",
+            "I know about you and Penelope."
         ],
         [
-            "Which story about you is completely wrong?",
-            "Did the Trojan Horse really happen?",
-            "What is your proudest adventure?"
+            "The terrible decision.",
+            "Tell me about the island.",
+            "Definitely the monster."
         ],
         [
-            "I love Greek stories.",
-            "Honestly? You looked interesting.",
-            "I wanted to hear your side of the story."
+            "Yes — definitely.",
+            "I'm usually more careful than that.",
+            "I'll tell you if you tell me yours first."
         ],
         [
-            "Does waiting come easily to you now?",
-            "What kept you going for all those years?",
-            "Were you ever afraid you would never get home?"
+            "Starting something new.",
+            "Knowing when to let go.",
+            "I'm still learning both."
         ],
         [
-            "What did you miss most about home?",
-            "Did you ever stop thinking about Penelope?",
-            "What was the hardest part of getting home?"
+            "Yes, there is.",
+            "Home has changed for me.",
+            "I haven't found that place yet."
         ],
         [
-            "Getting wonderfully lost somewhere new.",
-            "Doing something a little reckless.",
-            "A journey with someone interesting."
+            "A place I used to live.",
+            "A favorite trip.",
+            "Somewhere I want to return to."
         ],
         [
-            "What was your worst decision?",
-            "Which adventure makes you laugh now?",
-            "Did you ever actually have a plan?"
+            "I plan everything.",
+            "I like to improvise.",
+            "A little of both."
         ],
         [
-            "Tell me about the Cyclops.",
-            "What kind of person do you find interesting?",
-            "Do you always charm your way out of trouble?"
+            "Somewhere beautiful.",
+            "Somewhere completely new.",
+            "Good company, no schedule."
         ],
         [
-            "Maybe I am. 😉",
-            "What makes someone interesting to you?",
-            "Are you trying to charm me, Odysseus?"
+            "Someone who really listens.",
+            "Someone who makes me laugh.",
+            "Someone I can be myself around."
         ],
         [
-            "What kind of trouble are we talking about?",
-            "I'd probably keep you out of trouble.",
-            "I think we'd make a good team."
+            "I've had a few adventures.",
+            "I've reinvented myself more than once.",
+            "You'll have to earn that story."
         ],
         [
-            "Courage.",
-            "Cleverness.",
-            "You need both - and good timing."
+            "Travel and places I've been.",
+            "People and relationships.",
+            "My work, hobbies, or passions."
         ],
         [
-            "What lesson did you learn the hard way?",
-            "What would your younger self think of you now?",
-            "Would you make the same choices again?"
+            "Ask me about my life now.",
+            "Ask me about an adventure I've had.",
+            "You tell me one more story first."
         ],
         [
-            "Give me the blank map.",
-            "I'll take the safe route, thank you.",
-            "Depends who is sailing with me. 😉"
+            "What happened when you finally reached Ithaca?",
+            "Will you tell me another story?",
+            "What do you want to know about me?"
         ],
         [
-            "Then I'm glad I stopped here.",
-            "Tell me another story.",
-            "Ask me another captain's question."
+            "What is the strangest place you ever landed?",
+            "What surprises you most about how people live now?",
+            "What did the sea teach you that nothing else could?"
+        ],
+        [
+            "What have you changed your mind about?",
+            "Who did you miss most while you were away?",
+            "What are you still proud of?"
+        ],
+        [
+            "What should I ask you that nobody ever does?",
+            "What are you curious about in my life?",
+            "Where would you take me if we set sail tomorrow?"
         ]
     ]
 };
