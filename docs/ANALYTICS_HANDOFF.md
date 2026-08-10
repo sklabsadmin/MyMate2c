@@ -203,8 +203,12 @@ WHERE user_id GLOB 'user_[0-9]*' AND length(user_id) = 18
    OR user_id LIKE 'google:%' OR user_id LIKE 'instagram:%'
 ```
 
-The admin dashboards do **not** apply this yet, so any count that spans
-2026-07-30 11:42–11:51 UTC is still inflated by the Calypso QA pass.
+The sessions page applies this by default as of 2026-08-10, and its summary
+line says how many rows the filter removed. Tick **include test ids** to put
+them back. Two places still count them, because they were out of scope rather
+than deliberate: the campaign-conversion subquery on the referrals page
+(`COUNT(DISTINCT l.chat_id)` against `conversation_logs`) and the chat-log
+export endpoint.
 
 ### 4.6 Source attribution is fragmented
 
