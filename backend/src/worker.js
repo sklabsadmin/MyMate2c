@@ -165,15 +165,44 @@ export default {
             const db = env.CHAT_LOGS_DB;
             if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
 
+            // chat_id is the display name ("Odysseus (King of Ithaca)"); the
+            // page renders character_id, so it is aliased here. It used to
+            // select a bare character_id, which conversation_logs has never
+            // had — that column only ever existed on referral_visits — so
+            // every "view" link on the sessions and visits pages answered 500.
+            const COLUMNS = `created_at, chat_id AS character_id, scenario,
+                             user_message, assistant_message, status, error`;
+
+            // Straight off the visit id, which conversation_logs has carried
+            // since migration 0007. This endpoint predates that column, which
+            // is why the fallback below exists at all.
+            const direct = await db.prepare(`
+                SELECT ${COLUMNS}
+                FROM conversation_logs
+                WHERE visit_id = ?
+                ORDER BY created_at
+            `).bind(visitId).all();
+
             const ids = await db.prepare(`
                 SELECT DISTINCT app_user_id FROM site_visits
                 WHERE visit_id = ? AND app_user_id IS NOT NULL
             `).bind(visitId).all();
             const userIds = (ids.results || []).map((r) => r.app_user_id);
-            if (!userIds.length) return jsonResponse({ userIds: [], messages: [] });
 
-            // Bounded by the visit window so a returning device does not drag
-            // in every conversation it has ever had.
+            if ((direct.results || []).length || !userIds.length) {
+                return jsonResponse({ userIds, messages: direct.results || [] });
+            }
+
+            // Pre-0007 rows have no visit_id, so they can only be found by user
+            // plus the visit's time window — bounded so a returning device does
+            // not drag in every conversation it has ever had.
+            //
+            // Only a fallback, because the two tables write created_at in
+            // different formats: conversation_logs writes ISO-8601 ("...T09:00
+            // :00.000Z") while datetime() here returns SQLite's space form, and
+            // as strings "T" sorts above " ", so an ISO row is always greater
+            // than the upper bound and silently drops out. Matching on visit_id
+            // above is what avoids that comparison entirely.
             const window = await db.prepare(`
                 SELECT MIN(created_at) AS started, MAX(created_at) AS ended
                 FROM site_visits WHERE visit_id = ?
@@ -181,10 +210,10 @@ export default {
 
             const placeholders = userIds.map(() => "?").join(",");
             const msgs = await db.prepare(`
-                SELECT created_at, character_id, scenario, user_message,
-                       assistant_message, status, error
+                SELECT ${COLUMNS}
                 FROM conversation_logs
                 WHERE user_id IN (${placeholders})
+                  AND visit_id IS NULL
                   AND created_at >= datetime(?, '-2 minutes')
                   AND created_at <= datetime(?, '+2 hours')
                 ORDER BY created_at
@@ -381,11 +410,22 @@ export default {
             // and a chained LEFT JOIN multiplies the visit into several rows
             // instead of counting it once.
             //
-            // Sorted by dwell, longest first, with unknowns last. A visit with
-            // no leave row is one the browser never got to report — that is not
-            // a zero-second visit, and sorting it as one would bury the longest
-            // sessions under a wall of hard exits.
-            const SESSION_LIMIT = 500;
+            // Newest arrival first. That is what the page wants to open on —
+            // "what just happened" — and it also decides which rows survive the
+            // limit below, so a capped range keeps the most recent sessions
+            // rather than the longest-dwelling ones. Any other order is one
+            // click away in the browser.
+            //
+            // How many rows to load. Sorting on this page happens in the
+            // browser, within what was loaded — so the row count is what
+            // decides whether a sort ranks the whole range or just the top
+            // slice of it, and it is the visitor's choice rather than a
+            // constant. Whitelisted: the value is interpolated into the SQL
+            // below, not bound.
+            const rawSessionLimit = parseInt(url.searchParams.get("limit"), 10);
+            const SESSION_LIMIT = [500, 1000, 5000].includes(rawSessionLimit)
+                ? rawSessionLimit
+                : 500;
             const sessions = await db.prepare(`
                 SELECT a.visit_id,
                        MIN(a.created_at) AS created_at,
@@ -408,7 +448,7 @@ export default {
                 FROM site_visits a
                 WHERE a.event = 'arrive' AND ${where}
                 GROUP BY a.visit_id
-                ORDER BY dwell_ms IS NULL, dwell_ms DESC
+                ORDER BY created_at DESC
                 LIMIT ${SESSION_LIMIT + 1}
             `).bind(param).all();
 
@@ -2529,10 +2569,44 @@ async function getConversationLog(env, id) {
 }
 
 /**
- * One row per conversation (user_id + chat_id pair) with aggregates,
- * newest activity first. Optional filters: character (substring of
- * chat_id), user_id (exact), errors_only.
+ * One row per conversation (user_id + chat_id pair) with aggregates.
+ *
+ * Optional filters: character (substring of chat_id), user_id (exact),
+ * errors_only, q (substring of either side of any message), from/to
+ * (inclusive UTC dates, YYYY-MM-DD), show (all | engaged | silent).
+ * Sort: one of the whitelisted columns below, newest activity by default.
  */
+const CONVERSATION_SORTS = {
+    last_at: "last_at",
+    first_at: "first_at",
+    message_count: "message_count",
+    tick_count: "tick_count",
+    error_count: "error_count",
+    total_tokens: "total_tokens",
+    chat_id: "chat_id",
+};
+
+/// Day bounds compare correctly against both formats created_at is written in
+/// ("2026-08-10T09:00:00.000Z" from persistConversationLog, "2026-08-10
+/// 09:00:00" from the column default) because a date-only bound is a prefix of
+/// neither's time part: everything on the 10th is >= "2026-08-10" and <
+/// "2026-08-11" whichever separator it uses. A bound carrying a time would not
+/// be — "T" sorts after " ".
+function dayBounds(params) {
+    const clean = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null);
+    const from = clean(params.get("from"));
+    const to = clean(params.get("to"));
+    // Exclusive upper bound: the day after the one the user asked for, so "to"
+    // reads as "up to and including this date".
+    let toExclusive = null;
+    if (to) {
+        const d = new Date(`${to}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        toExclusive = d.toISOString().slice(0, 10);
+    }
+    return { from, to, toExclusive };
+}
+
 async function listConversations(env, params) {
     if (!env.CHAT_LOGS_DB) {
         return { error: "CHAT_LOGS_DB is not configured", conversations: [], limit: 0, offset: 0 };
@@ -2545,17 +2619,37 @@ async function listConversations(env, params) {
 
     const character = params.get("character");
     const userId = params.get("user_id");
+    const search = (params.get("q") || "").trim();
     const errorsOnly = params.get("errors_only") === "1";
+    const show = params.get("show") === "engaged" || params.get("show") === "silent"
+        ? params.get("show")
+        : "all";
+    const { from, toExclusive } = dayBounds(params);
+
+    const sortColumn = CONVERSATION_SORTS[params.get("sort")] || "last_at";
+    const sortDir = params.get("dir") === "asc" ? "ASC" : "DESC";
 
     // Conversations that produced at least one exchange.
     const chatFilters = [];
     const chatBinds = [];
     if (character) { chatFilters.push("chat_id LIKE ?"); chatBinds.push(`%${character}%`); }
     if (userId) { chatFilters.push("user_id = ?"); chatBinds.push(userId); }
+    if (from) { chatFilters.push("created_at >= ?"); chatBinds.push(from); }
+    if (toExclusive) { chatFilters.push("created_at < ?"); chatBinds.push(toExclusive); }
     const where = chatFilters.length ? `WHERE ${chatFilters.join(" AND ")}` : "";
-    const having = errorsOnly
-        ? "HAVING SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) > 0"
-        : "";
+
+    // Both post-aggregation conditions. A text match is asked of the whole
+    // conversation, not of one message: matching a single line and then
+    // showing the transcript around it is the thing you actually want.
+    const havingParts = [];
+    const havingBinds = [];
+    if (errorsOnly) havingParts.push("SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) > 0");
+    if (search) {
+        havingParts.push(`SUM(CASE WHEN user_message LIKE ? OR assistant_message LIKE ?
+                                  THEN 1 ELSE 0 END) > 0`);
+        havingBinds.push(`%${search}%`, `%${search}%`);
+    }
+    const having = havingParts.length ? `HAVING ${havingParts.join(" AND ")}` : "";
 
     const engaged = `
         SELECT user_id,
@@ -2590,8 +2684,8 @@ async function listConversations(env, params) {
     // events instead, keyed by (visit, character) the way a chat is keyed by
     // (user, chat_id), so both kinds list together.
     //
-    // Excluded when filtering for errors: a visit that never sent anything
-    // cannot have failed a send.
+    // Excluded when filtering for errors or for message text: a visit that
+    // never sent anything cannot have failed a send, and has no words to match.
     const visitFilters = [
         "event IN ('character_tap', 'screen_ping')",
         "detail IS NOT NULL",
@@ -2600,6 +2694,8 @@ async function listConversations(env, params) {
     const visitBinds = [];
     if (character) { visitFilters.push("detail LIKE ?"); visitBinds.push(`%${character}%`); }
     if (userId) { visitFilters.push("app_user_id = ?"); visitBinds.push(userId); }
+    if (from) { visitFilters.push("sv.created_at >= ?"); visitBinds.push(from); }
+    if (toExclusive) { visitFilters.push("sv.created_at < ?"); visitBinds.push(toExclusive); }
 
     const unengaged = `
         SELECT MAX(sv.app_user_id) AS user_id,
@@ -2619,16 +2715,51 @@ async function listConversations(env, params) {
         WHERE ${visitFilters.join(" AND ")}
         GROUP BY sv.visit_id, sv.detail`;
 
-    const union = errorsOnly ? engaged : `${engaged} UNION ALL ${unengaged}`;
-    const binds = errorsOnly ? chatBinds : [...chatBinds, ...visitBinds];
+    // Which halves of the union are in play. Errors and text search both imply
+    // "engaged only" on their own; `show` is the explicit control.
+    const engagedOnly = errorsOnly || !!search || show === "engaged";
+    const silentOnly = show === "silent" && !engagedOnly;
+
+    let union;
+    let binds;
+    if (silentOnly) {
+        union = unengaged;
+        binds = visitBinds;
+    } else if (engagedOnly) {
+        union = engaged;
+        binds = [...chatBinds, ...havingBinds];
+    } else {
+        union = `${engaged} UNION ALL ${unengaged}`;
+        binds = [...chatBinds, ...havingBinds, ...visitBinds];
+    }
+
+    // The row count the filters actually match, so the pager can say "51-100 of
+    // 312" instead of leaving you to click Next until it goes quiet.
+    const totalRow = await env.CHAT_LOGS_DB.prepare(
+        `SELECT COUNT(*) AS n FROM (${union})`
+    ).bind(...binds).first();
+
+    // Secondary key keeps paging stable when the primary is a tie-heavy count
+    // — without it, rows with the same message_count can reshuffle between
+    // pages and one gets shown twice while another is never seen.
+    const orderBy = sortColumn === "last_at"
+        ? `last_at ${sortDir}`
+        : `${sortColumn} ${sortDir}, last_at DESC`;
 
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT * FROM (${union})
-        ORDER BY last_at DESC
+        ORDER BY ${orderBy}
         LIMIT ? OFFSET ?
     `).bind(...binds, limit, offset).all();
 
-    return { conversations: results, limit, offset };
+    return {
+        conversations: results,
+        limit,
+        offset,
+        total: totalRow ? totalRow.n : null,
+        sort: sortColumn,
+        dir: sortDir.toLowerCase(),
+    };
 }
 
 /**
@@ -2646,12 +2777,40 @@ async function getVisitEvents(env, visitIds) {
     const placeholders = ids.map(() => "?").join(", ");
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT visit_id, created_at, event, detail, duration_ms,
-               source, utm_campaign, country, viewport_w, failure_reason
+               source, utm_medium, utm_campaign, referer, user_agent,
+               path, query, country, colo, viewport_w, failure_reason
         FROM site_visits
         WHERE visit_id IN (${placeholders})
         ORDER BY created_at ASC
     `).bind(...ids).all();
     return results || [];
+}
+
+/**
+ * Where this visit came from and what it arrived on — the columns that are
+ * recorded once, on the arrival row, and are the same for the whole visit.
+ *
+ * Read off the 'arrive' row rather than any event, because only the splash
+ * beacon fills them in; the in-app funnel events carry the character in
+ * `detail` and leave the rest NULL, so picking "the first event that has a
+ * source" would report NULL for a visit whose arrive row was fine.
+ */
+function visitContext(events) {
+    const arrive = (events || []).find((e) => e.event === "arrive")
+        || (events || [])[0]
+        || {};
+    return {
+        path: arrive.path || null,
+        query: arrive.query || null,
+        source: arrive.source || null,
+        utm_medium: arrive.utm_medium || null,
+        utm_campaign: arrive.utm_campaign || null,
+        referer: arrive.referer || null,
+        user_agent: arrive.user_agent || null,
+        country: arrive.country || null,
+        colo: arrive.colo || null,
+        viewport_w: arrive.viewport_w || null,
+    };
 }
 
 /** Everything known about a visit that never produced a message. */
@@ -2662,11 +2821,19 @@ async function getVisitDetail(env, visitId, character) {
     const events = await getVisitEvents(env, [visitId]);
     const ticks = events.filter((e) => e.event === "screen_ping");
     const leave = events.filter((e) => e.event === "leave").pop() || null;
+    // Every send_failed reason on the visit. The sessions table can only show
+    // a count, and "2 failures" without "network timeout" next to it does not
+    // tell you whether to go and look at the worker.
+    const failures = events
+        .filter((e) => e.event === "send_failed")
+        .map((e) => ({ created_at: e.created_at, reason: e.failure_reason || "unknown" }));
     return {
         visit_id: visitId,
         chat_id: character || null,
         engaged: 0,
         events,
+        context: visitContext(events),
+        failures,
         tick_count: ticks.length,
         // Ticks are 500ms apart, but derive the span from the timestamps
         // rather than multiplying — a backgrounded tab stops firing, and
@@ -2737,13 +2904,32 @@ async function buildExportText(env, params) {
         filters.push("user_id = ?", "chat_id = ?");
         binds.push(userId, chatId);
     } else {
-        const rawDays = parseInt(params.get("days"), 10);
-        const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
-        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-            .toISOString().replace("T", " ").slice(0, 19);
-        filters.push("created_at >= ?");
-        binds.push(since);
+        // An explicit from/to (what the log viewer sends when a date range is
+        // set) wins over the rolling `days` window, so Export gives you the
+        // same slice the table is showing rather than a different one.
+        const { from, toExclusive } = dayBounds(params);
+        if (from || toExclusive) {
+            if (from) { filters.push("created_at >= ?"); binds.push(from); }
+            if (toExclusive) { filters.push("created_at < ?"); binds.push(toExclusive); }
+        } else {
+            const rawDays = parseInt(params.get("days"), 10);
+            const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
+            const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+                .toISOString().replace("T", " ").slice(0, 19);
+            filters.push("created_at >= ?");
+            binds.push(since);
+        }
         if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
+        // Whole conversations that mention the term, not the matching lines on
+        // their own — a stray line out of context is not worth exporting.
+        const search = (params.get("q") || "").trim();
+        if (search) {
+            filters.push(`EXISTS (SELECT 1 FROM conversation_logs m
+                                   WHERE m.user_id = conversation_logs.user_id
+                                     AND m.chat_id = conversation_logs.chat_id
+                                     AND (m.user_message LIKE ? OR m.assistant_message LIKE ?))`);
+            binds.push(`%${search}%`, `%${search}%`);
+        }
     }
 
     const { results } = await env.CHAT_LOGS_DB.prepare(`
@@ -2874,6 +3060,271 @@ async function summariseReferralVisits(env, searchParams) {
 
 
 
+/**
+ * Click-to-sort for the admin tables, shared by every admin page.
+ *
+ * Client-side on purpose. It reorders the rows already on screen, so it is
+ * instant and it works for the columns the worker computes in JS *after* the
+ * SQL query — Messages/Tapped/Typed/Failed on the sessions page come from a
+ * second query aggregated in the handler, and no ORDER BY could reach them.
+ * The cost is that a truncated range sorts within what was loaded rather than
+ * the whole range; the pages that can truncate say so in their footnote, and
+ * the sessions page lets you raise the row count instead.
+ *
+ * The Chat logs table is the one exception: it is paginated, so its sort stays
+ * server-side where it can order every matching row, not just this page of 50.
+ *
+ * Markup contract:
+ *   <table class="sortable">      opt in
+ *   <th data-type="num">          numeric column; first click sorts descending
+ *   <th data-nosort>              never sortable (action columns)
+ *   <th data-sorted="desc">       arrived in this order already, show the arrow
+ *   <td data-sv="1234">           the value to sort on, for cells whose visible
+ *                                 text is formatted ("1.4s", "12 (34%)", "—")
+ *
+ * An empty data-sv means unknown, and unknowns sort last in BOTH directions —
+ * a visit the browser never reported a dwell for is not a zero-second visit,
+ * and letting it sort as one buries the longest sessions.
+ */
+function sortableTableCss() {
+    return `
+  th.sortable-h { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable-h:hover { color: #fff; }
+  th.sortable-h.sorted { color: #fff; }
+  .sort-arrow { font-size: 10px; }
+`;
+}
+
+function sortableTableJs() {
+    return `
+function sortableParts(table) {
+  var headerRow = table.tHead ? table.tHead.rows[0] : table.rows[0];
+  var body = table.tBodies[0] || (headerRow && headerRow.parentNode);
+  return { headerRow: headerRow, body: body };
+}
+
+// A data row plus any detail rows that belong under it (the expandable
+// transcript on the sessions and visits pages), so a sort moves the pair
+// together instead of stranding a transcript under someone else's session.
+function sortableGroups(table) {
+  var parts = sortableParts(table);
+  var groups = [];
+  if (!parts.body) return groups;
+  var rows = parts.body.rows;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (row === parts.headerRow) continue;
+    if (/(^| )chat( |$)/.test(row.className) && groups.length) {
+      groups[groups.length - 1].rows.push(row);
+      continue;
+    }
+    // Empty-state rows span the table and are not data; leave them be.
+    if (row.querySelector("td[colspan]")) continue;
+    groups.push({ rows: [row] });
+  }
+  return groups;
+}
+
+function sortableValue(cell, numeric) {
+  if (!cell) return null;
+  var raw = cell.hasAttribute("data-sv")
+    ? cell.getAttribute("data-sv")
+    : cell.textContent.trim();
+  if (raw === "" || raw === "\\u2014" || raw === "-") return null;
+  if (!numeric) return raw.toLowerCase();
+  var n = Number(raw);
+  return isNaN(n) ? null : n;
+}
+
+function sortableApply(table, index, numeric, dir) {
+  var parts = sortableParts(table);
+  var groups = sortableGroups(table);
+  var sign = dir === "asc" ? 1 : -1;
+  groups.forEach(function (g, i) {
+    g.seq = i;
+    g.value = sortableValue(g.rows[0].cells[index], numeric);
+  });
+  groups.sort(function (a, b) {
+    if (a.value === null || b.value === null) {
+      if (a.value === null && b.value === null) return a.seq - b.seq;
+      return a.value === null ? 1 : -1;
+    }
+    if (a.value < b.value) return -sign;
+    if (a.value > b.value) return sign;
+    return a.seq - b.seq; // stable: ties keep the order the server sent
+  });
+  groups.forEach(function (g) {
+    g.rows.forEach(function (row) { parts.body.appendChild(row); });
+  });
+}
+
+function sortableIndicator(th, arrow, dir) {
+  if (dir) {
+    th.classList.add("sorted");
+    arrow.textContent = dir === "asc" ? "\\u25B2" : "\\u25BC";
+    th.setAttribute("aria-sort", dir === "asc" ? "ascending" : "descending");
+  } else {
+    th.classList.remove("sorted");
+    arrow.textContent = "";
+    th.removeAttribute("aria-sort");
+  }
+}
+
+function makeSortable(scope) {
+  var tables = (scope || document).querySelectorAll("table.sortable");
+  Array.prototype.forEach.call(tables, function (table) {
+    var headerRow = sortableParts(table).headerRow;
+    if (!headerRow) return;
+    var headers = Array.prototype.slice.call(headerRow.cells);
+    headers.forEach(function (th, index) {
+      if (th.hasAttribute("data-nosort")) return;
+      var numeric = th.getAttribute("data-type") === "num";
+
+      // Pages whose headers live outside the re-rendered region (the campaign
+      // links tables replace only their tbody) call this again after every
+      // refresh. Do not wire twice — just drop the arrow the last sort left
+      // behind, because the rows that came back are in the server's order.
+      var existing = th.querySelector(".sort-arrow");
+      if (existing) { sortableIndicator(th, existing, th.getAttribute("data-sorted")); return; }
+
+      th.classList.add("sortable-h");
+      var arrow = document.createElement("span");
+      arrow.className = "sort-arrow";
+      th.appendChild(document.createTextNode(" "));
+      th.appendChild(arrow);
+
+      // Whatever order the server already sent this table in, so the first
+      // click on that column flips it rather than re-sorting it the same way.
+      sortableIndicator(th, arrow, th.getAttribute("data-sorted"));
+
+      th.addEventListener("click", function () {
+        var dir = th.classList.contains("sorted")
+          ? (arrow.textContent === "\\u25B2" ? "desc" : "asc")
+          : (numeric ? "desc" : "asc");
+        sortableApply(table, index, numeric, dir);
+        headers.forEach(function (other) {
+          var a = other.querySelector(".sort-arrow");
+          if (a) sortableIndicator(other, a, null);
+        });
+        sortableIndicator(th, arrow, dir);
+      });
+    });
+  });
+}
+`;
+}
+
+/**
+ * The tick trail, shared by the Chat logs and User sessions pages.
+ *
+ * One implementation on purpose. Both pages render the same event stream and
+ * the same collapsing rule, and this file already carries scars from values
+ * that were written out twice and then drifted (see the dwell-bucket headers,
+ * which hardcoded "30s" until the tick cadence moved).
+ *
+ * renderTimeline takes the time formatter as an argument because the two pages
+ * disagree, correctly: Chat logs shows local time, User sessions labels its
+ * column "When (UTC)" and would be lying if the timeline underneath it
+ * silently switched zones.
+ */
+function visitTimelineCss() {
+    return `
+  .timeline { border-left: 2px solid #2a2a33; margin: 8px 0 20px; padding: 0 0 0 14px; }
+  .tl-item { position: relative; padding: 3px 0; font-size: 13px; color: #c8c8d2; }
+  .tl-item::before { content: ""; position: absolute; left: -19px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: #45455a; }
+  .tl-item.key::before { background: #b39ddb; }
+  .tl-item.leave::before { background: #e5b573; }
+  .tl-item.fail::before { background: #e57373; }
+  .tl-item .fail-reason { color: #e57373; }
+  .tl-time { color: #6b6b78; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .tl-ticks { color: #7e9fd6; }
+  .tl-summary { background: #16161c; border: 1px solid #26262f; border-radius: 8px; padding: 12px 14px; margin: 0 0 16px; font-size: 13px; line-height: 1.7; }
+  .tl-summary b { color: #e6e6ea; font-weight: 600; }
+`;
+}
+
+function visitTimelineJs() {
+    return `
+// created_at is written in two formats: ISO-8601 from the worker and SQLite's
+// "YYYY-MM-DD HH:MM:SS" from a column default. Both are UTC; only the ISO one
+// says so, so the marker is added before parsing rather than trusting Date.
+function parseUtc(s) {
+  var iso = String(s);
+  if (iso.indexOf("T") === -1) iso = iso.replace(" ", "T");
+  if (!/(Z|[+-]\\d{2}:?\\d{2})$/.test(iso)) iso += "Z";
+  return new Date(iso);
+}
+
+function fmtDuration(ms) {
+  if (ms === null || ms === undefined || isNaN(ms)) return "unknown";
+  var secs = Math.round(ms / 1000);
+  if (secs < 60) return secs + "s";
+  var mins = Math.floor(secs / 60);
+  return mins + "m " + (secs % 60) + "s";
+}
+
+// Consecutive screen_pings collapse into one line — sixty near-identical rows
+// would bury the events that actually mean something.
+function renderTimeline(container, events, fmtTime) {
+  if (!events || !events.length) return;
+  var wrap = document.createElement("div");
+  wrap.className = "timeline";
+
+  var i = 0;
+  while (i < events.length) {
+    var e = events[i];
+    var item = document.createElement("div");
+
+    if (e.event === "screen_ping") {
+      var j = i;
+      while (j < events.length && events[j].event === "screen_ping") j++;
+      var run = events.slice(i, j);
+      var span = parseUtc(run[run.length - 1].created_at) - parseUtc(run[0].created_at);
+      item.className = "tl-item";
+      var t1 = document.createElement("span");
+      t1.className = "tl-time";
+      t1.textContent = fmtTime(run[0].created_at);
+      item.appendChild(t1);
+      var ticks = document.createElement("span");
+      ticks.className = "tl-ticks";
+      ticks.textContent = run.length + " ticks over " + fmtDuration(span) + " - on screen, not engaging";
+      item.appendChild(ticks);
+      i = j;
+    } else {
+      var isLeave = e.event === "leave";
+      var isFail = e.event === "send_failed";
+      item.className = "tl-item " + (isFail ? "fail" : isLeave ? "leave" : "key");
+      var t2 = document.createElement("span");
+      t2.className = "tl-time";
+      t2.textContent = fmtTime(e.created_at);
+      item.appendChild(t2);
+      var label = e.event + (e.detail ? " (" + e.detail + ")" : "");
+      if (isLeave && e.duration_ms) label += " - dwell " + fmtDuration(e.duration_ms);
+      item.appendChild(document.createTextNode(label));
+      if (e.failure_reason) {
+        var why = document.createElement("span");
+        why.className = "fail-reason";
+        why.textContent = " - " + e.failure_reason;
+        item.appendChild(why);
+      }
+      i++;
+    }
+    wrap.appendChild(item);
+  }
+  container.appendChild(wrap);
+}
+
+// Ticks are half a second apart while a character screen sits unengaged.
+// Report the span between first and last rather than count x interval: a
+// backgrounded tab stops ticking, so multiplying would claim attention that
+// never happened.
+function tickSpanMs(data) {
+  if (!data.first_tick_at || !data.last_tick_at) return 0;
+  return parseUtc(data.last_tick_at) - parseUtc(data.first_tick_at);
+}
+`;
+}
+
 /// Landing page for the admin tools. They accumulated one at a time and there
 /// was no way to find them except remembering the URLs.
 function adminIndexPageHtml() {
@@ -2914,9 +3365,10 @@ function adminIndexPageHtml() {
 
 <a class="card" href="/admin/sessions">
   <div class="t">User sessions <span class="em">one row per arrival</span></div>
-  <div class="d">Every session, longest dwell first: how long they stayed, how
-     long they hesitated on a character, and how many messages they sent —
-     split into tapped starters and messages they wrote themselves.</div>
+  <div class="d">Every session, newest first: how long they stayed, how long
+     they hesitated on a character, and how many messages they sent — split
+     into tapped starters and messages they wrote themselves. Sort by any
+     column from the table.</div>
 </a>
 
 <a class="card" href="/admin/logs">
@@ -2954,23 +3406,42 @@ function adminSessionsPageHtml() {
   a.drill { color: #b39ddb; }
   tr.chat td { background: #191322; }
   .note { color: #777; font-size: 12px; max-width: 78ch; line-height: 1.5; }
+  /* Where the visit came from and what it arrived on. Two columns rather than
+     a sentence: these are lookup values, read one at a time. */
+  .vc-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+             gap: 2px 14px; font-size: 12px; margin: 0 0 14px; max-width: 90ch; }
+  .vc-grid dt { color: #777; }
+  .vc-grid dd { margin: 0; color: #ddd; overflow-wrap: anywhere; }
+  .detail-h { color: #b39ddb; font-size: 12px; text-transform: uppercase;
+              letter-spacing: .04em; margin: 14px 0 6px; }
+  .detail-h:first-child { margin-top: 4px; }
+${sortableTableCss()}
+${visitTimelineCss()}
 </style></head><body>
 <p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a>
    &nbsp;·&nbsp; <a href="/admin/visits" style="color:#b39ddb">Site visits</a></p>
 <h1>User sessions</h1>
 <p class="sub">One row per arrival — every time someone opens the app, whether or
-   not they ever reached a character. Longest dwell first; sessions the browser
-   never reported a leave for sort last, since those are unknown rather than
-   zero.</p>
+   not they ever reached a character. Newest first. Click any column heading to
+   sort by it, again to reverse; sessions the browser never reported a dwell or
+   a tick for sort last whichever way you sort, since those are unknown rather
+   than zero.</p>
 <select id="days" onchange="pick()">
   <option value="1">Last 24 hours</option>
   <option value="7" selected>Last 7 days</option>
   <option value="30">Last 30 days</option>
   <option value="90">Last 90 days</option>
 </select>
+<select id="rows" onchange="load()" title="how many sessions to load — sorting works within these rows">
+  <option value="500" selected>500 rows</option>
+  <option value="1000">1,000 rows</option>
+  <option value="5000">5,000 rows</option>
+</select>
 <div id="out">Loading…</div>
 <p class="note" id="footnote"></p>
 <script>
+${sortableTableJs()}
+${visitTimelineJs()}
 function esc(v) {
   return String(v === null || v === undefined ? '' : v)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -2980,6 +3451,13 @@ function dur(ms) {
   if (ms < 1000) return ms + 'ms';
   if (ms < 60000) return (ms/1000).toFixed(1) + 's';
   return Math.floor(ms/60000) + 'm ' + Math.round((ms%60000)/1000) + 's';
+}
+// The table column is headed "When (UTC)", so the trail underneath it stays in
+// UTC too — switching to local time inside an expanded row would silently
+// reinterpret every timestamp on the page.
+function utcClock(ts) {
+  const d = parseUtc(ts);
+  return isNaN(d.getTime()) ? String(ts) : d.toISOString().slice(11, 19) + 'Z';
 }
 // A day drilled into from the Visits page pins the range; the selector then has
 // nothing to control, so it is hidden rather than left there looking live.
@@ -2994,17 +3472,29 @@ function load() {
       esc(err && err.message ? err.message : err) + '</p>';
   });
 }
+// Sort keys go on the cell as data-sv, because the visible text is formatted:
+// "1.4s" and "12m 3s" do not compare as numbers, and an unknown dwell reads as
+// an em dash. Every numeric column therefore carries its raw value, and an
+// empty one means unknown (sorted last, both directions).
+function sv(value) {
+  return ' data-sv="' + (value === null || value === undefined ? '' : value) + '"';
+}
 async function render(out) {
-  const q = DAY ? 'day=' + encodeURIComponent(DAY)
-                : 'days=' + document.getElementById('days').value;
+  const q = (DAY ? 'day=' + encodeURIComponent(DAY)
+                 : 'days=' + document.getElementById('days').value) +
+            '&limit=' + document.getElementById('rows').value;
   const res = await fetch('/api/admin/sessions?' + q);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const d = await res.json();
   const rows = d.sessions || [];
 
-  let h = '<div class="wrap"><table><tr><th>When (UTC)</th><th>Source</th><th>Path</th>' +
-          '<th>Character</th><th>Country</th><th>Load</th><th>Dwell</th><th>Ticks</th>' +
-          '<th>Messages</th><th>Tapped</th><th>Typed</th><th>Failed</th><th>Chat</th></tr>';
+  let h = '<div class="wrap"><table class="sortable"><tr><th data-sorted="desc">When (UTC)</th>' +
+          '<th>Source</th><th>Path</th>' +
+          '<th>Character</th><th>Country</th><th data-type="num">Load</th>' +
+          '<th data-type="num">Dwell</th><th data-type="num">Ticks</th>' +
+          '<th data-type="num">Messages</th><th data-type="num">Tapped</th>' +
+          '<th data-type="num">Typed</th><th data-type="num">Failed</th>' +
+          '<th data-nosort>Detail</th></tr>';
   for (const r of rows) {
     // Ticks stop the moment a visitor engages, so they only mean anything for
     // a session that opened a character and are silent about one that went on
@@ -3015,35 +3505,46 @@ async function render(out) {
     const tapped = r.starter_unmatched
       ? '<span class="warn" title="the funnel recorded a starter tap but no message matches a known starter — backend/src/starters.generated.js is probably stale">starter (unmatched)</span>'
       : '<span class="num">' + (r.tapped || 0) + '</span>';
+    const failures = (r.failed || 0) + (r.send_failed || 0);
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.source) +
          '</td><td>' + esc(r.path) + '</td><td>' + esc(r.character_id || '') +
          '</td><td>' + esc(r.country) +
-         '</td><td class="num">' + dur(r.load_ms) +
-         '</td><td class="num">' + dur(r.dwell_ms) +
-         '</td><td class="num">' + ticks +
-         '</td><td class="num">' + (r.messages || 0) +
-         '</td><td class="num">' + tapped +
-         '</td><td class="num">' + (r.typed || 0) +
-         '</td><td class="num">' +
-         ((r.failed || r.send_failed)
-           ? '<span class="warn">' + ((r.failed || 0) + (r.send_failed || 0)) + '</span>'
+         '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
+         '</td><td class="num"' + sv(r.dwell_ms) + '>' + dur(r.dwell_ms) +
+         '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' + ticks +
+         '</td><td class="num"' + sv(r.messages || 0) + '>' + (r.messages || 0) +
+         '</td><td class="num"' + sv(r.tapped || 0) + '>' + tapped +
+         '</td><td class="num"' + sv(r.typed || 0) + '>' + (r.typed || 0) +
+         '</td><td class="num"' + sv(failures) + '>' +
+         (failures
+           ? '<span class="warn">' + failures + '</span>'
            : '<span class="muted">0</span>') +
-         '</td><td>' +
-         (r.messages
-           ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
-           : '<span class="muted">—</span>') +
+         // Offered on every session, not only the ones that sent something.
+         // A visit that opened a character and never typed has no transcript
+         // but it does have a tick trail, and that is the population worth
+         // understanding — it is where the drop-off is.
+         '</td><td><a href="#" class="drill" data-v="' + esc(r.visit_id) +
+         '" data-c="' + esc(r.character_id || '') + '">' +
+         (r.messages ? 'chat + trail' : 'trail') + '</a>' +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
          '" style="display:none"><td colspan="13"></td></tr>';
   }
   if (!rows.length) h += '<tr><td colspan="13" class="muted">No sessions in this range.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
+  makeSortable(out);
 
   const scope = d.day ? 'on ' + d.day + ' (UTC)' : 'in the last ' + d.days + ' days';
   document.getElementById('footnote').innerHTML =
     esc(rows.length + ' session(s) ' + scope + '.') +
+    // Sorting is done in the browser, so a truncated range sorts the slice
+    // that was loaded rather than everything in the window — say so, because
+    // "most messages" quietly meaning "most messages among the 500 longest
+    // sessions" is the kind of half-truth a dashboard should never tell.
     (d.truncated
-      ? ' <span class="warn">Showing the first ' + d.limit + ' by dwell — there are more.</span>'
+      ? ' <span class="warn">Showing the ' + d.limit.toLocaleString() +
+        ' most recent — there are more, and sorting only reorders these. ' +
+        'Load more rows or narrow the range for a true ranking.</span>'
       : '') +
     '<br>Web sessions only: the App Store build sends no visit id, so its usage never appears here. ' +
     // Interpolated from the tick constants, not written out: a hardcoded "30s"
@@ -3063,31 +3564,127 @@ async function render(out) {
       const cell = row.firstElementChild;
       cell.innerHTML = '<span class="muted">Loading…</span>';
       try {
-        const res = await fetch('/api/admin/visit-chat?visit_id=' + encodeURIComponent(vid));
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        if (!data.messages.length) {
-          cell.innerHTML = '<span class="muted">No messages recorded for this visit.</span>';
-          return;
-        }
-        let c = '<div style="padding:6px 0 10px">';
-        for (const m of data.messages) {
-          c += '<div style="margin:0 0 12px;padding-left:10px;border-left:2px solid #7e57c2">' +
-               '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
-               esc(m.created_at) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
-               (m.status && m.status !== 'completed' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
-               '</div>' +
-               '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
-               '<div class="muted"><b>Reply:</b> ' + esc(m.assistant_message) + '</div>' +
-               '</div>';
-        }
-        cell.innerHTML = c + '</div>';
+        // Both halves at once: the trail exists for every visit, the
+        // transcript only for one that sent something.
+        const [detailRes, chatRes] = await Promise.all([
+          fetch('/api/admin/visit-detail?visit_id=' + encodeURIComponent(vid) +
+                '&character=' + encodeURIComponent(a.getAttribute('data-c') || '')),
+          fetch('/api/admin/visit-chat?visit_id=' + encodeURIComponent(vid)),
+        ]);
+        if (!detailRes.ok) throw new Error('HTTP ' + detailRes.status);
+        const detail = await detailRes.json();
+        const chat = chatRes.ok ? await chatRes.json() : { messages: [] };
+        if (detail.error) throw new Error(detail.error);
+        renderVisitDetail(cell, detail, chat.messages || []);
       } catch (err) {
         cell.innerHTML = '<span style="color:#e57373">Could not load: ' +
           esc(err && err.message ? err.message : err) + '</span>';
       }
     });
   });
+}
+
+// Everything recorded about one visit: how it went, where it came from, the
+// event trail, and the transcript when there is one.
+function renderVisitDetail(cell, detail, messages) {
+  cell.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.style.padding = '8px 0 12px';
+
+  // What happened, in a sentence, before any of the detail.
+  const summary = document.createElement('div');
+  summary.className = 'tl-summary';
+  const lines = [];
+  if (detail.tick_count) {
+    lines.push('<b>' + detail.tick_count + ' ticks</b> on the character screen (' +
+      fmtDuration(tickSpanMs(detail)) + ' before ' +
+      (messages.length ? 'engaging' : 'giving up') + ')');
+  }
+  if (messages.length) {
+    const failed = messages.filter(m => m.status && m.status !== 'completed').length;
+    lines.push('<b>' + messages.length + '</b> message(s) sent' +
+      (failed ? ', <span style="color:#e57373">' + failed + ' of them failed</span>' : ''));
+  } else {
+    lines.push('<span class="muted">Never typed anything.</span>');
+  }
+  // A send that never reached the worker leaves no conversation_logs row at
+  // all, so without this the row's Failed count has nothing behind it.
+  for (const f of detail.failures || []) {
+    lines.push('<span style="color:#e57373">Send failed</span> at ' +
+      esc(utcClock(f.created_at)) + ' — ' + esc(f.reason));
+  }
+  if (detail.left_at) {
+    lines.push('Left <b>' + esc(utcClock(detail.left_at)) + '</b>' +
+      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : ''));
+  } else {
+    lines.push('<span class="muted">No leave event — the tab was closed without ' +
+      'firing one, so the exit time is unknown.</span>');
+  }
+  summary.innerHTML = lines.join('<br>');
+  wrap.appendChild(summary);
+
+  const context = detail.context || {};
+  const campaign = [context.source, context.utm_medium, context.utm_campaign]
+    .filter(Boolean).join(' / ');
+  const fields = [
+    ['Landed on', [context.path, context.query].filter(Boolean).join('?')],
+    ['Campaign', campaign],
+    ['Referrer', context.referer],
+    ['Country', [context.country, context.colo].filter(Boolean).join(' · ')],
+    ['Viewport', context.viewport_w ? context.viewport_w + 'px wide' : ''],
+    ['User agent', context.user_agent],
+  ].filter(([, value]) => value);
+
+  if (fields.length) {
+    const heading = document.createElement('div');
+    heading.className = 'detail-h';
+    heading.textContent = 'Where they came from';
+    wrap.appendChild(heading);
+    const grid = document.createElement('dl');
+    grid.className = 'vc-grid';
+    for (const [label, value] of fields) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      grid.appendChild(dt);
+      grid.appendChild(dd);
+    }
+    wrap.appendChild(grid);
+  }
+
+  if ((detail.events || []).length) {
+    const heading = document.createElement('div');
+    heading.className = 'detail-h';
+    heading.textContent = 'Event trail';
+    wrap.appendChild(heading);
+    renderTimeline(wrap, detail.events, utcClock);
+  }
+
+  if (messages.length) {
+    const heading = document.createElement('div');
+    heading.className = 'detail-h';
+    heading.textContent = 'Conversation';
+    wrap.appendChild(heading);
+    let c = '';
+    for (const m of messages) {
+      c += '<div style="margin:0 0 12px;padding-left:10px;border-left:2px solid #7e57c2">' +
+           '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
+           esc(utcClock(m.created_at)) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
+           (m.status && m.status !== 'completed' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
+           '</div>' +
+           '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
+           '<div class="muted"><b>Reply:</b> ' +
+           (m.assistant_message ? esc(m.assistant_message)
+                                : '<span style="color:#e57373">[no reply]</span>') +
+           '</div></div>';
+    }
+    const conv = document.createElement('div');
+    conv.innerHTML = c;
+    wrap.appendChild(conv);
+  }
+
+  cell.appendChild(wrap);
 }
 if (DAY) {
   document.getElementById('days').style.display = 'none';
@@ -3118,11 +3715,13 @@ function adminVisitsPageHtml() {
   .wrap { overflow-x: auto; }
   a.drill { color: #b39ddb; }
   tr.chat td { background: #191322; }
+${sortableTableCss()}
 </style></head><body>
 <p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a></p>
 <h1>Site visits</h1>
 <p class="sub">Every arrival, logged from the splash screen before the app loads —
-   not just /c/ campaign links.</p>
+   not just /c/ campaign links. Click any column heading to sort by it, again to
+   reverse.</p>
 <select id="days" onchange="load()">
   <option value="1">Last 24 hours</option>
   <option value="7" selected>Last 7 days</option>
@@ -3131,6 +3730,7 @@ function adminVisitsPageHtml() {
 </select>
 <div id="out">Loading…</div>
 <script>
+${sortableTableJs()}
 function esc(v) {
   return String(v === null || v === undefined ? '' : v)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -3138,6 +3738,11 @@ function esc(v) {
 function dur(ms) {
   if (ms === null || ms === undefined) return '<span class="muted">—</span>';
   return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
+}
+// Sort key for a cell whose visible text is formatted ("1.4s", "12 (34%)") or
+// unknown ("—"). Empty means unknown, which sorts last either way.
+function sv(value) {
+  return ' data-sv="' + (value === null || value === undefined ? '' : value) + '"';
 }
 // Tick -> seconds has to be computable in the browser as well, because each
 // row's own tick count is only known here. The worker's constants are
@@ -3178,20 +3783,21 @@ async function render(out) {
 
   h += '<h2>Funnel</h2><p class="muted" style="margin:0 0 8px">' +
        'Distinct visits reaching each step. The biggest drop is where you are ' +
-       'losing people.</p><div class="wrap"><table><tr><th>Source</th>' +
-       '<th>Arrived</th><th>App loaded</th><th>Opened a character</th>' +
-       '<th>Typed or tapped a starter</th><th>Sent a message</th>' +
-       '<th>Hit login gate</th></tr>';
+       'losing people.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
+       '<th data-type="num" data-sorted="desc">Arrived</th><th data-type="num">App loaded</th>' +
+       '<th data-type="num">Opened a character</th>' +
+       '<th data-type="num">Typed or tapped a starter</th><th data-type="num">Sent a message</th>' +
+       '<th data-type="num">Hit login gate</th></tr>';
   for (const r of d.funnel || []) {
     function pct(n) {
       return r.arrived ? ' <span class="muted">(' + Math.round(100*n/r.arrived) + '%)</span>' : '';
     }
-    h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.arrived +
-         '</td><td class="num">' + r.loaded + pct(r.loaded) +
-         '</td><td class="num">' + r.tapped + pct(r.tapped) +
-         '</td><td class="num">' + r.engaged + pct(r.engaged) +
-         '</td><td class="num">' + r.messaged + pct(r.messaged) +
-         '</td><td class="num">' + r.gated + pct(r.gated) + '</td></tr>';
+    h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.arrived) + '>' + r.arrived +
+         '</td><td class="num"' + sv(r.loaded) + '>' + r.loaded + pct(r.loaded) +
+         '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped + pct(r.tapped) +
+         '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + pct(r.engaged) +
+         '</td><td class="num"' + sv(r.messaged) + '>' + r.messaged + pct(r.messaged) +
+         '</td><td class="num"' + sv(r.gated) + '>' + r.gated + pct(r.gated) + '</td></tr>';
   }
   if (!(d.funnel || []).length) h += '<tr><td colspan="7" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
@@ -3202,47 +3808,51 @@ async function render(out) {
          'Visits that opened a character and never typed, tapped a starter, or sent ' +
          'anything. Left instantly means gone before the first half-second tick &mdash; ' +
          'the screen never had a chance. Stayed the full 30s means they were still ' +
-         'reading when we stopped counting.</p><div class="wrap"><table><tr><th>Source</th>' +
+         'reading when we stopped counting.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
          // Last column is labelled from the real cap rather than a written-in
          // "30s": the slow phase's final tick lands at 28s, not 30, so a fixed
          // label would overstate by two seconds and quietly rot again the next
          // time the cadence moves.
-         '<th>Never engaged</th><th>Left instantly</th><th>&lt;5s</th><th>5&ndash;15s</th>' +
-         '<th>15&ndash;' + screenPingSeconds(PING.maxTicks) + 's</th>' +
-         '<th>Stayed ' + screenPingSeconds(PING.maxTicks) + 's+</th></tr>';
+         '<th data-type="num" data-sorted="desc">Never engaged</th>' +
+         '<th data-type="num">Left instantly</th><th data-type="num">&lt;5s</th>' +
+         '<th data-type="num">5&ndash;15s</th>' +
+         '<th data-type="num">15&ndash;' + screenPingSeconds(PING.maxTicks) + 's</th>' +
+         '<th data-type="num">Stayed ' + screenPingSeconds(PING.maxTicks) + 's+</th></tr>';
     for (const r of buckets) {
-      h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.never_engaged +
-           '</td><td class="num">' + (r.left_instantly || 0) +
-           '</td><td class="num">' + (r.left_under_5s || 0) +
-           '</td><td class="num">' + (r.left_5s_to_15s || 0) +
-           '</td><td class="num">' + (r.left_15s_to_30s || 0) +
-           '</td><td class="num">' + (r.stayed_full_30s || 0) + '</td></tr>';
+      h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.never_engaged) + '>' + r.never_engaged +
+           '</td><td class="num"' + sv(r.left_instantly || 0) + '>' + (r.left_instantly || 0) +
+           '</td><td class="num"' + sv(r.left_under_5s || 0) + '>' + (r.left_under_5s || 0) +
+           '</td><td class="num"' + sv(r.left_5s_to_15s || 0) + '>' + (r.left_5s_to_15s || 0) +
+           '</td><td class="num"' + sv(r.left_15s_to_30s || 0) + '>' + (r.left_15s_to_30s || 0) +
+           '</td><td class="num"' + sv(r.stayed_full_30s || 0) + '>' + (r.stayed_full_30s || 0) + '</td></tr>';
     }
     h += '</table></div>';
   }
 
   const chars = d.characters || [];
   if (chars.length) {
-    h += '<h2>By character</h2><div class="wrap"><table><tr><th>Character</th>' +
-         '<th>Event</th><th>Count</th></tr>';
+    h += '<h2>By character</h2><div class="wrap"><table class="sortable"><tr><th>Character</th>' +
+         '<th>Event</th><th data-type="num" data-sorted="desc">Count</th></tr>';
     for (const r of chars) {
       h += '<tr><td>' + esc(r.character_id) + '</td><td>' + esc(r.event) +
-           '</td><td class="num">' + r.n + '</td></tr>';
+           '</td><td class="num"' + sv(r.n) + '>' + r.n + '</td></tr>';
     }
     h += '</table></div>';
   }
 
-  h += '<h2>By source</h2><div class="wrap"><table><tr><th>Source</th><th>Visits</th>' +
-       '<th>Saw the app</th><th>Gave up loading</th><th>Avg load</th>' +
-       '<th>Left under 3s</th><th>Avg dwell</th></tr>';
+  h += '<h2>By source</h2><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
+       '<th data-type="num" data-sorted="desc">Visits</th>' +
+       '<th data-type="num">Saw the app</th><th data-type="num">Gave up loading</th>' +
+       '<th data-type="num">Avg load</th>' +
+       '<th data-type="num">Left under 3s</th><th data-type="num">Avg dwell</th></tr>';
   for (const r of d.bySource) {
     const gaveUp = r.visits - (r.saw_app || 0);
-    h += '<tr><td>' + esc(r.source) + '</td><td class="num">' + r.visits +
-         '</td><td class="num">' + (r.saw_app || 0) +
-         '</td><td class="num">' + gaveUp +
-         '</td><td class="num">' + dur(r.avg_load_ms) +
-         '</td><td class="num">' + (r.bounced_under_3s || 0) +
-         '</td><td class="num">' + dur(r.avg_ms) + '</td></tr>';
+    h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+         '</td><td class="num"' + sv(r.saw_app || 0) + '>' + (r.saw_app || 0) +
+         '</td><td class="num"' + sv(gaveUp) + '>' + gaveUp +
+         '</td><td class="num"' + sv(r.avg_load_ms) + '>' + dur(r.avg_load_ms) +
+         '</td><td class="num"' + sv(r.bounced_under_3s || 0) + '>' + (r.bounced_under_3s || 0) +
+         '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) + '</td></tr>';
   }
   if (!d.bySource.length) h += '<tr><td colspan="7" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
@@ -3251,17 +3861,20 @@ async function render(out) {
   // date(created_at) grouping on both sides, so the number here and the number
   // of rows there agree.
   h += '<h2>By day</h2><p class="muted" style="margin:0 0 8px">' +
-       'Pick a day to see its individual sessions, longest dwell first.</p>' +
-       '<div class="wrap"><table><tr><th>Day</th><th>Visits</th></tr>';
+       'Pick a day to see its individual sessions, newest first.</p>' +
+       '<div class="wrap"><table class="sortable"><tr><th data-sorted="desc">Day</th>' +
+       '<th data-type="num">Visits</th></tr>';
   for (const r of d.byDay) {
     h += '<tr><td><a class="drill" href="/admin/sessions?day=' + encodeURIComponent(r.day) +
-         '">' + esc(r.day) + '</a></td><td class="num">' + r.visits + '</td></tr>';
+         '">' + esc(r.day) + '</a></td><td class="num"' + sv(r.visits) + '>' + r.visits + '</td></tr>';
   }
   h += '</table></div>';
 
-  h += '<h2>Recent arrivals</h2><div class="wrap"><table><tr><th>When (UTC)</th><th>Path</th>' +
-       '<th>Source</th><th>Campaign</th><th>Country</th><th>Load</th><th>Dwell</th>' +
-       '<th>Ticks</th><th>Chat</th></tr>';
+  h += '<h2>Recent arrivals</h2><div class="wrap"><table class="sortable">' +
+       '<tr><th data-sorted="desc">When (UTC)</th><th>Path</th>' +
+       '<th>Source</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
+       '<th data-type="num">Dwell</th>' +
+       '<th data-type="num">Ticks</th><th data-nosort>Chat</th></tr>';
   for (const r of d.recent) {
     // Ticks only mean anything once a character was opened — a visit that
     // never reached one shows "—", not 0, so "left instantly after opening a
@@ -3276,9 +3889,10 @@ async function render(out) {
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
-         '</td><td>' + esc(r.country) + '</td><td class="num">' + dur(r.load_ms) +
-         '</td><td class="num">' + dur(r.duration_ms) +
-         '</td><td class="num">' + ticksCell + '</td><td>' +
+         '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
+         '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
+         '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' +
+         ticksCell + '</td><td>' +
          (r.messaged
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
@@ -3288,6 +3902,7 @@ async function render(out) {
   if (!d.recent.length) h += '<tr><td colspan="9" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
+  makeSortable(out);
 
   // Expand a visit into its transcript in place, rather than navigating away
   // and losing the list position.
@@ -3351,6 +3966,7 @@ function adminReferralsPageHtml() {
   .warn { color: #ffb454; }
   .big { font-size: 26px; font-weight: 600; }
   .wrap { overflow-x: auto; }
+${sortableTableCss()}
 </style>
 </head>
 <body>
@@ -3369,16 +3985,19 @@ function adminReferralsPageHtml() {
   <div class="muted">link arrivals in the selected window</div>
 
   <h2>By source</h2>
-  <div class="wrap"><table id="src"><thead><tr><th>Source</th><th class="num">Visits</th></tr></thead><tbody></tbody></table></div>
+  <div class="wrap"><table id="src" class="sortable"><thead><tr><th>Source</th><th class="num" data-type="num" data-sorted="desc">Visits</th></tr></thead><tbody></tbody></table></div>
 
   <h2>By character</h2>
-  <div class="wrap"><table id="chr"><thead><tr><th>Character</th><th class="num">Visits</th><th class="num">Conversations</th><th class="num">Bad links</th></tr></thead><tbody></tbody></table></div>
+  <div class="wrap"><table id="chr" class="sortable"><thead><tr><th>Character</th><th class="num" data-type="num" data-sorted="desc">Visits</th><th class="num" data-type="num">Conversations</th><th class="num" data-type="num">Bad links</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Recent arrivals</h2>
-  <div class="wrap"><table id="rec"><thead><tr><th>When (UTC)</th><th>Character</th><th>Source</th><th>Medium</th><th>Campaign</th></tr></thead><tbody></tbody></table></div>
+  <div class="wrap"><table id="rec" class="sortable"><thead><tr><th data-sorted="desc">When (UTC)</th><th>Character</th><th>Source</th><th>Medium</th><th>Campaign</th></tr></thead><tbody></tbody></table></div>
 </main>
 <script>
+${sortableTableJs()}
 const esc = s => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
+// Sort key for a cell whose visible text carries a suffix or a dash.
+const sv = v => ' data-sv="' + (v === null || v === undefined ? '' : v) + '"';
 // Same guard as the visits page: without it a failed request or a throw
 // mid-render leaves the last-rendered numbers (or the empty shell) on screen
 // with nothing to say something went wrong.
@@ -3397,11 +4016,12 @@ async function render() {
   if (d.error) { document.getElementById('total').textContent = d.error; return; }
   document.getElementById('total').textContent = d.totalVisits ?? 0;
   document.querySelector('#src tbody').innerHTML = (d.bySource || [])
-    .map(r => '<tr><td>' + esc(r.source || 'unknown') + '</td><td class="num">' + r.visits + '</td></tr>').join('')
+    .map(r => '<tr><td>' + esc(r.source || 'unknown') + '</td><td class="num"' + sv(r.visits) + '>' + r.visits + '</td></tr>').join('')
     || '<tr><td colspan="2" class="muted">No visits yet.</td></tr>';
   document.querySelector('#chr tbody').innerHTML = (d.byCharacter || [])
-    .map(r => '<tr><td>' + esc(r.character_id || '(none)') + '</td><td class="num">' + r.visits +
-      '</td><td class="num">' + (r.conversations ?? 0) + '</td><td class="num ' + (r.unknown_hits ? 'warn' : 'muted') + '">' +
+    .map(r => '<tr><td>' + esc(r.character_id || '(none)') + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+      '</td><td class="num"' + sv(r.conversations ?? 0) + '>' + (r.conversations ?? 0) +
+      '</td><td class="num ' + (r.unknown_hits ? 'warn' : 'muted') + '"' + sv(r.unknown_hits || 0) + '>' +
       (r.unknown_hits || 0) + '</td></tr>').join('')
     || '<tr><td colspan="4" class="muted">No visits yet.</td></tr>';
   document.querySelector('#rec tbody').innerHTML = (d.recent || [])
@@ -3409,6 +4029,9 @@ async function render() {
       (r.known_character === 0 ? ' <span class="warn">(unknown)</span>' : '') +
       '</td><td>' + esc(r.source || '-') + '</td><td>' + esc(r.utm_medium || '-') + '</td><td>' + esc(r.utm_campaign || '-') + '</td></tr>').join('')
     || '<tr><td colspan="5" class="muted">No visits yet.</td></tr>';
+  // Headers live in the static shell here, not in the replaced tbody, so this
+  // both wires them the first time and clears stale arrows on every refresh.
+  makeSortable(document);
 }
 load();
 </script>
@@ -3421,33 +4044,63 @@ function adminLogsPageHtml() {
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Mythos Live - Chat Logs</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
   header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0 auto 0 0; }
+  header h1 { font-size: 18px; margin: 0; }
+  header a { color: #9a9aa5; font-size: 13px; text-decoration: none; }
+  header a:hover { color: #e6e6ea; }
+  header .spacer { margin-left: auto; }
   input, select, button { background: #1c1c24; border: 1px solid #33333d; color: #e6e6ea; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  input[type="date"] { color-scheme: dark; }
   button { cursor: pointer; }
-  button:hover { background: #26262f; }
+  button:hover:not(:disabled) { background: #26262f; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.ghost { background: transparent; }
   label.chk { font-size: 13px; color: #9a9aa5; display: flex; align-items: center; gap: 4px; }
-  main { padding: 16px 24px; max-width: 1100px; margin: 0 auto; }
+  main { padding: 16px 24px 48px; max-width: 1100px; margin: 0 auto; }
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters .spacer { margin-left: auto; }
+  .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #22222a; vertical-align: top; }
-  th { color: #9a9aa5; font-weight: 600; }
+  th { color: #9a9aa5; font-weight: 600; white-space: nowrap; }
+  /* The header has to stay readable while a long page scrolls under it —
+     otherwise you lose which column the numbers belong to by row twenty. */
+  thead th { position: sticky; top: 0; background: #0f0f14; z-index: 1; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: #e6e6ea; }
+  th .arrow { color: #6b6b78; font-size: 10px; margin-left: 3px; }
+  th.sorted { color: #b39ddb; }
+  th.sorted .arrow { color: #b39ddb; }
   tr.conv-row, tr.log-row { cursor: pointer; }
   tr.conv-row:hover, tr.log-row:hover { background: #17171d; }
   .err-badge { color: #e57373; font-weight: 600; }
-  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; color: #9a9aa5; }
   .empty, .error { padding: 24px; color: #9a9aa5; text-align: center; }
+  .error { color: #e57373; }
   h2 { font-size: 15px; color: #9a9aa5; margin: 28px 0 8px; }
+  h2 .sub { font-weight: 400; color: #55555f; }
   .status-completed { color: #6fd08c; }
   .status-ai_error, .status-rejected_validation { color: #e57373; }
   .status-rate_limited { color: #e5b573; }
   .preview { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  mark { background: #4a3f1a; color: #f5e3a8; border-radius: 2px; padding: 0 1px; }
+
+  /* Totals for what is on screen. The pager says how many rows matched; this
+     says what they add up to, which is the question you ask next. */
+  .summary { font-size: 12px; color: #9a9aa5; margin-bottom: 10px; min-height: 16px; }
+  .summary b { color: #e6e6ea; font-weight: 600; }
+  .summary .sep { color: #3a3a45; margin: 0 8px; }
 
   /* Transcript view */
-  #t-meta { color: #9a9aa5; font-size: 13px; margin-bottom: 16px; }
+  #t-meta { color: #9a9aa5; font-size: 13px; margin-bottom: 8px; }
+  #t-actions { font-size: 12px; margin-bottom: 16px; }
+  #t-actions a { color: #7e9fd6; cursor: pointer; text-decoration: none; }
+  #t-actions a:hover { text-decoration: underline; }
   .bubble-row { display: flex; margin-bottom: 4px; }
   .bubble { max-width: 72%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.4; }
   .bubble.user { margin-left: auto; background: #52203f; border-bottom-right-radius: 4px; }
@@ -3456,6 +4109,8 @@ function adminLogsPageHtml() {
   .ex-meta { font-size: 11px; color: #55555f; margin: 2px 0 14px; }
   .ex-meta .err-text { color: #e57373; }
   .gap-divider { text-align: center; color: #9a9aa5; font-size: 12px; margin: 16px 0; }
+  .exchange.flash { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { background: #2a1518; } to { background: transparent; } }
 
   /* Visits that opened a character and never typed. Dimmed so the eye still
      lands on real conversations first, but present so the drop-off is
@@ -3466,88 +4121,133 @@ function adminLogsPageHtml() {
   .silent-note { color: #9a9aa5; font-style: italic; }
 
   /* Tick trail */
-  .timeline { border-left: 2px solid #2a2a33; margin: 8px 0 20px; padding: 0 0 0 14px; }
-  .tl-item { position: relative; padding: 3px 0; font-size: 13px; color: #c8c8d2; }
-  .tl-item::before { content: ""; position: absolute; left: -19px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: #45455a; }
-  .tl-item.key::before { background: #b39ddb; }
-  .tl-item.leave::before { background: #e5b573; }
-  .tl-time { color: #6b6b78; margin-right: 8px; font-variant-numeric: tabular-nums; }
-  .tl-ticks { color: #7e9fd6; }
-  .tl-summary { background: #16161c; border: 1px solid #26262f; border-radius: 8px; padding: 12px 14px; margin: 0 0 16px; font-size: 13px; line-height: 1.7; }
-  .tl-summary b { color: #e6e6ea; font-weight: 600; }
+${visitTimelineCss()}
+
+  @media (max-width: 720px) {
+    main { padding: 12px; }
+    .bubble { max-width: 88%; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Chat Logs</h1>
+  <a href="/admin">&larr; Admin</a>
   <a href="/admin/referrals">Campaign links &rarr;</a>
-  <span id="list-controls" style="display: contents;">
-    <input id="f-character" placeholder="character">
-    <input id="f-user" placeholder="user_id">
-    <label class="chk"><input type="checkbox" id="f-errors"> errors only</label>
-    <button id="search-btn">Search</button>
-    <select id="export-days">
-      <option value="1">last 24 hours</option>
-      <option value="7">last 7 days</option>
-      <option value="30" selected>last 30 days</option>
-      <option value="90">last 90 days</option>
-    </select>
-    <button id="export-btn">Export</button>
-  </span>
+  <span class="spacer"></span>
   <span id="transcript-controls" style="display: none;">
-    <button id="back-btn">&larr; Back</button>
+    <button id="copy-btn">Copy transcript</button>
     <button id="export-conv-btn">Export conversation</button>
+    <button id="back-btn">&larr; Back</button>
   </span>
 </header>
 <main>
   <section id="view-list">
-    <table>
-      <thead>
-        <tr><th>Character</th><th>User</th><th>Messages</th><th>Ticks</th><th>Errors</th><th>Tokens</th><th>First</th><th>Last active</th></tr>
-      </thead>
-      <tbody id="conv-rows"></tbody>
-    </table>
+    <div class="filters">
+      <input id="f-character" placeholder="character" size="12">
+      <input id="f-user" placeholder="user_id" size="12">
+      <input id="f-q" placeholder="search message text" size="20">
+      <select id="f-range" title="date range (UTC)">
+        <option value="">any time</option>
+        <option value="0">today</option>
+        <option value="1">last 2 days</option>
+        <option value="7">last 7 days</option>
+        <option value="30">last 30 days</option>
+        <option value="custom">custom</option>
+      </select>
+      <input type="date" id="f-from" title="from (UTC)">
+      <input type="date" id="f-to" title="to (UTC), inclusive">
+      <select id="f-show" title="which rows to list">
+        <option value="all">all rows</option>
+        <option value="engaged">conversations only</option>
+        <option value="silent">silent visits only</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="f-errors"> errors only</label>
+      <button id="search-btn">Search</button>
+      <button id="reset-btn" class="ghost">Reset</button>
+      <span class="spacer"></span>
+      <select id="export-days" title="how far back to export">
+        <option value="1">last 24 hours</option>
+        <option value="7">last 7 days</option>
+        <option value="30" selected>last 30 days</option>
+        <option value="90">last 90 days</option>
+      </select>
+      <button id="export-btn">Export</button>
+    </div>
+    <div id="summary" class="summary"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="chat_id">Character</th>
+            <th>User</th>
+            <th class="sortable" data-sort="message_count">Messages</th>
+            <th class="sortable" data-sort="tick_count">Ticks</th>
+            <th class="sortable" data-sort="error_count">Errors</th>
+            <th class="sortable" data-sort="total_tokens">Tokens</th>
+            <th class="sortable" data-sort="first_at">First</th>
+            <th class="sortable" data-sort="last_at">Last active</th>
+          </tr>
+        </thead>
+        <tbody id="conv-rows"></tbody>
+      </table>
+    </div>
     <div class="pager">
       <button id="prev-btn">Prev</button>
       <span id="page-info"></span>
       <button id="next-btn">Next</button>
+      <select id="page-size" title="rows per page">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
     </div>
-    <h2>Recent errors</h2>
-    <table>
-      <thead>
-        <tr><th>Time</th><th>User</th><th>Chat</th><th>Status</th><th>User message</th></tr>
-      </thead>
-      <tbody id="error-rows"></tbody>
-    </table>
+    <h2>Recent errors <span class="sub">(latest 10, unfiltered)</span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Time</th><th>User</th><th>Chat</th><th>Status</th><th>User message</th></tr>
+        </thead>
+        <tbody id="error-rows"></tbody>
+      </table>
+    </div>
   </section>
   <section id="view-transcript" style="display: none;">
     <div id="t-meta"></div>
+    <div id="t-actions"></div>
     <div id="t-messages"></div>
   </section>
 </main>
 <script>
+${visitTimelineJs()}
 (function () {
-  var limit = 50;
-  var offset = 0;
-  var current = null; // { userId, chatId } when transcript open
+  // Every filter lives in the URL, so a view is a link: a conversation worth
+  // showing someone, or a search worth coming back to, survives a refresh and
+  // the browser Back button steps out of a transcript instead of leaving the
+  // page entirely.
+  var DEFAULTS = {
+    character: "", user: "", q: "", from: "", to: "", show: "all",
+    errors: false, sort: "last_at", dir: "desc", offset: 0, limit: 50,
+  };
+  var state = {};
+  var view = { name: "list" };
+  var lastData = null;      // conversations payload, for the summary line
+  var transcriptText = "";  // what the Copy button copies
 
   var convRowsEl = document.getElementById("conv-rows");
   var errorRowsEl = document.getElementById("error-rows");
+  var summaryEl = document.getElementById("summary");
   var pageInfoEl = document.getElementById("page-info");
   var prevBtnEl = document.getElementById("prev-btn");
   var nextBtnEl = document.getElementById("next-btn");
 
-  function td(text) {
-    var el = document.createElement("td");
-    el.textContent = (text === null || text === undefined) ? "" : String(text);
-    return el;
-  }
+  function el(id) { return document.getElementById(id); }
 
-  function parseUtc(s) {
-    var iso = String(s);
-    if (iso.indexOf("T") === -1) iso = iso.replace(" ", "T");
-    if (!/(Z|[+-]\\d{2}:?\\d{2})$/.test(iso)) iso += "Z";
-    return new Date(iso);
+  function td(text) {
+    var cell = document.createElement("td");
+    cell.textContent = (text === null || text === undefined) ? "" : String(text);
+    return cell;
   }
 
   function fmtTime(utc) {
@@ -3577,21 +4277,143 @@ function adminLogsPageHtml() {
     tbody.appendChild(row);
   }
 
-  function listParams() {
+  // ---- URL <-> state ------------------------------------------------------
+
+  function readUrl() {
+    var sp = new URLSearchParams(location.search);
+    state = {
+      character: sp.get("character") || "",
+      user: sp.get("user_id") || "",
+      q: sp.get("q") || "",
+      from: sp.get("from") || "",
+      to: sp.get("to") || "",
+      show: sp.get("show") === "engaged" || sp.get("show") === "silent" ? sp.get("show") : "all",
+      errors: sp.get("errors_only") === "1",
+      sort: sp.get("sort") || "last_at",
+      dir: sp.get("dir") === "asc" ? "asc" : "desc",
+      offset: Math.max(0, parseInt(sp.get("offset"), 10) || 0),
+      limit: [25, 50, 100, 200].indexOf(parseInt(sp.get("limit"), 10)) >= 0
+        ? parseInt(sp.get("limit"), 10) : 50,
+    };
+    var v = sp.get("view");
+    if (v === "transcript" && sp.get("chat")) {
+      view = { name: "transcript", user: sp.get("user") || "", chat: sp.get("chat") };
+    } else if (v === "visit" && sp.get("visit")) {
+      view = { name: "visit", visit: sp.get("visit"), chat: sp.get("chat") || "" };
+    } else {
+      view = { name: "list" };
+    }
+  }
+
+  // Only non-default values, so a plain search stays a readable link.
+  function filterParams() {
     var sp = new URLSearchParams();
-    sp.set("limit", limit);
-    sp.set("offset", offset);
-    var character = document.getElementById("f-character").value.trim();
-    var userId = document.getElementById("f-user").value.trim();
-    if (character) sp.set("character", character);
-    if (userId) sp.set("user_id", userId);
-    if (document.getElementById("f-errors").checked) sp.set("errors_only", "1");
+    if (state.character) sp.set("character", state.character);
+    if (state.user) sp.set("user_id", state.user);
+    if (state.q) sp.set("q", state.q);
+    if (state.from) sp.set("from", state.from);
+    if (state.to) sp.set("to", state.to);
+    if (state.show !== DEFAULTS.show) sp.set("show", state.show);
+    if (state.errors) sp.set("errors_only", "1");
+    if (state.sort !== DEFAULTS.sort) sp.set("sort", state.sort);
+    if (state.dir !== DEFAULTS.dir) sp.set("dir", state.dir);
+    if (state.offset) sp.set("offset", state.offset);
+    if (state.limit !== DEFAULTS.limit) sp.set("limit", state.limit);
     return sp;
+  }
+
+  function writeUrl(push) {
+    var sp = filterParams();
+    if (view.name === "transcript") {
+      sp.set("view", "transcript");
+      sp.set("user", view.user);
+      sp.set("chat", view.chat);
+    } else if (view.name === "visit") {
+      sp.set("view", "visit");
+      sp.set("visit", view.visit);
+      if (view.chat) sp.set("chat", view.chat);
+    }
+    var qs = sp.toString();
+    var url = location.pathname + (qs ? "?" + qs : "");
+    if (push) history.pushState(null, "", url);
+    else history.replaceState(null, "", url);
+  }
+
+  function syncControls() {
+    el("f-character").value = state.character;
+    el("f-user").value = state.user;
+    el("f-q").value = state.q;
+    el("f-from").value = state.from;
+    el("f-to").value = state.to;
+    el("f-show").value = state.show;
+    el("f-errors").checked = state.errors;
+    el("page-size").value = String(state.limit);
+    el("f-range").value = rangePreset();
+    // A date range and a rolling "last N days" export window would contradict
+    // each other; the range wins, so hide the one that is not in effect.
+    var ranged = !!(state.from || state.to);
+    el("export-days").style.display = ranged ? "none" : "";
+    el("export-btn").textContent = ranged ? "Export range" : "Export";
+
+    var ths = document.querySelectorAll("th.sortable");
+    for (var i = 0; i < ths.length; i++) {
+      var th = ths[i];
+      var isSorted = th.getAttribute("data-sort") === state.sort;
+      th.className = "sortable" + (isSorted ? " sorted" : "");
+      var arrow = document.createElement("span");
+      arrow.className = "arrow";
+      arrow.textContent = isSorted ? (state.dir === "asc" ? "\\u25B2" : "\\u25BC") : "";
+      th.textContent = th.getAttribute("data-label");
+      th.appendChild(arrow);
+    }
+  }
+
+  function readControls() {
+    state.character = el("f-character").value.trim();
+    state.user = el("f-user").value.trim();
+    state.q = el("f-q").value.trim();
+    state.from = el("f-from").value;
+    state.to = el("f-to").value;
+    state.show = el("f-show").value;
+    state.errors = el("f-errors").checked;
+    state.limit = parseInt(el("page-size").value, 10) || 50;
+  }
+
+  function utcDay(offsetDays) {
+    var d = new Date();
+    d.setUTCDate(d.getUTCDate() - (offsetDays || 0));
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Which preset the current from/to corresponds to, so the select shows the
+  // truth after a reload rather than resetting to "any time".
+  function rangePreset() {
+    if (!state.from && !state.to) return "";
+    if (state.to !== utcDay(0)) return "custom";
+    var opts = ["0", "1", "7", "30"];
+    for (var i = 0; i < opts.length; i++) {
+      if (state.from === utcDay(parseInt(opts[i], 10))) return opts[i];
+    }
+    return "custom";
+  }
+
+  // ---- list ---------------------------------------------------------------
+
+  function apply(resetOffset) {
+    readControls();
+    if (resetOffset !== false) state.offset = 0;
+    view = { name: "list" };
+    writeUrl(true);
+    render();
   }
 
   function loadConversations() {
     emptyMessage(convRowsEl, 8, "Loading...", "empty");
-    fetch("/api/admin/conversations?" + listParams().toString())
+    summaryEl.textContent = "";
+    var sp = filterParams();
+    sp.set("limit", state.limit);
+    sp.set("offset", state.offset);
+    fetch("/api/admin/conversations?" + sp.toString())
       .then(function (r) { return r.json(); })
       .then(renderConversations)
       .catch(function (err) {
@@ -3600,20 +4422,23 @@ function adminLogsPageHtml() {
   }
 
   function renderConversations(data) {
+    lastData = data;
     convRowsEl.innerHTML = "";
     if (data.error) {
       emptyMessage(convRowsEl, 8, data.error, "error");
       pageInfoEl.textContent = "";
-      prevBtnEl.disabled = offset === 0;
+      prevBtnEl.disabled = state.offset === 0;
       nextBtnEl.disabled = true;
       return;
     }
     var convs = data.conversations || [];
     if (convs.length === 0) {
-      emptyMessage(convRowsEl, 8, "No conversations found.", "empty");
+      emptyMessage(convRowsEl, 8, "No conversations match these filters.", "empty");
     }
-    prevBtnEl.disabled = offset === 0;
-    nextBtnEl.disabled = convs.length < limit;
+    prevBtnEl.disabled = state.offset === 0;
+    nextBtnEl.disabled = typeof data.total === "number"
+      ? state.offset + convs.length >= data.total
+      : convs.length < state.limit;
 
     convs.forEach(function (c) {
       var silent = !c.engaged;
@@ -3645,7 +4470,36 @@ function adminLogsPageHtml() {
       });
       convRowsEl.appendChild(row);
     });
-    pageInfoEl.textContent = "Showing " + convs.length + " (offset " + offset + ")";
+
+    var first = convs.length ? state.offset + 1 : 0;
+    var last = state.offset + convs.length;
+    pageInfoEl.textContent = typeof data.total === "number"
+      ? first + "-" + last + " of " + data.total
+      : "showing " + convs.length + " (offset " + state.offset + ")";
+    renderSummary(convs);
+  }
+
+  function renderSummary(convs) {
+    if (!convs.length) { summaryEl.textContent = ""; return; }
+    var engaged = 0, silent = 0, messages = 0, errors = 0, tokens = 0, ticks = 0;
+    convs.forEach(function (c) {
+      if (c.engaged) { engaged++; messages += c.message_count || 0; }
+      else silent++;
+      errors += c.error_count || 0;
+      tokens += c.total_tokens || 0;
+      ticks += c.tick_count || 0;
+    });
+    var parts = [];
+    parts.push("<b>" + engaged + "</b> conversations");
+    if (silent) {
+      var pct = Math.round((silent / convs.length) * 100);
+      parts.push("<b>" + silent + "</b> silent (" + pct + "%)");
+    }
+    parts.push("<b>" + messages + "</b> messages");
+    if (ticks) parts.push("<b>" + ticks + "</b> ticks");
+    if (errors) parts.push("<b class=\\"err-badge\\">" + errors + "</b> errors");
+    parts.push("<b>" + tokens.toLocaleString() + "</b> tokens");
+    summaryEl.innerHTML = "On this page: " + parts.join("<span class=\\"sep\\">|</span>");
   }
 
   function loadErrors() {
@@ -3680,20 +4534,51 @@ function adminLogsPageHtml() {
       });
   }
 
+  // ---- views --------------------------------------------------------------
+
   function showView(name) {
-    document.getElementById("view-list").style.display = name === "list" ? "" : "none";
-    document.getElementById("list-controls").style.display = name === "list" ? "contents" : "none";
-    document.getElementById("view-transcript").style.display = name === "transcript" ? "" : "none";
-    document.getElementById("transcript-controls").style.display = name === "transcript" ? "contents" : "none";
+    el("view-list").style.display = name === "list" ? "" : "none";
+    el("view-transcript").style.display = name === "list" ? "none" : "";
+    el("transcript-controls").style.display = name === "list" ? "none" : "";
+  }
+
+  function render() {
+    syncControls();
+    if (view.name === "transcript") {
+      showView("transcript");
+      loadTranscript(view.user, view.chat);
+    } else if (view.name === "visit") {
+      showView("transcript");
+      loadVisitDetail(view.visit, view.chat);
+    } else {
+      showView("list");
+      loadConversations();
+      loadErrors();
+    }
   }
 
   function openTranscript(userId, chatId) {
-    current = { userId: userId, chatId: chatId };
-    showView("transcript");
-    document.getElementById("export-conv-btn").style.display = "";
-    var metaEl = document.getElementById("t-meta");
-    var messagesEl = document.getElementById("t-messages");
+    view = { name: "transcript", user: userId, chat: chatId };
+    writeUrl(true);
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  function openVisitDetail(visitId, character) {
+    view = { name: "visit", visit: visitId, chat: character || "" };
+    writeUrl(true);
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  function loadTranscript(userId, chatId) {
+    el("copy-btn").style.display = "";
+    el("export-conv-btn").style.display = "";
+    var metaEl = el("t-meta");
+    var actionsEl = el("t-actions");
+    var messagesEl = el("t-messages");
     metaEl.textContent = "Loading...";
+    actionsEl.textContent = "";
     messagesEl.innerHTML = "";
 
     fetch("/api/admin/transcript?user_id=" + encodeURIComponent(userId) + "&chat_id=" + encodeURIComponent(chatId))
@@ -3707,79 +4592,18 @@ function adminLogsPageHtml() {
       });
   }
 
-  // Ticks are 500ms apart while the character screen sits unengaged. Report
-  // the span between first and last rather than count x 500ms: a backgrounded
-  // tab stops ticking, so multiplying would claim attention that never
-  // happened.
-  function tickSpanMs(data) {
-    if (!data.first_tick_at || !data.last_tick_at) return 0;
-    return parseUtc(data.last_tick_at) - parseUtc(data.first_tick_at);
-  }
-
-  function fmtDuration(ms) {
-    if (ms === null || ms === undefined || isNaN(ms)) return "unknown";
-    var secs = Math.round(ms / 1000);
-    if (secs < 60) return secs + "s";
-    var mins = Math.floor(secs / 60);
-    return mins + "m " + (secs % 60) + "s";
-  }
-
-  // The tick trail. Consecutive screen_pings collapse into one line — sixty
-  // near-identical rows would bury the events that actually mean something.
-  function renderTimeline(container, events) {
-    if (!events || !events.length) return;
-    var wrap = document.createElement("div");
-    wrap.className = "timeline";
-
-    var i = 0;
-    while (i < events.length) {
-      var e = events[i];
-      var item = document.createElement("div");
-
-      if (e.event === "screen_ping") {
-        var j = i;
-        while (j < events.length && events[j].event === "screen_ping") j++;
-        var run = events.slice(i, j);
-        var span = parseUtc(run[run.length - 1].created_at) - parseUtc(run[0].created_at);
-        item.className = "tl-item";
-        var t1 = document.createElement("span");
-        t1.className = "tl-time";
-        t1.textContent = fmtTime(run[0].created_at);
-        item.appendChild(t1);
-        var ticks = document.createElement("span");
-        ticks.className = "tl-ticks";
-        ticks.textContent = run.length + " ticks over " + fmtDuration(span) + " - on screen, not engaging";
-        item.appendChild(ticks);
-        i = j;
-      } else {
-        var isLeave = e.event === "leave";
-        item.className = "tl-item " + (isLeave ? "leave" : "key");
-        var t2 = document.createElement("span");
-        t2.className = "tl-time";
-        t2.textContent = fmtTime(e.created_at);
-        item.appendChild(t2);
-        var label = e.event + (e.detail ? " (" + e.detail + ")" : "");
-        if (isLeave && e.duration_ms) label += " - dwell " + fmtDuration(e.duration_ms);
-        if (e.failure_reason) label += " - " + e.failure_reason;
-        item.appendChild(document.createTextNode(label));
-        i++;
-      }
-      wrap.appendChild(item);
-    }
-    container.appendChild(wrap);
-  }
-
   // A visit that opened a character and never typed. There is no transcript
   // to show, so the tick trail IS the record: how long they looked, and when
   // they gave up.
-  function openVisitDetail(visitId, character) {
-    current = null;
-    showView("transcript");
-    // Nothing to export — there is no transcript, only the tick trail.
-    document.getElementById("export-conv-btn").style.display = "none";
-    var metaEl = document.getElementById("t-meta");
-    var messagesEl = document.getElementById("t-messages");
+  function loadVisitDetail(visitId, character) {
+    // Nothing to copy or export — there is no transcript, only the tick trail.
+    el("copy-btn").style.display = "none";
+    el("export-conv-btn").style.display = "none";
+    var metaEl = el("t-meta");
+    var actionsEl = el("t-actions");
+    var messagesEl = el("t-messages");
     metaEl.textContent = "Loading...";
+    actionsEl.textContent = "";
     messagesEl.innerHTML = "";
 
     fetch("/api/admin/visit-detail?visit_id=" + encodeURIComponent(visitId) +
@@ -3816,18 +4640,44 @@ function adminLogsPageHtml() {
     sum.innerHTML = lines.join("<br>");
     messagesEl.appendChild(sum);
 
-    renderTimeline(messagesEl, data.events);
+    renderTimeline(messagesEl, data.events, fmtTime);
+  }
+
+  // Search terms are marked in place. Finding the conversation is only half
+  // the job — the line that matched still has to be findable inside it.
+  function appendHighlighted(node, text) {
+    var term = state.q;
+    var value = text === null || text === undefined ? "" : String(text);
+    if (!term) { node.textContent = value; return; }
+    var hay = value.toLowerCase();
+    var needle = term.toLowerCase();
+    var from = 0;
+    var at;
+    while ((at = hay.indexOf(needle, from)) !== -1) {
+      node.appendChild(document.createTextNode(value.slice(from, at)));
+      var mark = document.createElement("mark");
+      mark.textContent = value.slice(at, at + term.length);
+      node.appendChild(mark);
+      from = at + term.length;
+    }
+    node.appendChild(document.createTextNode(value.slice(from)));
   }
 
   function renderTranscript(data, metaEl, messagesEl) {
     var msgs = data.messages || [];
     var name = characterName(data.chat_id);
     var tokens = 0;
-    msgs.forEach(function (m) { tokens += m.total_tokens || 0; });
+    var errorCount = 0;
+    msgs.forEach(function (m) {
+      tokens += m.total_tokens || 0;
+      if (m.status !== "completed") errorCount++;
+    });
     metaEl.textContent = name + " x " + shortUser(data.user_id) + " - " +
       msgs.length + " exchanges" +
       (msgs.length ? ", " + fmtTime(msgs[0].created_at) + " to " + fmtTime(msgs[msgs.length - 1].created_at) : "") +
       (tokens ? ", " + tokens + " tokens" : "");
+
+    transcriptText = buildTranscriptText(name, data, msgs);
 
     if (data.tick_count || data.left_at) {
       var sum = document.createElement("div");
@@ -3843,11 +4693,13 @@ function adminLogsPageHtml() {
       }
       sum.innerHTML = parts.join("<br>");
       messagesEl.appendChild(sum);
-      renderTimeline(messagesEl, data.events);
+      renderTimeline(messagesEl, data.events, fmtTime);
     }
 
     var prevAt = null;
-    msgs.forEach(function (m) {
+    var firstErrorId = null;
+    var matches = 0;
+    msgs.forEach(function (m, idx) {
       var at = parseUtc(m.created_at);
       if (prevAt && at - prevAt > 30 * 60 * 1000) {
         var divider = document.createElement("div");
@@ -3857,26 +4709,79 @@ function adminLogsPageHtml() {
       }
       prevAt = at;
 
-      appendBubble(messagesEl, m.user_message, "user", false);
+      var block = document.createElement("div");
+      block.className = "exchange";
+      block.id = "ex-" + idx;
+      if (m.status !== "completed" && firstErrorId === null) firstErrorId = block.id;
+      if (state.q) matches += countMatches(m.user_message) + countMatches(m.assistant_message);
+
+      appendBubble(block, m.user_message, "user", false);
       if (m.status === "completed" && m.assistant_message) {
-        appendBubble(messagesEl, m.assistant_message, "ai", false);
+        appendBubble(block, m.assistant_message, "ai", false);
       } else {
-        appendBubble(messagesEl, "[message failed]", "ai", true);
+        appendBubble(block, "[message failed]", "ai", true);
       }
 
       var meta = document.createElement("div");
       meta.className = "ex-meta";
-      var metaText = fmtTime(m.created_at) + " | " + m.status + " (" + m.status_code + ") | " + m.model +
+      meta.textContent = fmtTime(m.created_at) + " | " + m.status + " (" + m.status_code + ") | " + m.model +
         (m.total_tokens ? " | " + m.total_tokens + " tokens" : "");
-      meta.textContent = metaText;
       if (m.error) {
         var errSpan = document.createElement("span");
         errSpan.className = "err-text";
         errSpan.textContent = " | " + m.error;
         meta.appendChild(errSpan);
       }
-      messagesEl.appendChild(meta);
+      block.appendChild(meta);
+      messagesEl.appendChild(block);
     });
+
+    renderTranscriptActions(firstErrorId, errorCount, matches);
+  }
+
+  function countMatches(text) {
+    if (!state.q || !text) return 0;
+    var hay = String(text).toLowerCase();
+    var needle = state.q.toLowerCase();
+    var n = 0, from = 0, at;
+    while ((at = hay.indexOf(needle, from)) !== -1) { n++; from = at + needle.length; }
+    return n;
+  }
+
+  function renderTranscriptActions(firstErrorId, errorCount, matches) {
+    var actionsEl = el("t-actions");
+    actionsEl.innerHTML = "";
+    if (errorCount && firstErrorId) {
+      var jump = document.createElement("a");
+      jump.textContent = "Jump to first of " + errorCount + " failed exchange" + (errorCount === 1 ? "" : "s");
+      jump.addEventListener("click", function () {
+        var target = document.getElementById(firstErrorId);
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.remove("flash");
+        void target.offsetWidth;
+        target.classList.add("flash");
+      });
+      actionsEl.appendChild(jump);
+    }
+    if (state.q) {
+      var note = document.createElement("span");
+      note.className = "silent-note";
+      note.textContent = (errorCount && firstErrorId ? "  -  " : "") +
+        matches + " match" + (matches === 1 ? "" : "es") + " for \\u201C" + state.q + "\\u201D";
+      actionsEl.appendChild(note);
+    }
+  }
+
+  function buildTranscriptText(name, data, msgs) {
+    var lines = [name + " x " + data.user_id, ""];
+    msgs.forEach(function (m) {
+      lines.push("[" + fmtTime(m.created_at) + "] User: " + (m.user_message || ""));
+      lines.push("[" + fmtTime(m.created_at) + "] " + name + ": " +
+        (m.status === "completed" && m.assistant_message ? m.assistant_message : "[message failed]"));
+      lines.push("");
+    });
+    return lines.join("\\n");
   }
 
   function gapText(ms) {
@@ -3892,42 +4797,124 @@ function adminLogsPageHtml() {
     row.className = "bubble-row";
     var bubble = document.createElement("div");
     bubble.className = "bubble " + side + (failed ? " failed" : "");
-    bubble.textContent = text;
+    appendHighlighted(bubble, text);
     row.appendChild(bubble);
     container.appendChild(row);
   }
 
-  document.getElementById("search-btn").addEventListener("click", function () {
-    offset = 0;
-    loadConversations();
+  // ---- wiring -------------------------------------------------------------
+
+  var ths = document.querySelectorAll("th.sortable");
+  for (var i = 0; i < ths.length; i++) {
+    (function (th) {
+      th.setAttribute("data-label", th.textContent);
+      th.addEventListener("click", function () {
+        var column = th.getAttribute("data-sort");
+        // Same column toggles direction; a new one starts at the end that is
+        // usually interesting - newest, or biggest.
+        if (state.sort === column) state.dir = state.dir === "desc" ? "asc" : "desc";
+        else { state.sort = column; state.dir = column === "chat_id" ? "asc" : "desc"; }
+        state.offset = 0;
+        writeUrl(true);
+        render();
+      });
+    })(ths[i]);
+  }
+
+  ["f-character", "f-user", "f-q"].forEach(function (id) {
+    el(id).addEventListener("keydown", function (e) {
+      if (e.key === "Enter") apply();
+    });
   });
-  document.getElementById("prev-btn").addEventListener("click", function () {
-    offset = Math.max(0, offset - limit);
-    loadConversations();
-  });
-  document.getElementById("next-btn").addEventListener("click", function () {
-    offset = offset + limit;
-    loadConversations();
-  });
-  document.getElementById("back-btn").addEventListener("click", function () {
-    current = null;
-    showView("list");
-  });
-  document.getElementById("export-btn").addEventListener("click", function () {
-    var sp = new URLSearchParams();
-    sp.set("days", document.getElementById("export-days").value);
-    var character = document.getElementById("f-character").value.trim();
-    if (character) sp.set("character", character);
-    window.location = "/api/admin/export?" + sp.toString();
-  });
-  document.getElementById("export-conv-btn").addEventListener("click", function () {
-    if (!current) return;
-    window.location = "/api/admin/export?user_id=" + encodeURIComponent(current.userId) +
-      "&chat_id=" + encodeURIComponent(current.chatId);
+  ["f-show", "f-errors", "f-from", "f-to"].forEach(function (id) {
+    el(id).addEventListener("change", function () { apply(); });
   });
 
-  loadConversations();
-  loadErrors();
+  el("f-range").addEventListener("change", function () {
+    var v = el("f-range").value;
+    if (v === "custom") return;
+    if (v === "") { el("f-from").value = ""; el("f-to").value = ""; }
+    else { el("f-from").value = utcDay(parseInt(v, 10)); el("f-to").value = utcDay(0); }
+    apply();
+  });
+
+  el("page-size").addEventListener("change", function () { apply(); });
+  el("search-btn").addEventListener("click", function () { apply(); });
+  el("reset-btn").addEventListener("click", function () {
+    state = Object.assign({}, DEFAULTS);
+    view = { name: "list" };
+    syncControls();
+    writeUrl(true);
+    render();
+  });
+  el("prev-btn").addEventListener("click", function () {
+    state.offset = Math.max(0, state.offset - state.limit);
+    writeUrl(true);
+    render();
+  });
+  el("next-btn").addEventListener("click", function () {
+    state.offset = state.offset + state.limit;
+    writeUrl(true);
+    render();
+  });
+  // Deliberately not history.back(): a transcript reached by a shared link has
+  // no previous entry here, and Back would leave the tool entirely.
+  function goList() {
+    view = { name: "list" };
+    writeUrl(true);
+    render();
+  }
+  el("back-btn").addEventListener("click", goList);
+
+  el("copy-btn").addEventListener("click", function () {
+    if (!transcriptText) return;
+    var btn = el("copy-btn");
+    navigator.clipboard.writeText(transcriptText).then(function () {
+      btn.textContent = "Copied";
+      setTimeout(function () { btn.textContent = "Copy transcript"; }, 1500);
+    }, function () {
+      btn.textContent = "Copy failed";
+      setTimeout(function () { btn.textContent = "Copy transcript"; }, 1500);
+    });
+  });
+
+  el("export-btn").addEventListener("click", function () {
+    var sp = new URLSearchParams();
+    if (state.from || state.to) {
+      if (state.from) sp.set("from", state.from);
+      if (state.to) sp.set("to", state.to);
+    } else {
+      sp.set("days", el("export-days").value);
+    }
+    if (state.character) sp.set("character", state.character);
+    if (state.q) sp.set("q", state.q);
+    window.location = "/api/admin/export?" + sp.toString();
+  });
+
+  el("export-conv-btn").addEventListener("click", function () {
+    if (view.name !== "transcript") return;
+    window.location = "/api/admin/export?user_id=" + encodeURIComponent(view.user) +
+      "&chat_id=" + encodeURIComponent(view.chat);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && view.name !== "list") { goList(); return; }
+    // "/" jumps to the search box, the way every log tool does it.
+    if (e.key === "/" && view.name === "list" && document.activeElement.tagName !== "INPUT") {
+      e.preventDefault();
+      el("f-q").focus();
+      el("f-q").select();
+    }
+  });
+
+  window.addEventListener("popstate", function () {
+    readUrl();
+    render();
+  });
+
+  readUrl();
+  writeUrl(false);
+  render();
 })();
 </script>
 </body>
