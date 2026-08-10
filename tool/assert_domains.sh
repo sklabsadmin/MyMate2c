@@ -22,10 +22,12 @@
 # There is no wrangler command for this; the account-level domains API is the
 # only authority.
 #
-# Needs a scoped API token — the `wrangler login` OAuth token cannot read it:
-#   CLOUDFLARE_API_TOKEN   Workers Scripts:Read is enough
-#   CLOUDFLARE_ACCOUNT_ID
-# Both are read from .env if present.
+# Credentials, in order of preference:
+#   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID   (Workers Scripts:Read),
+#       read from .env if present. Preferred: no expiry, works headless.
+#   otherwise the `wrangler login` OAuth token, which CAN read this endpoint —
+#       an earlier version of this script asserted it could not, and so printed
+#       SKIPPED through three deploys for want of a token it never needed.
 #
 # Usage: bash tool/assert_domains.sh              # check now
 #        bash tool/assert_domains.sh --delay 300  # wait 5 min, then check
@@ -69,14 +71,44 @@ if [[ ${#DOMAINS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+# Credentials. A scoped API token is preferred — it does not expire and works
+# where wrangler is not logged in. But it is not required: the `wrangler login`
+# OAuth token CAN read workers/domains, contrary to what this script first
+# assumed. That wrong assumption made this check print SKIPPED after three
+# consecutive deploys while ownership was verified by hand each time, which is
+# the failure mode a guard is supposed to remove.
+#
+# The OAuth token expires roughly every twenty minutes and only a wrangler
+# invocation renews it, so a 4xx here is routine rather than a real failure —
+# refresh and retry once before believing it. Expiry has been observed as both
+# HTTP 400 and HTTP 200 with success:false, hence checking the body, not a code.
+WRANGLER_CONFIG="${HOME}/Library/Preferences/.wrangler/config/default.toml"
+[[ -f "$WRANGLER_CONFIG" ]] || WRANGLER_CONFIG="${HOME}/.wrangler/config/default.toml"
+
+oauth_token() {
+  [[ -f "$WRANGLER_CONFIG" ]] || return 1
+  sed -n 's/^oauth_token[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$WRANGLER_CONFIG" | head -1
+}
+
+CF_TOKEN="${CLOUDFLARE_API_TOKEN:-$(oauth_token || true)}"
+CF_ACCOUNT="${CLOUDFLARE_ACCOUNT_ID:-}"
+if [[ -z "$CF_ACCOUNT" ]]; then
+  # `|| true` is load-bearing: under `set -euo pipefail` a failing whoami — which
+  # is exactly what a broken or unrenewable token produces — would abort the
+  # script here with no output at all. Exiting 1 in silence is worse than the
+  # SKIPPED this replaced, because nothing tells you the check did not run.
+  CF_ACCOUNT="$(npx wrangler whoami 2>/dev/null \
+    | sed -n 's/.*│[[:space:]]*\([0-9a-f]\{32\}\)[[:space:]]*│.*/\1/p' | head -1 || true)"
+fi
+
+if [[ -z "$CF_TOKEN" || -z "$CF_ACCOUNT" ]]; then
   echo "==> SKIPPED: ownership of the custom domains was NOT verified." >&2
-  echo "    Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (Workers Scripts:Read)." >&2
+  echo "    No credentials: set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, or run" >&2
+  echo "    'npx wrangler login' so the OAuth token can be used instead." >&2
   echo "    Until then nothing detects another worker taking these hostnames:" >&2
   printf '      %s\n' "${DOMAINS[@]}" >&2
-  # Deliberately not a failure. Making this fatal today would block every
-  # deploy on a token that does not exist yet, and a blocked deploy is its own
-  # outage. It is loud so it does not become permanent.
+  # Deliberately not a failure: a blocked deploy is its own outage. Loud so it
+  # does not become permanent.
   exit 0
 fi
 
@@ -85,15 +117,32 @@ if [[ "$DELAY" -gt 0 ]]; then
   sleep "$DELAY"
 fi
 
-echo "==> checking which worker owns each custom domain"
-resp="$(curl -sS --max-time 30 \
-  -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains")"
-
-if ! printf '%s' "$resp" | node -e '
+api_ok() {
+  printf '%s' "$1" | node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   try { process.exit(JSON.parse(s).success ? 0 : 1); } catch { process.exit(1); }
-});'; then
+});'
+}
+
+fetch_domains() {
+  curl -sS --max-time 30 \
+    -H "Authorization: Bearer ${CF_TOKEN}" \
+    "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/workers/domains"
+}
+
+echo "==> checking which worker owns each custom domain"
+resp="$(fetch_domains)"
+
+if ! api_ok "$resp"; then
+  # Only worth retrying when the token is the expiring kind.
+  if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+    npx wrangler whoami >/dev/null 2>&1 || true
+    CF_TOKEN="$(oauth_token || true)"
+    resp="$(fetch_domains)"
+  fi
+fi
+
+if ! api_ok "$resp"; then
   echo "ERROR: workers/domains API call failed. Response:" >&2
   printf '%s\n' "$resp" >&2
   exit 1
