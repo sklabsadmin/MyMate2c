@@ -510,6 +510,40 @@ export default {
             const truncated = rows.length > SESSION_LIMIT;
             if (truncated) rows.length = SESSION_LIMIT;
 
+            // The headline counts, over the WHOLE window rather than the rows
+            // that survived the limit above. Deliberately not derived in the
+            // browser from `rows`: past 500 sessions that slice stops being the
+            // window, and a summary that silently describes its own truncation
+            // is worse than no summary at all.
+            //
+            // Every line counts visits, which is the only thing this table can
+            // count — a visitor who never messages has no id to be recognised
+            // by, so a person who taps the link twice is two arrivals and there
+            // is no way to tell. The wording on the page has to say so.
+            const totals = await db.prepare(`
+                SELECT COUNT(*) AS arrivals,
+                       SUM(CASE WHEN a.path LIKE '/c/%' THEN 1 ELSE 0 END) AS via_link,
+                       SUM(CASE WHEN a.opened THEN 1 ELSE 0 END) AS opened,
+                       SUM(CASE WHEN a.engaged THEN 1 ELSE 0 END) AS engaged,
+                       SUM(CASE WHEN a.messaged THEN 1 ELSE 0 END) AS messaged
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.path) AS path,
+                           EXISTS (SELECT 1 FROM site_visits t
+                                    WHERE t.visit_id = v.visit_id
+                                      AND t.event = 'character_tap') AS opened,
+                           EXISTS (SELECT 1 FROM site_visits e
+                                    WHERE e.visit_id = v.visit_id
+                                      AND e.event IN ('input_typed', 'starter_tap', 'first_message')) AS engaged,
+                           EXISTS (SELECT 1 FROM site_visits m
+                                    WHERE m.visit_id = v.visit_id
+                                      AND m.event = 'first_message') AS messaged
+                    FROM site_visits v
+                    WHERE v.event = 'arrive' AND ${where.replace(/\ba\./g, "v.")}
+                    GROUP BY v.visit_id
+                ) a
+            `).bind(param).first();
+
             // Messages for the same visits. conversation_logs.created_at is
             // ISO-8601 with a T and a Z while site_visits uses SQLite's own
             // format, so these are selected by visit rather than by their own
@@ -545,6 +579,7 @@ export default {
                 days: isDay ? null : days,
                 truncated,
                 limit: SESSION_LIMIT,
+                totals,
                 sessions: rows.map((r) => {
                     const agg = byVisit.get(r.visit_id) || { messages: 0, tapped: 0, typed: 0, failed: 0 };
                     return {
@@ -3605,6 +3640,20 @@ function adminSessionsPageHtml() {
   a.drill { color: #b39ddb; }
   tr.chat td { background: #191322; }
   .note { color: #777; font-size: 12px; max-width: 78ch; line-height: 1.5; }
+  /* The headline counts. Deliberately a short vertical list rather than a row
+     of big numbers: each line is a subset of the one above it, and stacking
+     them makes the drop between steps the thing you read first. */
+  .tally { border: 1px solid #2a2a33; border-radius: 8px; padding: 12px 14px;
+           margin: 0 0 14px; max-width: 62ch; }
+  .tally table { width: 100%; border: 0; }
+  .tally td { border: 0; padding: 3px 0; vertical-align: baseline; }
+  .tally td.n { text-align: right; width: 5ch; font-variant-numeric: tabular-nums;
+                color: #e6e6ea; font-weight: 600; padding-right: 10px; }
+  .tally td.pc { text-align: right; width: 6ch; color: #777; padding-left: 10px; }
+  .tally .step { color: #bbb; }
+  .tally .head { color: #e6e6ea; font-weight: 600; }
+  .tally .gloss { color: #777; font-size: 12px; line-height: 1.5;
+                  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #2a2a33; }
   /* Where the visit came from and what it arrived on. Two columns rather than
      a sentence: these are lookup values, read one at a time. */
   .vc-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr);
@@ -3621,7 +3670,11 @@ ${visitTimelineCss()}
    &nbsp;·&nbsp; <a href="/admin/visits" style="color:#b39ddb">Site visits</a></p>
 <h1>User sessions</h1>
 <p class="sub">One row per arrival — every time someone opens the app, whether or
-   not they ever reached a character. Newest first. Click any column heading to
+   not they ever reached a character. <b>Arrivals are visits, not people:</b> a
+   visitor who comes back later, or reloads, arrives again and is counted again,
+   and nothing here can tell the difference — someone who never sends a message
+   has no id to be recognised by. Read every number on this page as "visits",
+   never as "people". Newest first. Click any column heading to
    sort by it, again to reverse; sessions the browser never reported a dwell or
    a tick for sort last whichever way you sort, since those are unknown rather
    than zero.</p>
@@ -3636,6 +3689,7 @@ ${visitTimelineCss()}
   <option value="1000">1,000 rows</option>
   <option value="5000">5,000 rows</option>
 </select>
+<div id="tally"></div>
 <div id="out">Loading…</div>
 <p class="note" id="footnote"></p>
 <script>
@@ -3734,8 +3788,41 @@ async function render(out) {
   makeSortable(out);
 
   const scope = d.day ? 'on ' + d.day + ' (UTC)' : 'in the last ' + d.days + ' days';
+
+  // The headline counts. These come from the server over the whole window, so
+  // they stay true when the table below is truncated to the newest 500.
+  const t = d.totals || {};
+  const arrivals = t.arrivals || 0;
+  // Every step is a subset of arrivals, so that is the denominator throughout —
+  // a percentage of the previous step would read as a step-to-step conversion
+  // and these are not that.
+  const pc = function (n) {
+    return arrivals ? Math.round(100 * n / arrivals) + '%' : '';
+  };
+  const line = function (n, label, cls) {
+    return '<tr><td class="n">' + n + '</td><td class="' + (cls || 'step') + '">' +
+           label + '</td><td class="pc">' + (cls === 'head' ? '' : pc(n)) + '</td></tr>';
+  };
+  document.getElementById('tally').innerHTML = arrivals
+    ? '<div class="tally"><table>' +
+      line(arrivals, 'arrivals ' + esc(scope), 'head') +
+      line(t.via_link || 0, 'landed on a character link') +
+      line(t.opened || 0, 'reached a character screen') +
+      line(t.engaged || 0, 'typed or tapped anything') +
+      line(t.messaged || 0, 'sent a message') +
+      '</table>' +
+      '<p class="gloss"><b>Visits, not people</b> — the same person returning or ' +
+      'reloading is counted again. Each line is a subset of the arrivals above ' +
+      'it, and the percentage is against that total, not against the line before ' +
+      'it. A character link opens straight onto the chat screen, so for those ' +
+      'arrivals <b>reaching a character screen is the destination, not a step ' +
+      'they chose to take</b> — the gap between those two lines is people the ' +
+      'app never delivered to, not people who browsed and lost interest.</p>' +
+      '</div>'
+    : '';
+
   document.getElementById('footnote').innerHTML =
-    esc(rows.length + ' session(s) ' + scope + '.') +
+    esc(rows.length + ' session(s) ' + scope + ' — visits, not people.') +
     // Sorting is done in the browser, so a truncated range sorts the slice
     // that was loaded rather than everything in the window — say so, because
     // "most messages" quietly meaning "most messages among the 500 longest
