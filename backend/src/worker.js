@@ -243,34 +243,80 @@ export default {
             // the tab in a way the browser never reported — counted, but with
             // an unknown duration rather than a zero, which would drag the
             // averages down and hide the real bounce rate.
+            //
+            // The inner query collapses to one row per visit_id BEFORE any
+            // counting happens, and reaches for the leave and app_ready rows
+            // through aggregate subqueries rather than chained LEFT JOINs.
+            // That is the whole point of it. A visit can hold several arrive
+            // rows and several leave rows — sessionStorage survived a reload,
+            // so a reload wrote another pair under the same id (see
+            // docs/ANALYTICS_HANDOFF.md 4.1) — and joining those two sets
+            // multiplies them: three arrives against three leaves is nine rows
+            // for one visitor. On a fixture holding six visits, one of which
+            // had reloaded twice, the joined form counted 32.
+            //
+            // `client` is which app actually rendered the page, read from the
+            // user-agent. `source` cannot answer that: detectTrafficSource
+            // returns utm_source before it ever looks at the user-agent, so a
+            // bio link tagged ?utm_source=ig labels every arrival "ig" no
+            // matter which in-app browser opened it — which is why the
+            // Facebook in-app traffic that dominates this dataset reads as
+            // Instagram. Derived at query time from a column already stored,
+            // so it applies to rows going back to the start.
             const bySource = await db.prepare(`
                 SELECT a.source AS source,
+                       a.client AS client,
                        COUNT(*) AS visits,
-                       SUM(CASE WHEN l.duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS with_duration,
-                       SUM(CASE WHEN l.duration_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
-                       SUM(CASE WHEN r.visit_id IS NOT NULL THEN 1 ELSE 0 END) AS saw_app,
-                       CAST(AVG(r.duration_ms) AS INTEGER) AS avg_load_ms,
-                       CAST(AVG(l.duration_ms) AS INTEGER) AS avg_ms
-                FROM site_visits a
-                LEFT JOIN site_visits l
-                       ON l.visit_id = a.visit_id AND l.event = 'leave'
-                LEFT JOIN site_visits r
-                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
-                WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
-                GROUP BY a.source ORDER BY visits DESC
+                       SUM(CASE WHEN a.dwell_ms IS NOT NULL THEN 1 ELSE 0 END) AS with_duration,
+                       SUM(CASE WHEN a.dwell_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
+                       SUM(CASE WHEN a.saw_app THEN 1 ELSE 0 END) AS saw_app,
+                       CAST(AVG(a.load_ms) AS INTEGER) AS avg_load_ms,
+                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.source) AS source,
+                           MIN(${visitClientSql("v")}) AS client,
+                           (SELECT MAX(l.duration_ms) FROM site_visits l
+                             WHERE l.visit_id = v.visit_id AND l.event = 'leave') AS dwell_ms,
+                           (SELECT MIN(r.duration_ms) FROM site_visits r
+                             WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
+                           EXISTS (SELECT 1 FROM site_visits r
+                                    WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS saw_app
+                    FROM site_visits v
+                    WHERE v.event = 'arrive' AND v.created_at >= datetime('now', ?)
+                    GROUP BY v.visit_id
+                ) a
+                GROUP BY a.source, a.client ORDER BY visits DESC
             `).bind(since).all();
 
+            // DISTINCT visit_id, because a reload wrote a second arrive row
+            // under the same id. Each day here links through to that day's
+            // sessions, which group by visit_id — so counting arrive rows made
+            // the number on this page disagree with the number of rows on the
+            // page it opens, for exactly the days that had the most reloads.
             const byDay = await db.prepare(`
-                SELECT date(created_at) AS day, COUNT(*) AS visits
+                SELECT date(created_at) AS day, COUNT(DISTINCT visit_id) AS visits
                 FROM site_visits
                 WHERE event = 'arrive' AND created_at >= datetime('now', ?)
                 GROUP BY day ORDER BY day DESC
             `).bind(since).all();
 
+            // One row per visit, same reason as bySource above: joined against
+            // its leave and app_ready rows, a visit that had reloaded twice
+            // listed 27 times and pushed genuinely distinct arrivals off the
+            // bottom of the 200-row limit.
             const recent = await db.prepare(`
-                SELECT a.visit_id, a.created_at, a.path, a.query, a.source, a.utm_medium,
-                       a.utm_campaign, a.country, a.referer, l.duration_ms,
-                       r.duration_ms AS load_ms,
+                SELECT a.visit_id,
+                       MIN(a.created_at) AS created_at,
+                       MIN(a.path) AS path, MIN(a.query) AS query,
+                       MIN(a.source) AS source, MIN(a.utm_medium) AS utm_medium,
+                       MIN(a.utm_campaign) AS utm_campaign, MIN(a.country) AS country,
+                       MIN(a.referer) AS referer,
+                       MIN(${visitClientSql("a")}) AS client,
+                       (SELECT MAX(l.duration_ms) FROM site_visits l
+                         WHERE l.visit_id = a.visit_id AND l.event = 'leave') AS duration_ms,
+                       (SELECT MIN(r.duration_ms) FROM site_visits r
+                         WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
                          WHERE m.visit_id = a.visit_id
                            AND m.event IN ('first_message','login_gate')) AS messaged,
@@ -287,12 +333,9 @@ export default {
                        EXISTS (SELECT 1 FROM site_visits t
                                 WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character
                 FROM site_visits a
-                LEFT JOIN site_visits l
-                       ON l.visit_id = a.visit_id AND l.event = 'leave'
-                LEFT JOIN site_visits r
-                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
                 WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
-                ORDER BY a.created_at DESC LIMIT 200
+                GROUP BY a.visit_id
+                ORDER BY created_at DESC LIMIT 200
             `).bind(since).all();
 
             // The funnel, per source. Each step counts DISTINCT visits that
@@ -341,31 +384,42 @@ export default {
             const b5s = screenPingTicksAt(5);
             const b15s = screenPingTicksAt(15);
             const bFull = SCREEN_PING_MAX_TICKS;
+            //
+            // The arrivals are collapsed to one row per visit_id before any
+            // bucket is counted. Previously the total counted DISTINCT visits
+            // while the buckets counted joined rows, so a visit that had
+            // reloaded landed in its bucket once per arrive row: the buckets
+            // did not add up to the total sitting beside them, and could
+            // exceed it outright — "never engaged 3, left instantly 5" on a
+            // fixture of three such visits. Both sides now count the same
+            // thing, so the row reconciles by construction.
             const dwellBuckets = await db.prepare(`
                 SELECT a.source AS source,
-                       COUNT(DISTINCT a.visit_id) AS never_engaged,
-                       SUM(CASE WHEN p.ticks IS NULL OR p.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
-                       SUM(CASE WHEN p.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
-                       SUM(CASE WHEN p.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
-                       SUM(CASE WHEN p.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
-                       SUM(CASE WHEN p.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
-                FROM site_visits a
-                LEFT JOIN (
-                    SELECT visit_id, COUNT(*) AS ticks
-                    FROM site_visits WHERE event = 'screen_ping'
-                    GROUP BY visit_id
-                ) p ON p.visit_id = a.visit_id
-                WHERE a.event = 'arrive'
-                  AND a.created_at >= datetime('now', ?)
-                  AND EXISTS (
-                      SELECT 1 FROM site_visits t
-                      WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM site_visits e
-                      WHERE e.visit_id = a.visit_id
-                        AND e.event IN ('input_typed', 'starter_tap', 'first_message')
-                  )
+                       COUNT(*) AS never_engaged,
+                       SUM(CASE WHEN a.ticks IS NULL OR a.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
+                       SUM(CASE WHEN a.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
+                       SUM(CASE WHEN a.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
+                       SUM(CASE WHEN a.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
+                       SUM(CASE WHEN a.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.source) AS source,
+                           (SELECT COUNT(*) FROM site_visits p
+                             WHERE p.visit_id = v.visit_id AND p.event = 'screen_ping') AS ticks
+                    FROM site_visits v
+                    WHERE v.event = 'arrive'
+                      AND v.created_at >= datetime('now', ?)
+                      AND EXISTS (
+                          SELECT 1 FROM site_visits t
+                          WHERE t.visit_id = v.visit_id AND t.event = 'character_tap'
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM site_visits e
+                          WHERE e.visit_id = v.visit_id
+                            AND e.event IN ('input_typed', 'starter_tap', 'first_message')
+                      )
+                    GROUP BY v.visit_id
+                ) a
                 GROUP BY a.source ORDER BY never_engaged DESC
             `).bind(since).all();
 
@@ -1980,6 +2034,30 @@ function realUserIdSql(column) {
              OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
 }
 
+/// Which app rendered the page, as SQL over the stored user_agent.
+///
+/// This is deliberately NOT `source`. detectTrafficSource below returns
+/// utm_source whenever one is present and only falls through to the user-agent
+/// when there is none — correct for "which link did they follow", useless for
+/// "which app were they in". The profile-bio link carries ?utm_source=ig, so
+/// every arrival through it is labelled "ig" whether it opened in Instagram's
+/// in-app browser, Facebook's, or Safari. docs/odysseus-opening-brief
+/// 2026-08-10 measured 93% of that "ig" traffic as Facebook in-app.
+///
+/// Reported alongside source rather than replacing it: the tag says which link
+/// was clicked and the client says which app rendered it, and mixing those two
+/// questions into one column is what made the answer wrong in the first place.
+///
+/// Instagram is tested first, matching detectTrafficSource's order.
+function visitClientSql(alias) {
+    return `CASE
+        WHEN ${alias}.user_agent LIKE '%Instagram%' THEN 'instagram app'
+        WHEN ${alias}.user_agent LIKE '%FBAN%' OR ${alias}.user_agent LIKE '%FBAV%' THEN 'facebook app'
+        WHEN ${alias}.user_agent IS NULL OR ${alias}.user_agent = '' THEN 'unknown'
+        ELSE 'browser'
+    END`;
+}
+
 /// Classifies where a visitor came from. Instagram and Facebook render links
 /// in their own in-app browser, which identifies itself in the user-agent —
 /// that is the only signal for a link posted without utm parameters, since
@@ -2989,7 +3067,17 @@ async function buildExportText(env, params) {
             const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
             const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
                 .toISOString().replace("T", " ").slice(0, 19);
-            filters.push("created_at >= ?");
+            // created_at is written in two shapes — "2026-08-10T09:00:00.000Z"
+            // from persistConversationLog and "2026-08-10 09:00:00" from the
+            // column default — and this bound carries a time, so the two do not
+            // compare alike: at the separator "T" (0x54) sorts after " " (0x20),
+            // and every ISO-form row on the boundary date therefore tests as
+            // later than the bound whatever its actual clock time. "Last 24
+            // hours" quietly reached back through the whole of the previous day
+            // for those rows. dayBounds above sidesteps this by using date-only
+            // bounds, which are a clean prefix of either shape; a bound with a
+            // time has to normalise the column instead.
+            filters.push("replace(created_at, 'T', ' ') >= ?");
             binds.push(since);
         }
         if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
@@ -3002,6 +3090,15 @@ async function buildExportText(env, params) {
                                      AND m.chat_id = conversation_logs.chat_id
                                      AND (m.user_message LIKE ? OR m.assistant_message LIKE ?))`);
             binds.push(`%${search}%`, `%${search}%`);
+        }
+        // The same id filter the log viewer applies, and for the same reason:
+        // an export taken from a filtered page was silently wider than the page
+        // that produced it, putting the 105 `user_test_*` QA rows back into a
+        // file the page had just finished telling you it was hiding. Only on
+        // the browse path — an export of one named conversation is an explicit
+        // request for that conversation, test id or not.
+        if (params.get("include_test") !== "1") {
+            filters.push(realUserIdSql("user_id"));
         }
     }
 
@@ -3105,22 +3202,51 @@ async function summariseReferralVisits(env, searchParams) {
         GROUP BY source ORDER BY visits DESC
     `).bind(since).all();
 
+    // "chatters" is DISTINCT user_id, not DISTINCT chat_id.
+    //
+    // chat_id is the character's display name — "Penelope (Queen of Ithaca)" —
+    // so it is a constant per character, not a per-conversation key. Counting
+    // it distinctly counted display-name *spellings*: a character every real
+    // visitor messaged scored 1, and the number only ever moved when the
+    // display name itself was edited. On a fixture where three real people
+    // messaged Penelope under two spellings of her name it returned 2, and for
+    // a character whose only message came from a QA test id it returned 1
+    // rather than 0. Wrong in both directions at once, which is why nothing
+    // about it looked obviously broken.
+    //
+    // The id filter matters as much as the column: without it the 105
+    // `user_test_*` rows from the Calypso QA pass count as campaign
+    // conversions (docs/ANALYTICS_HANDOFF.md 4.5).
+    //
+    // Still not a true conversion rate, and the UI says so: referral_visits
+    // carries no visit_id or user_id, so there is no way to tell that the
+    // person who messaged is the person who arrived through the link. It is
+    // "how many real people talked to this character in this window" next to
+    // "how many link hits it got" — two counts over the same window, not a
+    // funnel.
     const byCharacter = await env.CHAT_LOGS_DB.prepare(`
         SELECT v.character_id AS character_id,
                COUNT(*) AS visits,
                SUM(CASE WHEN v.known_character = 0 THEN 1 ELSE 0 END) AS unknown_hits,
-               (SELECT COUNT(DISTINCT l.chat_id) FROM conversation_logs l
+               (SELECT COUNT(DISTINCT l.user_id) FROM conversation_logs l
                  WHERE l.created_at >= datetime('now', ?)
-                   AND lower(l.scenario) LIKE lower(v.character_id) || '%') AS conversations
+                   AND lower(l.scenario) LIKE lower(v.character_id) || '%'
+                   AND ${realUserIdSql("l.user_id")}) AS chatters
         FROM referral_visits v
         WHERE v.created_at >= datetime('now', ?)
         GROUP BY v.character_id ORDER BY visits DESC
     `).bind(since, since).all();
 
+    // Windowed like everything else on the page. Unfiltered, this listed the
+    // newest 100 rows in the table regardless of the range selected above, so
+    // "last 24 hours" could show arrivals from months back sitting under a
+    // heading that said otherwise.
     const recent = await env.CHAT_LOGS_DB.prepare(`
         SELECT created_at, character_id, source, utm_medium, utm_campaign, known_character
-        FROM referral_visits ORDER BY created_at DESC LIMIT 100
-    `).all();
+        FROM referral_visits
+        WHERE created_at >= datetime('now', ?)
+        ORDER BY created_at DESC LIMIT 100
+    `).bind(since).all();
 
     return {
         days,
@@ -3913,21 +4039,51 @@ async function render(out) {
     h += '</table></div>';
   }
 
-  h += '<h2>By source</h2><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
+  // Source is the link they followed; client is the app that rendered it. They
+  // are separate columns because they answer different questions and the tag
+  // cannot answer the second one — see visitClientSql in the worker.
+  //
+  // "Left under 3s" and "Avg dwell" are both computed over visits that
+  // reported a leave, which is a smaller population than Visits: a tab killed
+  // outright never fires the beacon. Showing the count alone invited reading
+  // it against Visits, which understates the bounce rate by however many
+  // visits went unreported — so the denominator is now a column of its own and
+  // the percentage is taken against it.
+  h += '<h2>By source and client</h2><p class="muted" style="margin:0 0 8px">' +
+       'One row per visit, not per logged event. <b>Source</b> is the utm tag on ' +
+       'the link; <b>client</b> is the app that actually rendered the page, read ' +
+       'from the user-agent. A bio link tagged <code>?utm_source=ig</code> reads ' +
+       '&ldquo;ig&rdquo; even when Facebook&rsquo;s in-app browser opened it, so ' +
+       'trust the client column for that question. <b>Reported a dwell</b> is the ' +
+       'denominator for the two columns after it &mdash; visits whose tab was ' +
+       'killed outright never report one and cannot be counted either way.</p>' +
+       '<div class="wrap"><table class="sortable"><tr><th>Source</th><th>Client</th>' +
        '<th data-type="num" data-sorted="desc">Visits</th>' +
        '<th data-type="num">Saw the app</th><th data-type="num">Gave up loading</th>' +
        '<th data-type="num">Avg load</th>' +
+       '<th data-type="num">Reported a dwell</th>' +
        '<th data-type="num">Left under 3s</th><th data-type="num">Avg dwell</th></tr>';
   for (const r of d.bySource) {
     const gaveUp = r.visits - (r.saw_app || 0);
-    h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+    const known = r.with_duration || 0;
+    const bounced = r.bounced_under_3s || 0;
+    const bouncePct = known
+      ? ' <span class="muted">(' + Math.round(100 * bounced / known) + '%)</span>'
+      : '';
+    // No leave rows at all means the dwell columns have nothing behind them;
+    // an em dash says so rather than letting a 0 read as "nobody bounced".
+    h += '<tr><td>' + esc(r.source) + '</td><td>' + esc(r.client || 'unknown') +
+         '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
          '</td><td class="num"' + sv(r.saw_app || 0) + '>' + (r.saw_app || 0) +
          '</td><td class="num"' + sv(gaveUp) + '>' + gaveUp +
          '</td><td class="num"' + sv(r.avg_load_ms) + '>' + dur(r.avg_load_ms) +
-         '</td><td class="num"' + sv(r.bounced_under_3s || 0) + '>' + (r.bounced_under_3s || 0) +
+         '</td><td class="num"' + sv(known) + '>' + known +
+         ' <span class="muted">of ' + r.visits + '</span>' +
+         '</td><td class="num"' + sv(known ? bounced : null) + '>' +
+         (known ? bounced + bouncePct : '<span class="muted">&mdash;</span>') +
          '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) + '</td></tr>';
   }
-  if (!d.bySource.length) h += '<tr><td colspan="7" class="muted">No visits yet.</td></tr>';
+  if (!d.bySource.length) h += '<tr><td colspan="9" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
   // Each day drills into the sessions that made up its count. Same
@@ -3945,7 +4101,7 @@ async function render(out) {
 
   h += '<h2>Recent arrivals</h2><div class="wrap"><table class="sortable">' +
        '<tr><th data-sorted="desc">When (UTC)</th><th>Path</th>' +
-       '<th>Source</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
+       '<th>Source</th><th>Client</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
        '<th data-type="num">Dwell</th>' +
        '<th data-type="num">Ticks</th><th data-nosort>Chat</th></tr>';
   for (const r of d.recent) {
@@ -3960,7 +4116,7 @@ async function render(out) {
         (r.ticks || 0) + '</span>'
       : '<span class="muted">—</span>';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
-         '</td><td>' + esc(r.source) + '</td><td>' +
+         '</td><td>' + esc(r.source) + '</td><td>' + esc(r.client || 'unknown') + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
@@ -3970,9 +4126,9 @@ async function render(out) {
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="9"></td></tr>';
+         '" style="display:none"><td colspan="10"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="9" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="10" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);
@@ -4061,7 +4217,13 @@ ${sortableTableCss()}
   <div class="wrap"><table id="src" class="sortable"><thead><tr><th>Source</th><th class="num" data-type="num" data-sorted="desc">Visits</th></tr></thead><tbody></tbody></table></div>
 
   <h2>By character</h2>
-  <div class="wrap"><table id="chr" class="sortable"><thead><tr><th>Character</th><th class="num" data-type="num" data-sorted="desc">Visits</th><th class="num" data-type="num">Conversations</th><th class="num" data-type="num">Bad links</th></tr></thead><tbody></tbody></table></div>
+  <p class="muted" style="margin:0 0 8px;max-width:80ch">
+     <b>People who chatted</b> counts distinct real user ids that messaged this
+     character in the same window, test ids excluded. It is deliberately not
+     called a conversion rate: campaign-link arrivals carry no user or visit id,
+     so there is no way to tell that the person who messaged is the person who
+     arrived through the link. Two counts over one window, read side by side.</p>
+  <div class="wrap"><table id="chr" class="sortable"><thead><tr><th>Character</th><th class="num" data-type="num" data-sorted="desc">Link hits</th><th class="num" data-type="num">People who chatted</th><th class="num" data-type="num">Bad links</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Recent arrivals</h2>
   <div class="wrap"><table id="rec" class="sortable"><thead><tr><th data-sorted="desc">When (UTC)</th><th>Character</th><th>Source</th><th>Medium</th><th>Campaign</th></tr></thead><tbody></tbody></table></div>
@@ -4093,7 +4255,7 @@ async function render() {
     || '<tr><td colspan="2" class="muted">No visits yet.</td></tr>';
   document.querySelector('#chr tbody').innerHTML = (d.byCharacter || [])
     .map(r => '<tr><td>' + esc(r.character_id || '(none)') + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
-      '</td><td class="num"' + sv(r.conversations ?? 0) + '>' + (r.conversations ?? 0) +
+      '</td><td class="num"' + sv(r.chatters ?? 0) + '>' + (r.chatters ?? 0) +
       '</td><td class="num ' + (r.unknown_hits ? 'warn' : 'muted') + '"' + sv(r.unknown_hits || 0) + '>' +
       (r.unknown_hits || 0) + '</td></tr>').join('')
     || '<tr><td colspan="4" class="muted">No visits yet.</td></tr>';
@@ -4168,6 +4330,10 @@ function adminLogsPageHtml() {
   .summary { font-size: 12px; color: #9a9aa5; margin-bottom: 10px; min-height: 16px; }
   .summary b { color: #e6e6ea; font-weight: 600; }
   .summary .sep { color: #3a3a45; margin: 0 8px; }
+  /* The "N test ids hidden" note. Every other admin page defines .muted and
+     this one used it without ever declaring it, so the one line on the page
+     whose job is to read as an aside rendered at full strength instead. */
+  .muted { color: #6b6b78; }
 
   /* Transcript view */
   #t-meta { color: #9a9aa5; font-size: 13px; margin-bottom: 8px; }
@@ -4981,6 +5147,9 @@ ${visitTimelineJs()}
     }
     if (state.character) sp.set("character", state.character);
     if (state.q) sp.set("q", state.q);
+    // Carried so the file matches the table it was taken from. Without it the
+    // export hid nothing while the page hid test ids.
+    if (state.includeTest) sp.set("include_test", "1");
     window.location = "/api/admin/export?" + sp.toString();
   });
 
