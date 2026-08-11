@@ -441,6 +441,89 @@ export default {
             });
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/first30") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminFirst30PageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        // The first thirty seconds, at the resolution they were actually
+        // recorded in.
+        //
+        // Every screen_ping is its own timestamped row, 500ms apart for the
+        // first ten seconds and 3s apart to 28s. The dwell buckets on the
+        // visits page reduce that to COUNT(*) and then to five columns, which
+        // is where the detail goes: "left in 5-15s" covers eleven ticks and
+        // two scripted questions. This returns the survival curve instead —
+        // how many were still on screen at each tick — which is the same rows,
+        // un-thrown-away, and works retroactively on everything already
+        // logged.
+        if (request.method === "GET" && url.pathname === "/api/admin/first30") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            const days = Math.min(
+                Math.max(parseInt(url.searchParams.get("days") || "2", 10) || 2, 1), 90);
+            // The developer's own country, excluded by default because the
+            // opening brief's baselines were measured that way and a handful of
+            // long local sessions visibly bend a curve this small.
+            const exclude = (url.searchParams.get("exclude_country") ?? "TH").toUpperCase();
+            const character = url.searchParams.get("character") || "";
+
+            try {
+                const rows = await db.prepare(`
+                    WITH pings AS (
+                        SELECT visit_id, COUNT(*) AS ticks
+                        FROM site_visits
+                        WHERE event = 'screen_ping'
+                        GROUP BY visit_id
+                    ),
+                    opens AS (
+                        SELECT a.source AS source,
+                               COALESCE(p.ticks, 0) AS ticks,
+                               (SELECT COUNT(*) FROM site_visits e
+                                 WHERE e.visit_id = a.visit_id
+                                   AND e.event IN ('input_typed','starter_tap','first_message')
+                               ) > 0 AS engaged,
+                               -- Measured, not inferred. The 'hide' rows are
+                               -- real visibilitychange events, so a visit that
+                               -- was backgrounded says so rather than being
+                               -- guessed at from a tick span that ran longer
+                               -- than its count should allow.
+                               (SELECT COUNT(*) FROM site_visits h
+                                 WHERE h.visit_id = a.visit_id
+                                   AND h.event = 'hide') > 0 AS backgrounded
+                        FROM site_visits a
+                        LEFT JOIN pings p ON p.visit_id = a.visit_id
+                        WHERE a.event = 'arrive'
+                          AND a.created_at >= datetime('now', ?1)
+                          AND (?2 = '' OR IFNULL(a.country,'') <> ?2)
+                          AND EXISTS (
+                              SELECT 1 FROM site_visits t
+                               WHERE t.visit_id = a.visit_id
+                                 AND t.event = 'character_tap'
+                                 AND (?3 = '' OR t.detail = ?3))
+                    )
+                    SELECT source,
+                           ticks,
+                           COUNT(*) AS visits,
+                           SUM(engaged) AS engaged,
+                           SUM(backgrounded) AS paused
+                    FROM opens
+                    GROUP BY source, ticks
+                    ORDER BY source, ticks
+                `).bind(`-${days} days`, exclude, character).all();
+
+                return jsonResponse(buildFirst30(rows.results || [], days, exclude, character));
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/admin/sessions") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -3689,6 +3772,13 @@ function adminIndexPageHtml() {
      traffic by source.</div>
 </a>
 
+<a class="card" href="/admin/first30">
+  <div class="t">First 30 seconds <span class="em">tick by tick</span></div>
+  <div class="d">The survival curve for the chat screen at the resolution it was
+     recorded in — 500ms steps for the first ten seconds — with the script's own
+     questions marked, so a drop can be read against the line that caused it.</div>
+</a>
+
 <a class="card" href="/admin/referrals">
   <div class="t">Campaigns <span class="em">/c/ links only</span></div>
   <div class="d">Server-side record of character link hits. Fires even with no
@@ -4128,6 +4218,180 @@ if (DAY) {
 }
 load();
 </script></body></html>`;
+}
+
+/// Where the v2 Odysseus script asks its questions, in seconds from the chat
+/// screen opening. Measured on the real widget under a virtual clock — see
+/// docs/odysseus-v2-handoff-2026-08-10.md. Only the three that fall inside the
+/// 28s ping ceiling are listed; the script itself runs to 125s.
+///
+/// Restated here rather than derived: the pacing constants live in Dart and
+/// the worker cannot read them. An annotation that drifted silently would be
+/// worse than one that has to be updated deliberately.
+const V2_QUESTION_BEATS = [
+    { id: "P01", seconds: 6.2 },
+    { id: "P02", seconds: 15.4 },
+    { id: "P03", seconds: 26.8 },
+];
+
+/// Groups the per-(source, tick) counts into one survival curve per source,
+/// plus one for everything together.
+function buildFirst30(rows, days, exclude, character) {
+    const bySource = new Map();
+    for (const r of rows) {
+        const key = r.source || "unknown";
+        if (!bySource.has(key)) bySource.set(key, []);
+        bySource.get(key).push(r);
+    }
+    const sources = [...bySource.entries()]
+        .map(([source, list]) => first30Curve(source, list))
+        .sort((a, b) => b.opens - a.opens);
+
+    return {
+        days,
+        exclude_country: exclude || null,
+        character: character || null,
+        max_ticks: SCREEN_PING_MAX_TICKS,
+        beats: V2_QUESTION_BEATS.map((b) => ({
+            ...b,
+            tick: screenPingTicksAt(b.seconds),
+        })),
+        overall: first30Curve("all sources", rows),
+        sources,
+    };
+}
+
+/// Of everyone who opened a character, how many were still pinging at each
+/// tick.
+///
+/// Built by accumulating from the last tick down: a visit that recorded N
+/// ticks was necessarily present at every tick up to N, so the count at tick T
+/// is simply the number of visits whose total is T or more. Tick 0 is every
+/// chat open, which is what the shares are a fraction of.
+function first30Curve(source, rows) {
+    const byTick = new Map();
+    let opens = 0;
+    let engaged = 0;
+    let paused = 0;
+    for (const r of rows) {
+        const t = r.ticks | 0;
+        byTick.set(t, (byTick.get(t) || 0) + r.visits);
+        opens += r.visits;
+        engaged += r.engaged || 0;
+        paused += r.paused || 0;
+    }
+
+    const points = [];
+    let atOrAbove = 0;
+    for (let t = SCREEN_PING_MAX_TICKS; t >= 0; t--) {
+        atOrAbove += byTick.get(t) || 0;
+        points.push({
+            tick: t,
+            seconds: t === 0 ? 0 : Number(screenPingSeconds(t).toFixed(1)),
+            still_here: atOrAbove,
+            share: opens ? Number((atOrAbove / opens).toFixed(4)) : 0,
+        });
+    }
+    points.reverse();
+    return { source, opens, engaged, paused, points };
+}
+
+function adminFirst30PageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — First 30 seconds</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #14101a; color: #eee; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #999; margin: 0 0 20px; max-width: 70ch; }
+  select { background: #241d2e; color: #eee; border: 1px solid #443; padding: 6px 10px;
+           border-radius: 6px; margin-bottom: 18px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 28px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid #2c2438; }
+  th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 15px; color: #b39ddb; margin: 26px 0 8px; }
+  .muted { color: #777; }
+  .wrap { overflow-x: auto; }
+  .bar { display: inline-block; height: 11px; background: #7e57c2; border-radius: 2px;
+         vertical-align: middle; min-width: 1px; }
+  tr.beat td { background: #1d1730; }
+  .beatlabel { color: #4ADE80; font-weight: 700; }
+  .drop { color: #ef9a9a; }
+</style></head><body>
+<p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a></p>
+<h1>First 30 seconds</h1>
+<p class="sub">One row per screen_ping tick — 500ms apart for the first ten
+   seconds, 3s apart after that — showing how many of the visits that opened a
+   character were still on screen at that moment. This is the same data the
+   visits page reduces to five dwell buckets, at the resolution it was recorded
+   in. Green rows are where the script asks a question. The drop column is how
+   many left during that tick.</p>
+<select id="days" onchange="load()">
+  <option value="1">Last 24 hours</option>
+  <option value="2" selected>Last 2 days</option>
+  <option value="7">Last 7 days</option>
+  <option value="30">Last 30 days</option>
+</select>
+<div id="out">Loading…</div>
+<script>
+async function load() {
+  var days = document.getElementById('days').value;
+  var out = document.getElementById('out');
+  out.textContent = 'Loading…';
+  var r = await fetch('/api/admin/first30?days=' + days);
+  if (!r.ok) { out.textContent = 'Failed: ' + r.status; return; }
+  var d = await r.json();
+  if (d.error) { out.textContent = d.error; return; }
+  out.innerHTML = '';
+
+  var beatAt = {};
+  (d.beats || []).forEach(function (b) { beatAt[b.tick] = b; });
+
+  var groups = [d.overall].concat(d.sources || []);
+  groups.forEach(function (g) {
+    if (!g || !g.opens) return;
+    var h = document.createElement('h2');
+    h.textContent = g.source + ' — ' + g.opens + ' chat opens, ' +
+      g.engaged + ' engaged' +
+      (g.paused ? ', ' + g.paused + ' look backgrounded' : '');
+    out.appendChild(h);
+
+    var wrap = document.createElement('div');
+    wrap.className = 'wrap';
+    var t = document.createElement('table');
+    t.innerHTML = '<thead><tr><th>At</th><th>Script</th>' +
+      '<th data-type="num">Still here</th><th data-type="num">Share</th>' +
+      '<th data-type="num">Left here</th><th></th></tr></thead>';
+    var tb = document.createElement('tbody');
+
+    g.points.forEach(function (p, i) {
+      var prev = i > 0 ? g.points[i - 1].still_here : p.still_here;
+      var lost = prev - p.still_here;
+      var beat = beatAt[p.tick];
+      var tr = document.createElement('tr');
+      if (beat) tr.className = 'beat';
+      tr.innerHTML =
+        '<td>' + p.seconds.toFixed(1) + 's</td>' +
+        '<td class="beatlabel">' + (beat ? beat.id + ' asks' : '') + '</td>' +
+        '<td class="num">' + p.still_here + '</td>' +
+        '<td class="num">' + Math.round(p.share * 1000) / 10 + '%</td>' +
+        '<td class="num ' + (lost ? 'drop' : 'muted') + '">' + (lost || '') + '</td>' +
+        '<td><span class="bar" style="width:' + (p.share * 240).toFixed(1) + 'px"></span></td>';
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    wrap.appendChild(t);
+    out.appendChild(wrap);
+  });
+
+  if (!(d.sources || []).length) out.textContent = 'No chat opens in this window.';
+}
+load();
+</script>
+</body></html>`;
 }
 
 function adminVisitsPageHtml() {
