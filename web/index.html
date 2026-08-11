@@ -321,9 +321,19 @@
       });
     };
 
-    // Viewport width is only meaningful at arrival: it is what the visitor
-    // actually saw, before any rotation or window resize.
-    send('arrive', { viewportW: window.innerWidth || undefined });
+    // Viewport is only meaningful at arrival: it is what the visitor actually
+    // saw, before any rotation or window resize.
+    //
+    // Height matters as much as width and for a sharper reason. The
+    // quick-reply strip drops from three prompts to two below 720 logical
+    // pixels (_shortScreenHeight in chat_screen.dart), and an in-app browser
+    // spends a good part of a phone's height on its own chrome — so whether a
+    // visitor was offered three options or two is decided here, and without
+    // this we cannot tell which of them saw what.
+    send('arrive', {
+      viewportW: window.innerWidth || undefined,
+      viewportH: window.innerHeight || undefined
+    });
 
     var left = false;
     function leave() {

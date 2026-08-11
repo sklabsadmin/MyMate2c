@@ -355,11 +355,21 @@ export default {
                 GROUP BY a.source ORDER BY arrived DESC
             `).bind(since).all();
 
+            // detail is "<character>" on most events but "<character>#..." on
+            // the ones that carry a position too (screen_ping's script turn and
+            // strip set, strip_rotate's set index). Grouping on the raw column
+            // would split one character into a row per distinct position and
+            // bury the table in noise, so the character is taken as the part
+            // before the first '#'. Rows written before those events carried a
+            // suffix have no '#' and pass through unchanged.
             const characters = await db.prepare(`
-                SELECT detail AS character_id, event, COUNT(*) AS n
+                SELECT CASE WHEN instr(detail, '#') > 0
+                            THEN substr(detail, 1, instr(detail, '#') - 1)
+                            ELSE detail END AS character_id,
+                       event, COUNT(*) AS n
                 FROM site_visits
                 WHERE detail IS NOT NULL AND created_at >= datetime('now', ?)
-                GROUP BY detail, event ORDER BY n DESC
+                GROUP BY character_id, event ORDER BY n DESC
             `).bind(since).all();
 
             // How long the "opened a character, never engaged" population
@@ -483,7 +493,7 @@ export default {
             const sessions = await db.prepare(`
                 SELECT a.visit_id,
                        MIN(a.created_at) AS created_at,
-                       a.source, a.path, a.country, a.viewport_w,
+                       a.source, a.path, a.country, a.viewport_w, a.viewport_h,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT MAX(l.duration_ms) FROM site_visits l
@@ -1907,9 +1917,14 @@ async function recordSiteVisit(raw, request, env) {
     // realised they could reply from those who started a message and
     // abandoned it, and they say which of the two routes into the
     // conversation people actually take.
+    // An event not on this list is coerced to "arrive" below, so a new client
+    // event that nobody adds here does not go missing — it silently inflates
+    // the arrival count instead, which is worse. Add the name here in the same
+    // change that starts sending it.
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
-        "first_message", "login_gate", "send_failed", "screen_ping", "leave",
+        "first_message", "login_gate", "send_failed", "screen_ping",
+        "strip_rotate", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -1953,6 +1968,7 @@ async function recordSiteVisit(raw, request, env) {
     // other event.
     const failureReason = String(payload.failureReason || "").slice(0, 60) || null;
     const viewportW = Number(payload.viewportW);
+    const viewportH = Number(payload.viewportH);
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -1960,8 +1976,8 @@ async function recordSiteVisit(raw, request, env) {
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
                 country, colo, duration_ms, detail, app_user_id,
-                viewport_w, failure_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewport_w, viewport_h, failure_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1979,6 +1995,7 @@ async function recordSiteVisit(raw, request, env) {
             detail,
             appUserId,
             Number.isFinite(viewportW) && viewportW > 0 ? Math.round(viewportW) : null,
+            Number.isFinite(viewportH) && viewportH > 0 ? Math.round(viewportH) : null,
             failureReason
         ).run();
     } catch (error) {
@@ -3917,7 +3934,18 @@ function renderVisitDetail(cell, detail, messages) {
     ['Campaign', campaign],
     ['Referrer', context.referer],
     ['Country', [context.country, context.colo].filter(Boolean).join(' · ')],
-    ['Viewport', context.viewport_w ? context.viewport_w + 'px wide' : ''],
+    // Height decides how much of the quick-reply strip they were shown: below
+    // 720 logical pixels it drops from three prompts to two. Called out rather
+    // than left as a number, because "they tapped nothing" reads differently
+    // when one of the three options was never on screen.
+    ['Viewport', context.viewport_w
+      ? context.viewport_w + '×' + (context.viewport_h || '?') + 'px' +
+        (context.viewport_h
+          ? (context.viewport_h < 720
+              ? ' — short: strip showed 2 of 3 prompts'
+              : ' — strip showed all 3 prompts')
+          : '')
+      : ''],
     ['User agent', context.user_agent],
   ].filter(([, value]) => value);
 

@@ -1,0 +1,12 @@
+-- Viewport height at arrival.
+--
+-- Width alone cannot answer the question that matters about the quick-reply
+-- strip: _StarterPrompts in chat_screen.dart drops from three prompts to two
+-- when the screen is under 720 logical pixels tall, so on a short viewport a
+-- third of the strip is never shown. An iPhone 13 is 844pt, but an in-app
+-- browser's chrome takes a chunk of that, and without the height we cannot
+-- tell whether a visitor who tapped nothing was offered three options or two.
+--
+-- Nullable and not backfilled: rows written before the client started sending
+-- it genuinely do not know, and a default would invent a viewport nobody had.
+ALTER TABLE site_visits ADD COLUMN viewport_h INTEGER;
