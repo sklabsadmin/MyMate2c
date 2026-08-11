@@ -186,6 +186,89 @@ SCRIPT = f'''  <script id="splash-screen-script">
     function removeSplashFromWeb() {{}}
   </script>'''
 
+CHIME = r'''  <!-- Quick-reply chime.
+       Three ascending notes as the quick-reply rows light up, then the chord
+       they spell as the instruction flashes. Synthesised with oscillators
+       rather than shipped as audio files: the build is already 52MB and 8% of
+       Instagram arrivals give up before it finishes loading, so four notes are
+       not worth a single kilobyte of payload.
+
+       Lives here rather than in Dart for the same reason the beacon does, plus
+       one of its own: unlocking audio has to happen inside a real user-gesture
+       task, and that is far easier to guarantee from a plain DOM listener than
+       from inside the Flutter engine's event dispatch.
+
+       Silent on every failure. A chime must never be able to break a tap. -->
+  <script>
+  (function () {
+    var ctx = null;
+
+    // A major triad climbing, then the whole triad plus its octave as the
+    // resolution — so the fourth sound is heard as the answer to the three
+    // before it rather than as a fourth ding.
+    var STEPS = [1046.50, 1318.51, 1567.98];
+    var FINAL = [1046.50, 1318.51, 1567.98, 2093.00];
+
+    function ensure() {
+      if (ctx) return ctx;
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      try { ctx = new AC(); } catch (e) { return null; }
+      return ctx;
+    }
+
+    // Browsers refuse to play audio until the visitor has interacted with the
+    // page, and on iOS the context must be resumed inside the gesture's own
+    // task rather than any time after it. The character tap that opens the
+    // chat is that gesture, and it lands well before the strip ever chimes.
+    function unlock() {
+      var c = ensure();
+      if (c && c.state === 'suspended') { try { c.resume(); } catch (e) {} }
+    }
+    ['pointerdown', 'touchend', 'click'].forEach(function (name) {
+      window.addEventListener(name, unlock, { capture: true, passive: true });
+    });
+
+    // Exponential ramps, never linear, and never to a true zero: gain of 0 is
+    // undefined for exponentialRampToValueAtTime, and a linear cut to silence
+    // clicks audibly at these frequencies.
+    function voice(c, freq, at, peak, decay) {
+      var osc = c.createOscillator();
+      var gain = c.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(peak, at + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+      osc.connect(gain);
+      gain.connect(c.destination);
+      osc.start(at);
+      osc.stop(at + decay + 0.02);
+    }
+
+    // step 0-2 are the rows, 3 is the instruction.
+    window.mythosChime = function (step) {
+      try {
+        var c = ensure();
+        if (!c || c.state !== 'running') return;
+        var at = c.currentTime;
+        if (step === 3) {
+          for (var i = 0; i < FINAL.length; i++) {
+            voice(c, FINAL[i], at + i * 0.045, 0.085, 0.90);
+          }
+          return;
+        }
+        var f = STEPS[step];
+        if (!f) return;
+        voice(c, f, at, 0.12, 0.45);
+      } catch (e) {
+        // Deliberately swallowed.
+      }
+    };
+  })();
+  </script>
+'''
+
 BEACON = r'''  <!-- Arrival/exit beacon.
        Runs here, in the document head, rather than inside the Flutter app:
        main.dart.js is ~3MB, and a visitor arriving from an Instagram in-app
@@ -300,6 +383,10 @@ s = re.sub(r'  <!-- Arrival/exit beacon\..*?</script>\n', '', s, count=1, flags=
 if '</head>' not in s:
     sys.exit("no </head> to anchor the visit beacon to")
 s = s.replace('</head>', BEACON + '</head>', 1)
+# Same again for the chime, for the same reason: a flutter_native_splash:create
+# regenerates index.html from scratch and would otherwise drop it silently.
+s = re.sub(r'  <!-- Quick-reply chime\..*?</script>\n', '', s, count=1, flags=re.S)
+s = s.replace('</head>', CHIME + '</head>', 1)
 
 io.open(INDEX, "w", encoding="utf-8").write(s)
-print(f"patched {INDEX}: backdrop {BACKDROP}, no dwell (lifts on first paint), visit beacon restored")
+print(f"patched {INDEX}: backdrop {BACKDROP}, no dwell (lifts on first paint), visit beacon + chime restored")

@@ -13,6 +13,7 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/analytics.dart';
+import '../../../core/services/chime.dart';
 import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../character/presentation/character_profile_screen.dart';
@@ -2663,6 +2664,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   characterName: _characterDisplayName,
                   prompts: _quickReplies ?? _starterPrompts,
                   onTap: _sendStarter,
+                  teach: !_userHasSent,
                   // Only offered where there is actually a portrait to send.
                   onPhoto: (widget.characterImage?.isNotEmpty ?? false)
                       ? () => _sendStarter(_photoPrompt)
@@ -2918,10 +2920,25 @@ class _StarterPrompts extends StatefulWidget {
   /// portrait to send.
   final VoidCallback? onPhoto;
 
+  /// Whether the strip still has to teach itself.
+  ///
+  /// The staggered entrance, the green pass down the rows and the flashing
+  /// instruction all exist to get a first tap out of someone who has not
+  /// realised the rows are tappable. Once they have sent anything — tapped a
+  /// row or typed their own — they have demonstrably understood, and running
+  /// the sequence at every subsequent question is nagging rather than
+  /// teaching. It stops for good at that point.
+  ///
+  /// Driven by `_userHasSent`, which is restored from history on mount, so a
+  /// returning visitor is not taught again either. Same signal already retires
+  /// the [_PulsingHighlight] on the message box.
+  final bool teach;
+
   const _StarterPrompts({
     required this.characterName,
     required this.prompts,
     required this.onTap,
+    required this.teach,
     this.onPhoto,
   });
 
@@ -2930,14 +2947,94 @@ class _StarterPrompts extends StatefulWidget {
 }
 
 class _StarterPromptsState extends State<_StarterPrompts>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _controller;
+  late final AnimationController _attention;
+  late final AnimationController _flash;
 
   /// Below this the screen is treated as short (an older 640-tall phone, or
-  /// anything with the keyboard up) and one prompt is dropped so the rest are
-  /// shown whole. A row cut in half by the panel edge looks broken, which is
-  /// the opposite of what the strip is for.
+  /// anything with the keyboard up) and the hint line is dropped so all three
+  /// prompts are shown whole. A row cut in half by the panel edge looks
+  /// broken, which is the opposite of what the strip is for.
   static const double _shortScreenHeight = 720;
+
+  /// Below this there is not room for three prompts either, and the third one
+  /// goes as well. Separate from [_shortScreenHeight] because dropping a
+  /// prompt and dropping the hint are very different costs — see the note in
+  /// [build] on which yields first.
+  static const double _veryShortScreenHeight = 560;
+
+  /// The rows arrive one after another, and a single highlight then travels
+  /// down them once, on each new set.
+  ///
+  /// Why this shape rather than a steady glow: the strip is on screen from
+  /// t=0 and never moves, while bubbles keep arriving above it, so it reads as
+  /// furniture — 58% of visitors who open a character stay past five seconds
+  /// and tap nothing (`docs/odysseus-opening-brief-2026-08-10.md` §3.3 names
+  /// this as the untested lever). Motion is the fix, but only at the beat
+  /// where the character has stopped talking and just asked something.
+  /// v2 ends every turn on a question, so one pass per set lands roughly every
+  /// ten seconds without ever looping in place.
+  ///
+  /// The two effects are separately switchable on purpose. The brief allows
+  /// one changed variable at a time at this traffic level: set
+  /// [_entranceStagger] to 0 for the old all-at-once fade, or
+  /// [_attentionPasses] to false to drop the highlight, and the other still
+  /// stands on its own.
+  static const bool _attentionPasses = true;
+
+  /// Sound, separable from the light for the same one-variable-at-a-time
+  /// reason as everything else here — and because it is the one part of this
+  /// most visitors will never receive. Audio needs a prior gesture (the
+  /// character tap supplies one), and on iOS the hardware silent switch mutes
+  /// Web Audio outright, which a large share of phone visitors will have on.
+  static const bool _chimes = true;
+  static const Duration _entranceDuration = Duration(milliseconds: 820);
+  static const double _entranceStagger = 0.16;
+  static const double _entranceSpan = 0.55;
+
+  /// The highlight starts after the entrance has settled rather than during
+  /// it. Two things moving on the same three rows is noise; the point of the
+  /// pass is to be the only thing moving once the bubbles have stopped.
+  static const Duration _attentionDuration = Duration(milliseconds: 2400);
+  static const Duration _attentionDelay = Duration(milliseconds: 260);
+
+  /// Each row owns a third of the pass — 800ms — and they do not overlap, so
+  /// the strip lights one, then the next, then the next. Overlapping humps
+  /// read as a single wave washing over the strip; discrete slots read as
+  /// three separate things being pointed at, which is the whole intent.
+  ///
+  /// 800ms rather than the 500 this started at. At 500 the three rows ran
+  /// together into one gesture; the extra 300ms is what makes them read as
+  /// three separate invitations, which is the point of lighting them
+  /// one at a time at all.
+  static const double _glowSlot = 1 / 3;
+
+  /// Within its slot a row rises, holds, then releases, rather than pulsing.
+  /// A sine over 500ms is a blip; the hold is what makes it read as "lit".
+  static const double _glowRamp = 0.3;
+
+  /// The colour a lit row moves to.
+  ///
+  /// Deliberately the same green as [_StarterButton._selectedColor], which
+  /// normally means "this one was sent". They stay apart because selection
+  /// also fills the row, thickens the border and swaps the arrow for a tick,
+  /// none of which the pass does — but if the two ever do get confused, this
+  /// is the constant to pull apart.
+  static const Color _attentionColor = Color(0xFF4ADE80);
+
+  /// The instruction flashes after the three rows have been lit, not during —
+  /// it is the summary of what just happened, so it has to land last.
+  static const Duration _flashDuration = Duration(milliseconds: 1100);
+
+  /// How much bigger the instruction gets at the top of each flash beat.
+  ///
+  /// Applied as a [Transform.scale] rather than an animated `fontSize`: font
+  /// size is a layout property, so growing it re-lays out the row every frame
+  /// and shoves the three prompts below it up and down. The transform paints
+  /// bigger without touching layout, which is the difference between a pop and
+  /// a jitter.
+  static const double _flashGrowth = 0.22;
 
   /// The prompt that has been tapped, held so it can be drawn as chosen.
   String? _selected;
@@ -2975,18 +3072,142 @@ class _StarterPromptsState extends State<_StarterPrompts>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 450),
+      duration: _entranceDuration,
+    );
+    _attention = AnimationController(
+      vsync: this,
+      duration: _attentionDuration,
+    );
+    _flash = AnimationController(
+      vsync: this,
+      duration: _flashDuration,
     );
     // Held back a beat so the strip arrives after the opening line rather than
     // alongside it — it reads as the answer to what the character just asked.
     Future.delayed(const Duration(milliseconds: 900), () {
-      if (mounted) _controller.forward();
+      if (mounted) _runEntrance();
     });
+  }
+
+  /// Fade the rows in, light them one at a time, then flash the instruction.
+  ///
+  /// The whole sequence is ~3.8s. v2's questions land 9.2-12.4s apart, so it
+  /// finishes with room to spare before the next set replaces it and the strip
+  /// still spends most of its life at rest. It also stops for good once
+  /// [_StarterPrompts.teach] goes false.
+  void _runEntrance() {
+    _controller.forward(from: 0);
+    _attention.value = 0;
+    _flash.value = 0;
+    if (!_attentionPasses || !widget.teach) return;
+
+    // Not while a row is mid-confirmation: the tapped row is already drawn as
+    // chosen, and lighting the others would argue with it.
+    Future.delayed(_attentionDelay, () {
+      if (mounted && _selected == null) _attention.forward(from: 0);
+    });
+    Future.delayed(_attentionDelay + _attentionDuration, () {
+      if (mounted && _selected == null) _flash.forward(from: 0);
+    });
+
+    if (!_chimes) return;
+    // The notes ride the same slot boundaries as the glow, derived from the
+    // same two constants, so retuning the pace cannot leave the sound playing
+    // against a row that is no longer lighting.
+    final slot = _attentionDuration * _glowSlot;
+    for (var i = 0; i < 3; i++) {
+      Future.delayed(_attentionDelay + slot * i, () {
+        if (mounted && _selected == null && widget.teach) playChime(i);
+      });
+    }
+    Future.delayed(_attentionDelay + _attentionDuration, () {
+      if (mounted && _selected == null && widget.teach) playChime(3);
+    });
+  }
+
+  /// Entrance for row [i] — a fade and a short rise, offset from the row above
+  /// so the set reads as an enumeration rather than as a panel appearing.
+  Animation<double> _entranceFor(int i) {
+    final begin = (i * _entranceStagger).clamp(0.0, 1.0);
+    return CurvedAnimation(
+      parent: _controller,
+      curve: Interval(
+        begin,
+        (begin + _entranceSpan).clamp(0.0, 1.0),
+        curve: Curves.easeOut,
+      ),
+    );
+  }
+
+  /// How lit row [i] is during the attention pass, 0–1.
+  ///
+  /// One 500ms slot per row, back to back, so the strip lights 1, then 2, then
+  /// 3 and stops — the controller rests at 1.0, where every slot has closed
+  /// and this returns 0 for all rows.
+  ///
+  /// Deliberately not [_PulsingHighlight]'s `repeat(reverse: true)`: that
+  /// marks one persistent target (the message box) and can afford to keep
+  /// breathing. Three rows blinking on a loop is the thing that would look
+  /// cheap.
+  /// Both ramp arguments are clamped rather than trusted. The slot boundaries
+  /// are thirds and the ramp is 0.3, so `1 - local` lands on values like
+  /// 0.30000000000000004 — divided by the ramp that is 1.0000000000000002, and
+  /// [Curve.transform] asserts on anything outside [0, 1].
+  double _glowFor(int i) {
+    if (!_attentionPasses || !widget.teach) return 0;
+    final local = (_attention.value - i * _glowSlot) / _glowSlot;
+    if (local <= 0 || local >= 1) return 0;
+    if (local < _glowRamp) {
+      return Curves.easeOut.transform((local / _glowRamp).clamp(0.0, 1.0));
+    }
+    if (local < 1 - _glowRamp) return 1;
+    return Curves.easeIn.transform(((1 - local) / _glowRamp).clamp(0.0, 1.0));
+  }
+
+  /// How hard the instruction is flashing, 0–1 — two beats, then still.
+  ///
+  /// Two rather than a loop for the same reason the rows do not pulse: a line
+  /// that keeps blinking stops being an instruction and becomes an advert.
+  double get _flashAmount {
+    if (!_attentionPasses || !widget.teach) return 0;
+    final v = _flash.value;
+    if (v <= 0 || v >= 1) return 0;
+    final beat = v * 2;
+    return sin((beat - beat.floorToDouble()) * pi);
+  }
+
+  /// Wraps a row in its own entrance, so the strip animates per row rather
+  /// than as one block.
+  Widget _row(int i, Widget child) {
+    final t = _entranceFor(i);
+    return FadeTransition(
+      opacity: t,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.25),
+          end: Offset.zero,
+        ).animate(t),
+        child: child,
+      ),
+    );
   }
 
   @override
   void didUpdateWidget(_StarterPrompts oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    // The lesson is over — they have sent something, so they know the rows are
+    // tappable. Handled before the prompt check below, because `teach` flips
+    // on the send and the set does not necessarily change with it, and because
+    // both controllers have delayed continuations already queued that would
+    // otherwise play out over the top of the reply now arriving.
+    if (oldWidget.teach && !widget.teach) {
+      _attention.stop();
+      _attention.value = 0;
+      _flash.stop();
+      _flash.value = 0;
+    }
+
     if (listEquals(widget.prompts, oldWidget.prompts)) return;
 
     // A new pause point. Clearing the selection is not cosmetic: this state
@@ -2999,89 +3220,169 @@ class _StarterPromptsState extends State<_StarterPrompts>
     // Fade the new set in, without initState's 900ms hold: that delay is there
     // to let the opening line land first, and the pauses here are only a few
     // seconds apart, so re-using it would leave the strip permanently mid-fade.
-    _controller.forward(from: 0);
+    //
+    // This is also what gives the highlight its cadence. Every v2 turn ends on
+    // a question and each question brings a new set, so the pass re-runs once
+    // per question — roughly every ten seconds — without the strip ever
+    // animating on a loop of its own.
+    _runEntrance();
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _attention.dispose();
+    _flash.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
 
     // Sized against the screen rather than a fixed number of pixels: the strip
     // shares the column with the conversation, and a cap that fits an iPhone
     // eats the whole of a shorter one. Scrollable underneath as a backstop for
     // a prompt that wraps further than expected.
     final screenHeight = MediaQuery.sizeOf(context).height;
-    final short = screenHeight < _shortScreenHeight;
-    final prompts =
-        short ? widget.prompts.take(2).toList() : widget.prompts.toList();
 
-    return FadeTransition(
-      opacity: fade,
-      child: SlideTransition(
-        position: Tween<Offset>(
-          begin: const Offset(0, 0.25),
-          end: Offset.zero,
-        ).animate(fade),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: screenHeight * 0.32),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.touch_app_outlined,
-                        size: 15,
-                        color: theme.primaryColor,
-                      ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          'Tap to reply to ${widget.characterName}, '
-                          'or type your own',
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.lato(
-                            color: Colors.white.withOpacity(0.75),
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
+    // What yields on a short screen, and why the order changed.
+    //
+    // This used to drop the third prompt and keep the hint line. That is the
+    // wrong way round: the prompt is the functional element and the hint is
+    // commentary on it. The screens that trip this threshold are mostly phones
+    // with the keyboard up, which is exactly when a one-tap reply is worth
+    // most — and v2 bets the whole opening on one-tap answers, so hiding a
+    // third of them there defeats the change it was built for.
+    //
+    // So the hint yields first, and only below [_veryShortScreenHeight], where
+    // there is genuinely no room for both, does the third prompt still go.
+    final showHint = screenHeight >= _shortScreenHeight;
+    final prompts = screenHeight < _veryShortScreenHeight
+        ? widget.prompts.take(2).toList()
+        : widget.prompts.toList();
+
+    // Row 0 is the hint when it is shown, so the prompts start one later and
+    // the highlight begins on the first thing that can actually be tapped.
+    final firstPromptRow = showHint ? 1 : 0;
+
+    // "Choose a question" is only true for some sets, so it is not hardcoded.
+    //
+    // v2's twelve scripted sets are answer-shaped — "Knowing when to let go.",
+    // "I like to improvise." — and only the cold-safe fallback sets 13-16 are
+    // questions. Telling someone to choose a question above three statements
+    // is the kind of small wrongness that makes an interface feel untrustworthy
+    // exactly when it is asking for a tap. Same test the fallback pool uses
+    // (_ChatScreenState._setStandsAlone): every entry ending in '?'.
+    final asksQuestions =
+        prompts.every((p) => p.trimRight().endsWith('?'));
+    final directive = asksQuestions ? 'Choose a question' : 'Choose your reply';
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: screenHeight * 0.32),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showHint)
+              _row(
+                0,
+                AnimatedBuilder(
+                  animation: _flash,
+                  builder: (context, _) {
+                    final f = _flashAmount;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          // Only the instruction grows. The photo pill sits
+                          // outside the transform so it is not swept along by
+                          // a flash that is not about it.
+                          Flexible(
+                            child: Transform.scale(
+                              scale: 1 + _flashGrowth * f,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.touch_app_outlined,
+                                    size: 15,
+                                    color: Color.lerp(theme.primaryColor,
+                                        _attentionColor, f),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text.rich(
+                                      TextSpan(children: [
+                                        TextSpan(
+                                          text: directive,
+                                          style: GoogleFonts.lato(
+                                            color: Color.lerp(
+                                                Colors.white.withOpacity(0.75),
+                                                _attentionColor,
+                                                f),
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        // Kept, and kept uncoloured: typing is
+                                        // the other way through and should stay
+                                        // offered, but it is not what the flash
+                                        // is arguing for.
+                                        TextSpan(
+                                          text: ' · or type your own',
+                                          style: GoogleFonts.lato(
+                                            color:
+                                                Colors.white.withOpacity(0.55),
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ]),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
+                          if (widget.onPhoto != null) ...[
+                            const SizedBox(width: 14),
+                            _PhotoRequestButton(
+                              characterName: widget.characterName,
+                              onTap: widget.onPhoto!,
+                            ),
+                          ],
+                        ],
                       ),
-                      if (widget.onPhoto != null) ...[
-                        const SizedBox(width: 8),
-                        _PhotoRequestButton(
-                          characterName: widget.characterName,
-                          onTap: widget.onPhoto!,
-                        ),
-                      ],
-                    ],
-                  ),
+                    );
+                  },
                 ),
-                for (final prompt in prompts)
-                  Padding(
+              ),
+            for (var i = 0; i < prompts.length; i++)
+              _row(
+                firstPromptRow + i,
+                AnimatedBuilder(
+                  animation: _attention,
+                  builder: (context, _) => Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: _StarterButton(
-                      label: prompt,
-                      selected: _selected == prompt,
-                      onTap: () => _select(prompt),
+                      label: prompts[i],
+                      selected: _selected == prompts[i],
+                      // Indexed off the prompts rather than the row, so the
+                      // highlight starts on the first thing that can actually
+                      // be tapped instead of on the hint above them.
+                      glow: _glowFor(i),
+                      onTap: () => _select(prompts[i]),
                     ),
                   ),
-              ],
-            ),
-          ),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -3153,6 +3454,14 @@ class _StarterButton extends StatelessWidget {
   /// a mis-tap rather than as "that was sent".
   final bool selected;
 
+  /// How lit this row is by the strip's one-shot attention pass, 0–1.
+  ///
+  /// Lifts the existing accent border and adds a soft shadow behind it rather
+  /// than introducing a new colour: at rest the row is unchanged, and at full
+  /// the difference is about the same as a hover. It has to be noticed at the
+  /// edge of vision without ever reading as a separate element that arrived.
+  final double glow;
+
   /// The confirmation colour. Green rather than the accent purple because it
   /// has to mean something different from the resting border, which is already
   /// accent-coloured — the same hue at a higher opacity would read as a hover.
@@ -3162,11 +3471,18 @@ class _StarterButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.selected = false,
+    this.glow = 0,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    // The confirmation wins over the pass. A row that has just been tapped is
+    // already saying something with colour, and lighting it accent-purple at
+    // the same time would blur the one piece of feedback that matters.
+    final lit = selected ? 0.0 : glow.clamp(0.0, 1.0);
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 140),
       curve: Curves.easeOut,
@@ -3180,12 +3496,23 @@ class _StarterButton extends StatelessWidget {
                   spreadRadius: 1,
                 ),
               ]
-            : const [],
+            : lit > 0
+                ? [
+                    BoxShadow(
+                      color: _selectedColor.withValues(alpha: 0.26 * lit),
+                      blurRadius: 6 + 12 * lit,
+                    ),
+                  ]
+                : const [],
       ),
       child: Material(
         color: selected
             ? _selectedColor.withValues(alpha: 0.14)
-            : Colors.white.withValues(alpha: 0.07),
+            : Color.lerp(
+                Colors.white.withValues(alpha: 0.07),
+                _selectedColor.withValues(alpha: 0.09),
+                lit,
+              )!,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onTap,
@@ -3198,10 +3525,18 @@ class _StarterButton extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
+                // Accent purple at rest, green at the top of the pass. The
+                // colour change is doing most of the work here — an opacity
+                // lift alone was too easy to miss at the edge of vision, which
+                // is where this has to be caught.
                 color: selected
                     ? _selectedColor
-                    : theme.primaryColor.withOpacity(0.55),
-                width: selected ? 1.6 : 1,
+                    : Color.lerp(
+                        theme.primaryColor.withOpacity(0.55),
+                        _selectedColor.withOpacity(0.95),
+                        lit,
+                      )!,
+                width: selected ? 1.6 : 1 + 0.6 * lit,
               ),
             ),
             child: Row(

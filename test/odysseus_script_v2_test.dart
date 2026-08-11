@@ -57,12 +57,16 @@ const List<String> _coldSafeSets = [
   'What should I ask you that nobody ever does?',
 ];
 
-Future<void> _mountChat(WidgetTester tester) async {
-  // A phone, not flutter_test's default 800x600. _StarterPrompts drops to two
-  // rows below 720 logical pixels, so on the default surface the third quick
-  // reply is legitimately absent and every assertion about a full set fails
-  // for a reason that has nothing to do with the script.
-  tester.view.physicalSize = const Size(1170, 2532); // iPhone 13, 390x844 @3x
+/// [logicalSize] defaults to an iPhone 13 rather than flutter_test's 800x600.
+/// _StarterPrompts thins itself out below 720 logical pixels of height, so on
+/// the default surface the strip is legitimately reduced and every assertion
+/// about a full set fails for a reason that has nothing to do with the script.
+/// The strip's own thresholds are exercised deliberately further down.
+Future<void> _mountChat(
+  WidgetTester tester, {
+  Size logicalSize = const Size(390, 844),
+}) async {
+  tester.view.physicalSize = logicalSize * 3.0;
   tester.view.devicePixelRatio = 3.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -113,6 +117,37 @@ Future<Map<String, int>> _play(
     if (stopWhen != null && stopWhen(lines)) break;
   }
   return arrivals;
+}
+
+/// Whether the instruction line turns green at any point in [window].
+///
+/// Sampled across the window rather than pumped to an exact peak: the flash is
+/// two beats inside a 1.1s controller that starts ~2.7s after the set lands,
+/// and timing a test to that would be flaky for no benefit.
+///
+/// Green is detected as "g channel above r", which holds for any point along
+/// the lerp from the resting white towards the accent green and for neither
+/// endpoint of the resting state.
+Future<bool> _instructionEverGreen(
+  WidgetTester tester, {
+  Duration window = const Duration(seconds: 5),
+  Duration step = const Duration(milliseconds: 50),
+}) async {
+  var elapsed = 0;
+  while (elapsed < window.inMilliseconds) {
+    await tester.pump(step);
+    elapsed += step.inMilliseconds;
+    for (final text in tester.widgetList<Text>(find.byType(Text))) {
+      final span = text.textSpan;
+      if (span is! TextSpan) continue;
+      if (!span.toPlainText().contains('Choose')) continue;
+      final directive = span.children?.first;
+      if (directive is! TextSpan) continue;
+      final c = directive.style?.color;
+      if (c != null && c.g > c.r + 0.02) return true;
+    }
+  }
+  return false;
 }
 
 /// Unmounts the screen and lets the clock run out; flutter_test fails a test
@@ -277,6 +312,119 @@ void main() {
     final lines = await _delivered();
     expect(lines, [_firstLine],
         reason: 'the welcome sequence only runs into an empty chat');
+
+    await _teardown(tester);
+  });
+
+  // What the strip gives up when it runs out of height. The order matters:
+  // v2 bets the opening on one-tap answers, and the screens that run short are
+  // mostly phones with the keyboard up — the worst possible place to hide one
+  // of three replies, which is what this used to do.
+
+  testWidgets('keeps all three replies on a short screen, dropping the hint',
+      (tester) async {
+    // 700 logical px: under the 720 hint threshold, over the 560 prompt one.
+    await _mountChat(tester, logicalSize: const Size(390, 700));
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    await tester.pump(const Duration(milliseconds: 900));
+
+    for (final q in _set01) {
+      expect(find.text(q), findsOneWidget,
+          reason: 'a short screen must not cost a reply');
+    }
+    expect(find.byIcon(Icons.touch_app_outlined), findsNothing,
+        reason: 'the hint yields first, not a prompt');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('drops the third reply only when the screen is very short',
+      (tester) async {
+    await _mountChat(tester, logicalSize: const Size(390, 520));
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    await tester.pump(const Duration(milliseconds: 900));
+
+    final shown = _set01.where((q) => find.text(q).evaluate().isNotEmpty);
+    expect(shown.length, 2,
+        reason: 'below 560 there is room for two prompts and nothing else');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('shows the hint on a full-height screen', (tester) async {
+    await _mountChat(tester);
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    await tester.pump(const Duration(milliseconds: 900));
+
+    expect(find.byIcon(Icons.touch_app_outlined), findsOneWidget);
+    for (final q in _set01) {
+      expect(find.text(q), findsOneWidget);
+    }
+
+    await _teardown(tester);
+  });
+
+  testWidgets('calls the rows answers or questions, to match the set',
+      (tester) async {
+    await _mountChat(tester);
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // Set 1 is answer-shaped — "The Trojan Horse, of course." — and calling
+    // that a question is the wrongness this guards against.
+    expect(find.textContaining('Choose your reply'), findsOneWidget,
+        reason: 'the twelve scripted sets are answers');
+
+    // Tapping interrupts the script and drops to a cold-safe set, every entry
+    // of which really is a question.
+    await tester.tap(find.text(_set01.first));
+    await tester.pump(const Duration(milliseconds: 400));
+    // The same settle the interruption test uses. The fallback set does not
+    // land straight after the send, and a shorter pump reads as wrong copy
+    // rather than as an early look.
+    await tester.pump(const Duration(seconds: 20));
+
+    expect(find.byIcon(Icons.touch_app_outlined), findsOneWidget,
+        reason: 'the strip should survive the send');
+    expect(find.textContaining('Choose a question'), findsOneWidget,
+        reason: 'the cold-safe fallback sets are questions');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('stops teaching the strip once the visitor has tapped once',
+      (tester) async {
+    await _mountChat(tester);
+
+    // Set 1 is on screen from the first frame, so the first flash lands around
+    // 3.6s — inside this window, and before P01's pause advances the set.
+    expect(await _instructionEverGreen(tester), isTrue,
+        reason: 'the strip has to teach itself before the first tap');
+
+    await tester.tap(find.text(_set01.first));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(
+        await _instructionEverGreen(tester,
+            window: const Duration(seconds: 6)),
+        isFalse,
+        reason: 'once they have sent something, the lesson is over for good');
 
     await _teardown(tester);
   });
