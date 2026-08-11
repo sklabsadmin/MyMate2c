@@ -40,12 +40,15 @@ anything meaningful.
 
 ## Step 1 — Apply the migrations to the REMOTE database
 
-Run both, in this order:
+Check what will run, then run it:
 
 ```bash
-npx wrangler d1 execute mymate2_db --remote --file backend/migrations/0008_viewport_height.sql
-npx wrangler d1 execute mymate2_db --remote --file backend/migrations/0009_exit_mode.sql
+npx wrangler d1 migrations list mymate2_db --remote    # expect exactly the two below
+npx wrangler d1 migrations apply mymate2_db --remote
 ```
+
+Applying by file also works and is what this runbook first advised, but it does
+not record the migrations — see the correction below before choosing it.
 
 **This must happen before `npm run deploy`.** `npm run deploy` does NOT apply
 migrations — the deploy script never touches D1.
@@ -54,17 +57,38 @@ Adding nullable columns is invisible to the worker currently running in
 production, which never references them. So there is no window where the live
 site is broken; it is safe to run these minutes or hours before deploying.
 
-### Do NOT use `wrangler d1 migrations apply`
+### CORRECTION (applied 2026-08-11): `wrangler d1 migrations apply` is the right tool
 
-This project has never used wrangler's migration system and has no
-`d1_migrations` tracking table. That command would treat all nine migrations as
-unapplied and re-run them from the start. Migrations 0001–0006 are
-`IF NOT EXISTS` and would no-op, but 0007/0008/0009 are `ALTER TABLE ADD COLUMN`
-and are not idempotent — it would fail partway with "duplicate column name" and
-could leave the schema half-applied.
+This section originally said to avoid `wrangler d1 migrations apply`, on the
+grounds that the project "has never used wrangler's migration system and has no
+`d1_migrations` tracking table", so the command would re-run all nine migrations
+and fail on a duplicate column.
 
-Apply by file, as above. That is how every previous migration on this project
-was applied.
+**The tracking table exists.** It holds all nine prior migrations, 0001 through
+`0008_visit_platform.sql`, which was itself applied through
+`wrangler d1 migrations apply` on 2026-08-10. So the command does not re-run
+anything: it compares filenames against that table and applies only what is
+missing.
+
+The underlying worry was the right one — `ALTER TABLE ADD COLUMN` is not
+idempotent, and half-applying a schema is a bad afternoon. The fix is to *check*
+rather than to avoid the tool:
+
+```bash
+npx wrangler d1 migrations list mymate2_db --remote   # says exactly what will run
+```
+
+Before this deploy that printed exactly two names, `0008_viewport_height.sql`
+and `0009_exit_mode.sql`, which is what then ran. Applying by file also works,
+but leaves those two unrecorded in `d1_migrations` — so the *next* run of
+`migrations apply` really would try to re-add existing columns and fail. The
+advice as originally written creates the failure it warns about.
+
+**Numbering collision, unresolved.** `0008_viewport_height.sql` on this branch
+and `0008_visit_platform.sql` on `claude/distracted-jepsen-f66243` are different
+migrations sharing a number. Both are now applied to production, and
+`d1_migrations` keys on filename so nothing breaks today. Whoever merges that
+branch should renumber to keep the sequence honest.
 
 ---
 
