@@ -243,34 +243,78 @@ export default {
             // the tab in a way the browser never reported — counted, but with
             // an unknown duration rather than a zero, which would drag the
             // averages down and hide the real bounce rate.
+            //
+            // The inner query collapses to one row per visit_id BEFORE any
+            // counting happens, and reaches for the leave and app_ready rows
+            // through aggregate subqueries rather than chained LEFT JOINs.
+            // That is the whole point of it. A visit can hold several arrive
+            // rows and several leave rows — sessionStorage survived a reload,
+            // so a reload wrote another pair under the same id (see
+            // docs/ANALYTICS_HANDOFF.md 4.1) — and joining those two sets
+            // multiplies them: three arrives against three leaves is nine rows
+            // for one visitor. On a fixture holding six visits, one of which
+            // had reloaded twice, the joined form counted 32.
+            //
+            // `client` is which app actually rendered the page, read from the
+            // user-agent. `source` cannot answer that: detectTrafficSource
+            // returns utm_source before it ever looks at the user-agent, so a
+            // bio link tagged ?utm_source=ig labels every arrival "ig" no
+            // matter which in-app browser opened it — which is why the
+            // Facebook in-app traffic that dominates this dataset reads as
+            // Instagram. Derived at query time from a column already stored,
+            // so it applies to rows going back to the start.
             const bySource = await db.prepare(`
                 SELECT a.source AS source,
+                       a.client AS client,
                        COUNT(*) AS visits,
-                       SUM(CASE WHEN l.duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS with_duration,
-                       SUM(CASE WHEN l.duration_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
-                       SUM(CASE WHEN r.visit_id IS NOT NULL THEN 1 ELSE 0 END) AS saw_app,
-                       CAST(AVG(r.duration_ms) AS INTEGER) AS avg_load_ms,
-                       CAST(AVG(l.duration_ms) AS INTEGER) AS avg_ms
-                FROM site_visits a
-                LEFT JOIN site_visits l
-                       ON l.visit_id = a.visit_id AND l.event = 'leave'
-                LEFT JOIN site_visits r
-                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
-                WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
-                GROUP BY a.source ORDER BY visits DESC
+                       SUM(CASE WHEN a.dwell_ms IS NOT NULL THEN 1 ELSE 0 END) AS with_duration,
+                       SUM(CASE WHEN a.dwell_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
+                       SUM(CASE WHEN a.saw_app THEN 1 ELSE 0 END) AS saw_app,
+                       CAST(AVG(a.load_ms) AS INTEGER) AS avg_load_ms,
+                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.source) AS source,
+                           MIN(${visitClientSql("v")}) AS client,
+                           ${visitDwellMsSql("v")} AS dwell_ms,
+                           (SELECT MIN(r.duration_ms) FROM site_visits r
+                             WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
+                           EXISTS (SELECT 1 FROM site_visits r
+                                    WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS saw_app
+                    FROM site_visits v
+                    WHERE v.event = 'arrive' AND v.created_at >= datetime('now', ?)
+                    GROUP BY v.visit_id
+                ) a
+                GROUP BY a.source, a.client ORDER BY visits DESC
             `).bind(since).all();
 
+            // DISTINCT visit_id, because a reload wrote a second arrive row
+            // under the same id. Each day here links through to that day's
+            // sessions, which group by visit_id — so counting arrive rows made
+            // the number on this page disagree with the number of rows on the
+            // page it opens, for exactly the days that had the most reloads.
             const byDay = await db.prepare(`
-                SELECT date(created_at) AS day, COUNT(*) AS visits
+                SELECT date(created_at) AS day, COUNT(DISTINCT visit_id) AS visits
                 FROM site_visits
                 WHERE event = 'arrive' AND created_at >= datetime('now', ?)
                 GROUP BY day ORDER BY day DESC
             `).bind(since).all();
 
+            // One row per visit, same reason as bySource above: joined against
+            // its leave and app_ready rows, a visit that had reloaded twice
+            // listed 27 times and pushed genuinely distinct arrivals off the
+            // bottom of the 200-row limit.
             const recent = await db.prepare(`
-                SELECT a.visit_id, a.created_at, a.path, a.query, a.source, a.utm_medium,
-                       a.utm_campaign, a.country, a.referer, l.duration_ms,
-                       r.duration_ms AS load_ms,
+                SELECT a.visit_id,
+                       MIN(a.created_at) AS created_at,
+                       MIN(a.path) AS path, MIN(a.query) AS query,
+                       MIN(a.source) AS source, MIN(a.utm_medium) AS utm_medium,
+                       MIN(a.utm_campaign) AS utm_campaign, MIN(a.country) AS country,
+                       MIN(a.referer) AS referer,
+                       MIN(${visitClientSql("a")}) AS client,
+                       ${visitDwellMsSql("a")} AS duration_ms,
+                       (SELECT MIN(r.duration_ms) FROM site_visits r
+                         WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
                          WHERE m.visit_id = a.visit_id
                            AND m.event IN ('first_message','login_gate')) AS messaged,
@@ -287,12 +331,9 @@ export default {
                        EXISTS (SELECT 1 FROM site_visits t
                                 WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character
                 FROM site_visits a
-                LEFT JOIN site_visits l
-                       ON l.visit_id = a.visit_id AND l.event = 'leave'
-                LEFT JOIN site_visits r
-                       ON r.visit_id = a.visit_id AND r.event = 'app_ready'
                 WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
-                ORDER BY a.created_at DESC LIMIT 200
+                GROUP BY a.visit_id
+                ORDER BY created_at DESC LIMIT 200
             `).bind(since).all();
 
             // The funnel, per source. Each step counts DISTINCT visits that
@@ -312,11 +353,21 @@ export default {
                 GROUP BY a.source ORDER BY arrived DESC
             `).bind(since).all();
 
+            // detail is "<character>" on most events but "<character>#..." on
+            // the ones that carry a position too (screen_ping's script turn and
+            // strip set, strip_rotate's set index). Grouping on the raw column
+            // would split one character into a row per distinct position and
+            // bury the table in noise, so the character is taken as the part
+            // before the first '#'. Rows written before those events carried a
+            // suffix have no '#' and pass through unchanged.
             const characters = await db.prepare(`
-                SELECT detail AS character_id, event, COUNT(*) AS n
+                SELECT CASE WHEN instr(detail, '#') > 0
+                            THEN substr(detail, 1, instr(detail, '#') - 1)
+                            ELSE detail END AS character_id,
+                       event, COUNT(*) AS n
                 FROM site_visits
                 WHERE detail IS NOT NULL AND created_at >= datetime('now', ?)
-                GROUP BY detail, event ORDER BY n DESC
+                GROUP BY character_id, event ORDER BY n DESC
             `).bind(since).all();
 
             // How long the "opened a character, never engaged" population
@@ -341,31 +392,42 @@ export default {
             const b5s = screenPingTicksAt(5);
             const b15s = screenPingTicksAt(15);
             const bFull = SCREEN_PING_MAX_TICKS;
+            //
+            // The arrivals are collapsed to one row per visit_id before any
+            // bucket is counted. Previously the total counted DISTINCT visits
+            // while the buckets counted joined rows, so a visit that had
+            // reloaded landed in its bucket once per arrive row: the buckets
+            // did not add up to the total sitting beside them, and could
+            // exceed it outright — "never engaged 3, left instantly 5" on a
+            // fixture of three such visits. Both sides now count the same
+            // thing, so the row reconciles by construction.
             const dwellBuckets = await db.prepare(`
                 SELECT a.source AS source,
-                       COUNT(DISTINCT a.visit_id) AS never_engaged,
-                       SUM(CASE WHEN p.ticks IS NULL OR p.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
-                       SUM(CASE WHEN p.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
-                       SUM(CASE WHEN p.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
-                       SUM(CASE WHEN p.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
-                       SUM(CASE WHEN p.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
-                FROM site_visits a
-                LEFT JOIN (
-                    SELECT visit_id, COUNT(*) AS ticks
-                    FROM site_visits WHERE event = 'screen_ping'
-                    GROUP BY visit_id
-                ) p ON p.visit_id = a.visit_id
-                WHERE a.event = 'arrive'
-                  AND a.created_at >= datetime('now', ?)
-                  AND EXISTS (
-                      SELECT 1 FROM site_visits t
-                      WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM site_visits e
-                      WHERE e.visit_id = a.visit_id
-                        AND e.event IN ('input_typed', 'starter_tap', 'first_message')
-                  )
+                       COUNT(*) AS never_engaged,
+                       SUM(CASE WHEN a.ticks IS NULL OR a.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
+                       SUM(CASE WHEN a.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
+                       SUM(CASE WHEN a.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
+                       SUM(CASE WHEN a.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
+                       SUM(CASE WHEN a.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.source) AS source,
+                           (SELECT COUNT(*) FROM site_visits p
+                             WHERE p.visit_id = v.visit_id AND p.event = 'screen_ping') AS ticks
+                    FROM site_visits v
+                    WHERE v.event = 'arrive'
+                      AND v.created_at >= datetime('now', ?)
+                      AND EXISTS (
+                          SELECT 1 FROM site_visits t
+                          WHERE t.visit_id = v.visit_id AND t.event = 'character_tap'
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM site_visits e
+                          WHERE e.visit_id = v.visit_id
+                            AND e.event IN ('input_typed', 'starter_tap', 'first_message')
+                      )
+                    GROUP BY v.visit_id
+                ) a
                 GROUP BY a.source ORDER BY never_engaged DESC
             `).bind(since).all();
 
@@ -429,11 +491,19 @@ export default {
             const sessions = await db.prepare(`
                 SELECT a.visit_id,
                        MIN(a.created_at) AS created_at,
-                       a.source, a.path, a.country, a.viewport_w,
+                       a.source, a.path, a.country, a.viewport_w, a.viewport_h,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
-                       (SELECT MAX(l.duration_ms) FROM site_visits l
-                         WHERE l.visit_id = a.visit_id AND l.event = 'leave') AS dwell_ms,
+                       ${visitDwellMsSql("a")} AS dwell_ms,
+                       ${visitVisibleMsSql("a")} AS visible_ms,
+                       (SELECT l.exit_mode FROM site_visits l
+                         WHERE l.visit_id = a.visit_id AND l.event = 'leave'
+                         ORDER BY l.created_at DESC LIMIT 1) AS exit_mode,
+                       (SELECT COUNT(*) FROM site_visits h
+                         WHERE h.visit_id = a.visit_id AND h.event = 'hide') AS hide_count,
+                       (SELECT a2.nav_type FROM site_visits a2
+                         WHERE a2.visit_id = a.visit_id AND a2.event = 'arrive'
+                           AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
                        (SELECT t.detail FROM site_visits t
@@ -455,6 +525,40 @@ export default {
             const rows = sessions.results || [];
             const truncated = rows.length > SESSION_LIMIT;
             if (truncated) rows.length = SESSION_LIMIT;
+
+            // The headline counts, over the WHOLE window rather than the rows
+            // that survived the limit above. Deliberately not derived in the
+            // browser from `rows`: past 500 sessions that slice stops being the
+            // window, and a summary that silently describes its own truncation
+            // is worse than no summary at all.
+            //
+            // Every line counts visits, which is the only thing this table can
+            // count — a visitor who never messages has no id to be recognised
+            // by, so a person who taps the link twice is two arrivals and there
+            // is no way to tell. The wording on the page has to say so.
+            const totals = await db.prepare(`
+                SELECT COUNT(*) AS arrivals,
+                       SUM(CASE WHEN a.path LIKE '/c/%' THEN 1 ELSE 0 END) AS via_link,
+                       SUM(CASE WHEN a.opened THEN 1 ELSE 0 END) AS opened,
+                       SUM(CASE WHEN a.engaged THEN 1 ELSE 0 END) AS engaged,
+                       SUM(CASE WHEN a.messaged THEN 1 ELSE 0 END) AS messaged
+                FROM (
+                    SELECT v.visit_id,
+                           MIN(v.path) AS path,
+                           EXISTS (SELECT 1 FROM site_visits t
+                                    WHERE t.visit_id = v.visit_id
+                                      AND t.event = 'character_tap') AS opened,
+                           EXISTS (SELECT 1 FROM site_visits e
+                                    WHERE e.visit_id = v.visit_id
+                                      AND e.event IN ('input_typed', 'starter_tap', 'first_message')) AS engaged,
+                           EXISTS (SELECT 1 FROM site_visits m
+                                    WHERE m.visit_id = v.visit_id
+                                      AND m.event = 'first_message') AS messaged
+                    FROM site_visits v
+                    WHERE v.event = 'arrive' AND ${where.replace(/\ba\./g, "v.")}
+                    GROUP BY v.visit_id
+                ) a
+            `).bind(param).first();
 
             // Messages for the same visits. conversation_logs.created_at is
             // ISO-8601 with a T and a Z while site_visits uses SQLite's own
@@ -491,6 +595,7 @@ export default {
                 days: isDay ? null : days,
                 truncated,
                 limit: SESSION_LIMIT,
+                totals,
                 sessions: rows.map((r) => {
                     const agg = byVisit.get(r.visit_id) || { messages: 0, tapped: 0, typed: 0, failed: 0 };
                     return {
@@ -1818,9 +1923,14 @@ async function recordSiteVisit(raw, request, env) {
     // realised they could reply from those who started a message and
     // abandoned it, and they say which of the two routes into the
     // conversation people actually take.
+    // An event not on this list is coerced to "arrive" below, so a new client
+    // event that nobody adds here does not go missing — it silently inflates
+    // the arrival count instead, which is worse. Add the name here in the same
+    // change that starts sending it.
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
-        "first_message", "login_gate", "send_failed", "screen_ping", "leave",
+        "first_message", "login_gate", "send_failed", "screen_ping",
+        "strip_rotate", "hide", "show", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -1864,6 +1974,17 @@ async function recordSiteVisit(raw, request, env) {
     // other event.
     const failureReason = String(payload.failureReason || "").slice(0, 60) || null;
     const viewportW = Number(payload.viewportW);
+    const viewportH = Number(payload.viewportH);
+    // Visible time, backgrounding count and how the visit ended. Whitelisted
+    // rather than stored as sent: exit_mode is rendered on the sessions page
+    // and read by the dwell queries, so an arbitrary client string has no
+    // business reaching either.
+    const visibleMs = Number(payload.visibleMs);
+    const hideCount = Number(payload.hideCount);
+    const EXIT_MODES = ["dismissed", "hidden", "bfcache"];
+    const exitMode = EXIT_MODES.includes(payload.exitMode) ? payload.exitMode : null;
+    const NAV_TYPES = ["navigate", "reload", "back_forward", "prerender"];
+    const navType = NAV_TYPES.includes(payload.navType) ? payload.navType : null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -1871,8 +1992,9 @@ async function recordSiteVisit(raw, request, env) {
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
                 country, colo, duration_ms, detail, app_user_id,
-                viewport_w, failure_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewport_w, viewport_h, failure_reason,
+                visible_ms, hide_count, exit_mode, nav_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1890,7 +2012,12 @@ async function recordSiteVisit(raw, request, env) {
             detail,
             appUserId,
             Number.isFinite(viewportW) && viewportW > 0 ? Math.round(viewportW) : null,
-            failureReason
+            Number.isFinite(viewportH) && viewportH > 0 ? Math.round(viewportH) : null,
+            failureReason,
+            Number.isFinite(visibleMs) && visibleMs >= 0 ? Math.round(visibleMs) : null,
+            Number.isFinite(hideCount) && hideCount >= 0 ? Math.round(hideCount) : null,
+            exitMode,
+            navType
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -1978,6 +2105,69 @@ function isRealUserId(userId) {
 function realUserIdSql(column) {
     return `(${column} GLOB 'user_[0-9]*' AND length(${column}) = 18
              OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
+}
+
+/// Wall-clock time from arrival to the last thing the browser reported, as SQL.
+///
+/// Unchanged in meaning from when a leave row was the only source — this is
+/// still "how long between arriving and the browser saying something last" —
+/// but it no longer requires a leave row to exist. leave now fires on pagehide
+/// alone, so a visit that was backgrounded and then killed has no leave at all;
+/// its hide checkpoints carry the same clock and are used instead. That is a
+/// gain in coverage, not a change of definition: on production data 8 of 25
+/// lost sessions had no leave row and so no dwell at all.
+///
+/// Kept alongside visitVisibleMsSql rather than replaced by it, so every
+/// historical dwell stays comparable with every new one.
+function visitDwellMsSql(alias) {
+    return `COALESCE(
+        (SELECT MAX(l.duration_ms) FROM site_visits l
+          WHERE l.visit_id = ${alias}.visit_id AND l.event = 'leave'),
+        (SELECT MAX(h.duration_ms) FROM site_visits h
+          WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
+    )`;
+}
+
+/// Time the page was actually on screen, summed across backgroundings.
+///
+/// The honest version of dwell, and the one to trust where both exist. Wall
+/// clock counts every second the visit was sitting behind another app; this
+/// counts only the seconds the visitor could see it.
+///
+/// NULL for every row written before the client sent it, which is why it is a
+/// separate column rather than a redefinition of the one above — a visit that
+/// simply predates the measurement must read as unknown, not as zero.
+function visitVisibleMsSql(alias) {
+    return `COALESCE(
+        (SELECT MAX(l.visible_ms) FROM site_visits l
+          WHERE l.visit_id = ${alias}.visit_id AND l.event = 'leave'),
+        (SELECT MAX(h.visible_ms) FROM site_visits h
+          WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
+    )`;
+}
+
+/// Which app rendered the page, as SQL over the stored user_agent.
+///
+/// This is deliberately NOT `source`. detectTrafficSource below returns
+/// utm_source whenever one is present and only falls through to the user-agent
+/// when there is none — correct for "which link did they follow", useless for
+/// "which app were they in". The profile-bio link carries ?utm_source=ig, so
+/// every arrival through it is labelled "ig" whether it opened in Instagram's
+/// in-app browser, Facebook's, or Safari. docs/odysseus-opening-brief
+/// 2026-08-10 measured 93% of that "ig" traffic as Facebook in-app.
+///
+/// Reported alongside source rather than replacing it: the tag says which link
+/// was clicked and the client says which app rendered it, and mixing those two
+/// questions into one column is what made the answer wrong in the first place.
+///
+/// Instagram is tested first, matching detectTrafficSource's order.
+function visitClientSql(alias) {
+    return `CASE
+        WHEN ${alias}.user_agent LIKE '%Instagram%' THEN 'instagram app'
+        WHEN ${alias}.user_agent LIKE '%FBAN%' OR ${alias}.user_agent LIKE '%FBAV%' THEN 'facebook app'
+        WHEN ${alias}.user_agent IS NULL OR ${alias}.user_agent = '' THEN 'unknown'
+        ELSE 'browser'
+    END`;
 }
 
 /// Classifies where a visitor came from. Instagram and Facebook render links
@@ -2851,7 +3041,8 @@ async function getVisitEvents(env, visitIds) {
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT visit_id, created_at, event, detail, duration_ms,
                source, utm_medium, utm_campaign, referer, user_agent,
-               path, query, country, colo, viewport_w, failure_reason
+               path, query, country, colo, viewport_w, viewport_h, failure_reason,
+               visible_ms, hide_count, exit_mode, nav_type
         FROM site_visits
         WHERE visit_id IN (${placeholders})
         ORDER BY created_at ASC
@@ -2914,8 +3105,22 @@ async function getVisitDetail(env, visitId, character) {
         first_tick_at: ticks.length ? ticks[0].created_at : null,
         last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
         left_at: leave ? leave.created_at : null,
-        dwell_ms: leave ? leave.duration_ms : null,
+        // Falls back to the last hide checkpoint, because leave now fires only
+        // on pagehide — a visit backgrounded and then killed has no leave row
+        // at all, and used to report no dwell either.
+        dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
+        visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
+        hide_count: events.filter((e) => e.event === "hide").length,
+        exit_mode: leave ? leave.exit_mode : null,
+        nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
     };
+}
+
+/// The most recent hide checkpoint, or null. Stands in for a leave row on a
+/// visit the browser never reported the end of — which is most of the ones that
+/// used to vanish, since a page killed while backgrounded fires no pagehide.
+function lastHideOf(events) {
+    return events.filter((e) => e.event === "hide").pop() || null;
 }
 
 /** All exchanges of one conversation, oldest first. */
@@ -2953,7 +3158,14 @@ async function getTranscript(env, userId, chatId) {
         first_tick_at: ticks.length ? ticks[0].created_at : null,
         last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
         left_at: leave ? leave.created_at : null,
-        dwell_ms: leave ? leave.duration_ms : null,
+        // Falls back to the last hide checkpoint, because leave now fires only
+        // on pagehide — a visit backgrounded and then killed has no leave row
+        // at all, and used to report no dwell either.
+        dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
+        visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
+        hide_count: events.filter((e) => e.event === "hide").length,
+        exit_mode: leave ? leave.exit_mode : null,
+        nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
     };
 }
 
@@ -2989,7 +3201,17 @@ async function buildExportText(env, params) {
             const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
             const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
                 .toISOString().replace("T", " ").slice(0, 19);
-            filters.push("created_at >= ?");
+            // created_at is written in two shapes — "2026-08-10T09:00:00.000Z"
+            // from persistConversationLog and "2026-08-10 09:00:00" from the
+            // column default — and this bound carries a time, so the two do not
+            // compare alike: at the separator "T" (0x54) sorts after " " (0x20),
+            // and every ISO-form row on the boundary date therefore tests as
+            // later than the bound whatever its actual clock time. "Last 24
+            // hours" quietly reached back through the whole of the previous day
+            // for those rows. dayBounds above sidesteps this by using date-only
+            // bounds, which are a clean prefix of either shape; a bound with a
+            // time has to normalise the column instead.
+            filters.push("replace(created_at, 'T', ' ') >= ?");
             binds.push(since);
         }
         if (character) { filters.push("chat_id LIKE ?"); binds.push(`%${character}%`); }
@@ -3002,6 +3224,15 @@ async function buildExportText(env, params) {
                                      AND m.chat_id = conversation_logs.chat_id
                                      AND (m.user_message LIKE ? OR m.assistant_message LIKE ?))`);
             binds.push(`%${search}%`, `%${search}%`);
+        }
+        // The same id filter the log viewer applies, and for the same reason:
+        // an export taken from a filtered page was silently wider than the page
+        // that produced it, putting the 105 `user_test_*` QA rows back into a
+        // file the page had just finished telling you it was hiding. Only on
+        // the browse path — an export of one named conversation is an explicit
+        // request for that conversation, test id or not.
+        if (params.get("include_test") !== "1") {
+            filters.push(realUserIdSql("user_id"));
         }
     }
 
@@ -3105,22 +3336,51 @@ async function summariseReferralVisits(env, searchParams) {
         GROUP BY source ORDER BY visits DESC
     `).bind(since).all();
 
+    // "chatters" is DISTINCT user_id, not DISTINCT chat_id.
+    //
+    // chat_id is the character's display name — "Penelope (Queen of Ithaca)" —
+    // so it is a constant per character, not a per-conversation key. Counting
+    // it distinctly counted display-name *spellings*: a character every real
+    // visitor messaged scored 1, and the number only ever moved when the
+    // display name itself was edited. On a fixture where three real people
+    // messaged Penelope under two spellings of her name it returned 2, and for
+    // a character whose only message came from a QA test id it returned 1
+    // rather than 0. Wrong in both directions at once, which is why nothing
+    // about it looked obviously broken.
+    //
+    // The id filter matters as much as the column: without it the 105
+    // `user_test_*` rows from the Calypso QA pass count as campaign
+    // conversions (docs/ANALYTICS_HANDOFF.md 4.5).
+    //
+    // Still not a true conversion rate, and the UI says so: referral_visits
+    // carries no visit_id or user_id, so there is no way to tell that the
+    // person who messaged is the person who arrived through the link. It is
+    // "how many real people talked to this character in this window" next to
+    // "how many link hits it got" — two counts over the same window, not a
+    // funnel.
     const byCharacter = await env.CHAT_LOGS_DB.prepare(`
         SELECT v.character_id AS character_id,
                COUNT(*) AS visits,
                SUM(CASE WHEN v.known_character = 0 THEN 1 ELSE 0 END) AS unknown_hits,
-               (SELECT COUNT(DISTINCT l.chat_id) FROM conversation_logs l
+               (SELECT COUNT(DISTINCT l.user_id) FROM conversation_logs l
                  WHERE l.created_at >= datetime('now', ?)
-                   AND lower(l.scenario) LIKE lower(v.character_id) || '%') AS conversations
+                   AND lower(l.scenario) LIKE lower(v.character_id) || '%'
+                   AND ${realUserIdSql("l.user_id")}) AS chatters
         FROM referral_visits v
         WHERE v.created_at >= datetime('now', ?)
         GROUP BY v.character_id ORDER BY visits DESC
     `).bind(since, since).all();
 
+    // Windowed like everything else on the page. Unfiltered, this listed the
+    // newest 100 rows in the table regardless of the range selected above, so
+    // "last 24 hours" could show arrivals from months back sitting under a
+    // heading that said otherwise.
     const recent = await env.CHAT_LOGS_DB.prepare(`
         SELECT created_at, character_id, source, utm_medium, utm_campaign, known_character
-        FROM referral_visits ORDER BY created_at DESC LIMIT 100
-    `).all();
+        FROM referral_visits
+        WHERE created_at >= datetime('now', ?)
+        ORDER BY created_at DESC LIMIT 100
+    `).bind(since).all();
 
     return {
         days,
@@ -3479,6 +3739,20 @@ function adminSessionsPageHtml() {
   a.drill { color: #b39ddb; }
   tr.chat td { background: #191322; }
   .note { color: #777; font-size: 12px; max-width: 78ch; line-height: 1.5; }
+  /* The headline counts. Deliberately a short vertical list rather than a row
+     of big numbers: each line is a subset of the one above it, and stacking
+     them makes the drop between steps the thing you read first. */
+  .tally { border: 1px solid #2a2a33; border-radius: 8px; padding: 12px 14px;
+           margin: 0 0 14px; max-width: 62ch; }
+  .tally table { width: 100%; border: 0; }
+  .tally td { border: 0; padding: 3px 0; vertical-align: baseline; }
+  .tally td.n { text-align: right; width: 5ch; font-variant-numeric: tabular-nums;
+                color: #e6e6ea; font-weight: 600; padding-right: 10px; }
+  .tally td.pc { text-align: right; width: 6ch; color: #777; padding-left: 10px; }
+  .tally .step { color: #bbb; }
+  .tally .head { color: #e6e6ea; font-weight: 600; }
+  .tally .gloss { color: #777; font-size: 12px; line-height: 1.5;
+                  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #2a2a33; }
   /* Where the visit came from and what it arrived on. Two columns rather than
      a sentence: these are lookup values, read one at a time. */
   .vc-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr);
@@ -3495,7 +3769,11 @@ ${visitTimelineCss()}
    &nbsp;·&nbsp; <a href="/admin/visits" style="color:#b39ddb">Site visits</a></p>
 <h1>User sessions</h1>
 <p class="sub">One row per arrival — every time someone opens the app, whether or
-   not they ever reached a character. Newest first. Click any column heading to
+   not they ever reached a character. <b>Arrivals are visits, not people:</b> a
+   visitor who comes back later, or reloads, arrives again and is counted again,
+   and nothing here can tell the difference — someone who never sends a message
+   has no id to be recognised by. Read every number on this page as "visits",
+   never as "people". Newest first. Click any column heading to
    sort by it, again to reverse; sessions the browser never reported a dwell or
    a tick for sort last whichever way you sort, since those are unknown rather
    than zero.</p>
@@ -3510,6 +3788,7 @@ ${visitTimelineCss()}
   <option value="1000">1,000 rows</option>
   <option value="5000">5,000 rows</option>
 </select>
+<div id="tally"></div>
 <div id="out">Loading…</div>
 <p class="note" id="footnote"></p>
 <script>
@@ -3608,8 +3887,41 @@ async function render(out) {
   makeSortable(out);
 
   const scope = d.day ? 'on ' + d.day + ' (UTC)' : 'in the last ' + d.days + ' days';
+
+  // The headline counts. These come from the server over the whole window, so
+  // they stay true when the table below is truncated to the newest 500.
+  const t = d.totals || {};
+  const arrivals = t.arrivals || 0;
+  // Every step is a subset of arrivals, so that is the denominator throughout —
+  // a percentage of the previous step would read as a step-to-step conversion
+  // and these are not that.
+  const pc = function (n) {
+    return arrivals ? Math.round(100 * n / arrivals) + '%' : '';
+  };
+  const line = function (n, label, cls) {
+    return '<tr><td class="n">' + n + '</td><td class="' + (cls || 'step') + '">' +
+           label + '</td><td class="pc">' + (cls === 'head' ? '' : pc(n)) + '</td></tr>';
+  };
+  document.getElementById('tally').innerHTML = arrivals
+    ? '<div class="tally"><table>' +
+      line(arrivals, 'arrivals ' + esc(scope), 'head') +
+      line(t.via_link || 0, 'landed on a character link') +
+      line(t.opened || 0, 'reached a character screen') +
+      line(t.engaged || 0, 'typed or tapped anything') +
+      line(t.messaged || 0, 'sent a message') +
+      '</table>' +
+      '<p class="gloss"><b>Visits, not people</b> — the same person returning or ' +
+      'reloading is counted again. Each line is a subset of the arrivals above ' +
+      'it, and the percentage is against that total, not against the line before ' +
+      'it. A character link opens straight onto the chat screen, so for those ' +
+      'arrivals <b>reaching a character screen is the destination, not a step ' +
+      'they chose to take</b> — the gap between those two lines is people the ' +
+      'app never delivered to, not people who browsed and lost interest.</p>' +
+      '</div>'
+    : '';
+
   document.getElementById('footnote').innerHTML =
-    esc(rows.length + ' session(s) ' + scope + '.') +
+    esc(rows.length + ' session(s) ' + scope + ' — visits, not people.') +
     // Sorting is done in the browser, so a truncated range sorts the slice
     // that was loaded rather than everything in the window — say so, because
     // "most messages" quietly meaning "most messages among the 500 longest
@@ -3687,11 +3999,41 @@ function renderVisitDetail(cell, detail, messages) {
       esc(utcClock(f.created_at)) + ' — ' + esc(f.reason));
   }
   if (detail.left_at) {
+    // How it ended, in the browser's own terms. "dismissed" is the page being
+    // destroyed while still on screen; "hidden" is it being destroyed after
+    // having been put away and never brought back; "bfcache" is not an ending
+    // at all — the page was frozen and a back gesture can restore this very
+    // visit. Which control they used is not knowable: on a Meta in-app browser
+    // the X, the swipe and the back gesture are all the host app's chrome, and
+    // a webview is never told which one dismissed it.
+    const ENDINGS = {
+      dismissed: 'closed while on screen',
+      hidden: 'backgrounded, then never came back',
+      bfcache: 'frozen, not closed — a back gesture could restore it',
+    };
     lines.push('Left <b>' + esc(utcClock(detail.left_at)) + '</b>' +
-      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : ''));
+      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : '') +
+      (ENDINGS[detail.exit_mode] ? ' &mdash; ' + ENDINGS[detail.exit_mode] : ''));
   } else {
-    lines.push('<span class="muted">No leave event — the tab was closed without ' +
-      'firing one, so the exit time is unknown.</span>');
+    lines.push('<span class="muted">No leave event — the page was destroyed ' +
+      'without firing one, so the exit time is unknown.</span>');
+  }
+  // Wall clock counts every second the visit spent behind another app; this
+  // counts only the seconds it was on screen. They diverge exactly when
+  // someone backgrounded the app — including an interruptible swipe-to-dismiss
+  // begun and cancelled — which the old single latched leave recorded as a
+  // departure and never revised.
+  if (detail.visible_ms !== null && detail.visible_ms !== undefined) {
+    lines.push('Actually on screen for <b>' + fmtDuration(detail.visible_ms) + '</b>' +
+      (detail.hide_count
+        ? ', backgrounded ' + detail.hide_count +
+          (detail.hide_count === 1 ? ' time' : ' times')
+        : ' without interruption'));
+  }
+  if (detail.nav_type && detail.nav_type !== 'navigate') {
+    lines.push('<span class="muted">Arrived by ' + esc(detail.nav_type) +
+      ' &mdash; a reload or back-forward mints a new visit id, so this is the ' +
+      'same person arriving again.</span>');
   }
   summary.innerHTML = lines.join('<br>');
   wrap.appendChild(summary);
@@ -3704,7 +4046,28 @@ function renderVisitDetail(cell, detail, messages) {
     ['Campaign', campaign],
     ['Referrer', context.referer],
     ['Country', [context.country, context.colo].filter(Boolean).join(' · ')],
-    ['Viewport', context.viewport_w ? context.viewport_w + 'px wide' : ''],
+    // Height decides how much of the quick-reply strip they were shown, in
+    // three bands rather than two — see _shortScreenHeight (720) and
+    // _veryShortScreenHeight (560) in chat_screen.dart. The hint yields first
+    // because a dropped reply costs more than a dropped label, so between the
+    // two thresholds all three prompts are still there.
+    //
+    // Spelled out rather than left as a number, because "they tapped nothing"
+    // reads differently when one of the three options, or the line telling
+    // them the options are tappable, was never on screen. Kept in step with
+    // those constants by hand: they live in Dart and this is the worker, so
+    // nothing enforces the agreement — if the strip's layout thresholds move,
+    // move these with them.
+    ['Viewport', context.viewport_w
+      ? context.viewport_w + '×' + (context.viewport_h || '?') + 'px' +
+        (context.viewport_h
+          ? (context.viewport_h < 560
+              ? ' — very short: 2 of 3 prompts, no hint'
+              : context.viewport_h < 720
+                ? ' — short: all 3 prompts, but no hint'
+                : ' — all 3 prompts and the hint')
+          : '')
+      : ''],
     ['User agent', context.user_agent],
   ].filter(([, value]) => value);
 
@@ -3913,21 +4276,51 @@ async function render(out) {
     h += '</table></div>';
   }
 
-  h += '<h2>By source</h2><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
+  // Source is the link they followed; client is the app that rendered it. They
+  // are separate columns because they answer different questions and the tag
+  // cannot answer the second one — see visitClientSql in the worker.
+  //
+  // "Left under 3s" and "Avg dwell" are both computed over visits that
+  // reported a leave, which is a smaller population than Visits: a tab killed
+  // outright never fires the beacon. Showing the count alone invited reading
+  // it against Visits, which understates the bounce rate by however many
+  // visits went unreported — so the denominator is now a column of its own and
+  // the percentage is taken against it.
+  h += '<h2>By source and client</h2><p class="muted" style="margin:0 0 8px">' +
+       'One row per visit, not per logged event. <b>Source</b> is the utm tag on ' +
+       'the link; <b>client</b> is the app that actually rendered the page, read ' +
+       'from the user-agent. A bio link tagged <code>?utm_source=ig</code> reads ' +
+       '&ldquo;ig&rdquo; even when Facebook&rsquo;s in-app browser opened it, so ' +
+       'trust the client column for that question. <b>Reported a dwell</b> is the ' +
+       'denominator for the two columns after it &mdash; visits whose tab was ' +
+       'killed outright never report one and cannot be counted either way.</p>' +
+       '<div class="wrap"><table class="sortable"><tr><th>Source</th><th>Client</th>' +
        '<th data-type="num" data-sorted="desc">Visits</th>' +
        '<th data-type="num">Saw the app</th><th data-type="num">Gave up loading</th>' +
        '<th data-type="num">Avg load</th>' +
+       '<th data-type="num">Reported a dwell</th>' +
        '<th data-type="num">Left under 3s</th><th data-type="num">Avg dwell</th></tr>';
   for (const r of d.bySource) {
     const gaveUp = r.visits - (r.saw_app || 0);
-    h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+    const known = r.with_duration || 0;
+    const bounced = r.bounced_under_3s || 0;
+    const bouncePct = known
+      ? ' <span class="muted">(' + Math.round(100 * bounced / known) + '%)</span>'
+      : '';
+    // No leave rows at all means the dwell columns have nothing behind them;
+    // an em dash says so rather than letting a 0 read as "nobody bounced".
+    h += '<tr><td>' + esc(r.source) + '</td><td>' + esc(r.client || 'unknown') +
+         '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
          '</td><td class="num"' + sv(r.saw_app || 0) + '>' + (r.saw_app || 0) +
          '</td><td class="num"' + sv(gaveUp) + '>' + gaveUp +
          '</td><td class="num"' + sv(r.avg_load_ms) + '>' + dur(r.avg_load_ms) +
-         '</td><td class="num"' + sv(r.bounced_under_3s || 0) + '>' + (r.bounced_under_3s || 0) +
+         '</td><td class="num"' + sv(known) + '>' + known +
+         ' <span class="muted">of ' + r.visits + '</span>' +
+         '</td><td class="num"' + sv(known ? bounced : null) + '>' +
+         (known ? bounced + bouncePct : '<span class="muted">&mdash;</span>') +
          '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) + '</td></tr>';
   }
-  if (!d.bySource.length) h += '<tr><td colspan="7" class="muted">No visits yet.</td></tr>';
+  if (!d.bySource.length) h += '<tr><td colspan="9" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
   // Each day drills into the sessions that made up its count. Same
@@ -3945,7 +4338,7 @@ async function render(out) {
 
   h += '<h2>Recent arrivals</h2><div class="wrap"><table class="sortable">' +
        '<tr><th data-sorted="desc">When (UTC)</th><th>Path</th>' +
-       '<th>Source</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
+       '<th>Source</th><th>Client</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
        '<th data-type="num">Dwell</th>' +
        '<th data-type="num">Ticks</th><th data-nosort>Chat</th></tr>';
   for (const r of d.recent) {
@@ -3960,7 +4353,7 @@ async function render(out) {
         (r.ticks || 0) + '</span>'
       : '<span class="muted">—</span>';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
-         '</td><td>' + esc(r.source) + '</td><td>' +
+         '</td><td>' + esc(r.source) + '</td><td>' + esc(r.client || 'unknown') + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
@@ -3970,9 +4363,9 @@ async function render(out) {
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="9"></td></tr>';
+         '" style="display:none"><td colspan="10"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="9" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="10" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);
@@ -4061,7 +4454,13 @@ ${sortableTableCss()}
   <div class="wrap"><table id="src" class="sortable"><thead><tr><th>Source</th><th class="num" data-type="num" data-sorted="desc">Visits</th></tr></thead><tbody></tbody></table></div>
 
   <h2>By character</h2>
-  <div class="wrap"><table id="chr" class="sortable"><thead><tr><th>Character</th><th class="num" data-type="num" data-sorted="desc">Visits</th><th class="num" data-type="num">Conversations</th><th class="num" data-type="num">Bad links</th></tr></thead><tbody></tbody></table></div>
+  <p class="muted" style="margin:0 0 8px;max-width:80ch">
+     <b>People who chatted</b> counts distinct real user ids that messaged this
+     character in the same window, test ids excluded. It is deliberately not
+     called a conversion rate: campaign-link arrivals carry no user or visit id,
+     so there is no way to tell that the person who messaged is the person who
+     arrived through the link. Two counts over one window, read side by side.</p>
+  <div class="wrap"><table id="chr" class="sortable"><thead><tr><th>Character</th><th class="num" data-type="num" data-sorted="desc">Link hits</th><th class="num" data-type="num">People who chatted</th><th class="num" data-type="num">Bad links</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Recent arrivals</h2>
   <div class="wrap"><table id="rec" class="sortable"><thead><tr><th data-sorted="desc">When (UTC)</th><th>Character</th><th>Source</th><th>Medium</th><th>Campaign</th></tr></thead><tbody></tbody></table></div>
@@ -4093,7 +4492,7 @@ async function render() {
     || '<tr><td colspan="2" class="muted">No visits yet.</td></tr>';
   document.querySelector('#chr tbody').innerHTML = (d.byCharacter || [])
     .map(r => '<tr><td>' + esc(r.character_id || '(none)') + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
-      '</td><td class="num"' + sv(r.conversations ?? 0) + '>' + (r.conversations ?? 0) +
+      '</td><td class="num"' + sv(r.chatters ?? 0) + '>' + (r.chatters ?? 0) +
       '</td><td class="num ' + (r.unknown_hits ? 'warn' : 'muted') + '"' + sv(r.unknown_hits || 0) + '>' +
       (r.unknown_hits || 0) + '</td></tr>').join('')
     || '<tr><td colspan="4" class="muted">No visits yet.</td></tr>';
@@ -4168,6 +4567,10 @@ function adminLogsPageHtml() {
   .summary { font-size: 12px; color: #9a9aa5; margin-bottom: 10px; min-height: 16px; }
   .summary b { color: #e6e6ea; font-weight: 600; }
   .summary .sep { color: #3a3a45; margin: 0 8px; }
+  /* The "N test ids hidden" note. Every other admin page defines .muted and
+     this one used it without ever declaring it, so the one line on the page
+     whose job is to read as an aside rendered at full strength instead. */
+  .muted { color: #6b6b78; }
 
   /* Transcript view */
   #t-meta { color: #9a9aa5; font-size: 13px; margin-bottom: 8px; }
@@ -4981,6 +5384,9 @@ ${visitTimelineJs()}
     }
     if (state.character) sp.set("character", state.character);
     if (state.q) sp.set("q", state.q);
+    // Carried so the file matches the table it was taken from. Without it the
+    // export hid nothing while the page hid test ids.
+    if (state.includeTest) sp.set("include_test", "1");
     window.location = "/api/admin/export?" + sp.toString();
   });
 

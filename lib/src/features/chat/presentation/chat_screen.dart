@@ -291,6 +291,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           detail: widget.characterId,
           appUserId: prefs.getString('user_id'),
         );
+        // The strip's opening set. _quickReplyIndex starts at 0 without going
+        // through _setQuickReplyIndex, so the first thing a visitor is offered
+        // is the one offer that would otherwise never be recorded — and it is
+        // the offer nearly everyone sees, since most leave before the strip
+        // ever changes.
+        if (_quickRepliesFor(widget.characterId) != null) {
+          logFunnelEvent(
+            'strip_rotate',
+            detail: '${widget.characterId}#0',
+            appUserId: prefs.getString('user_id'),
+          );
+        }
       });
       _startScreenPing();
 
@@ -383,10 +395,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _stopScreenPing();
       return;
     }
+    // detail carries how far the script had got when this tick fired, as
+    // "<character>#t<turns delivered>#s<set on the strip>".
+    //
+    // Without it a tick count only says *when* someone left, and turning that
+    // into *what they were looking at* means replaying the pacing arithmetic
+    // offline against the script as it is written today — see tool/beat_map.mjs,
+    // which exists to do exactly that and is wrong the moment anyone edits a
+    // line or retunes _briskPacing. Recording the position instead makes every
+    // tick self-describing and costs no extra rows, which matters: the split
+    // cadence above exists because a flat 500ms would spend the D1 write quota
+    // during a boost.
+    //
+    // It also survives the thing the offline replay cannot. A backgrounded tab
+    // is throttled to roughly 1Hz, so both the ticks and the script's own
+    // Future.delayed chain stretch — but not necessarily together, and an
+    // inferred position drifts apart from the real one exactly when the visitor
+    // was distracted. A logged position is whatever was actually on screen.
+    final position =
+        '${widget.characterId}#t$_scriptPausesReached#s$_quickReplyIndex';
     SharedPreferences.getInstance().then((prefs) {
       logFunnelEvent(
         'screen_ping',
-        detail: widget.characterId,
+        detail: position,
         appUserId: prefs.getString('user_id'),
       );
     });
@@ -1604,6 +1635,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (next == _quickReplyIndex) return;
     setState(() => _quickReplyIndex = next);
+
+    // Funnel: the strip now offers a different set.
+    //
+    // This is the offer half of the offer/take pair the funnel was missing.
+    // starter_tap said what was taken and nothing said what was put in front
+    // of them, so "nobody tapped anything" could not be told apart from
+    // "nobody was offered anything they stayed long enough to see". Logged on
+    // the real change rather than on every turn: an unchanged strip is not a
+    // new offer, and _setQuickReplyIndex has already returned above when the
+    // index did not move.
+    //
+    // The set index goes in detail so the admin side can pair a rotation with
+    // the tap that followed it, and see which sets are ever reached at all.
+    SharedPreferences.getInstance().then((prefs) {
+      logFunnelEvent(
+        'strip_rotate',
+        detail: '${widget.characterId}#$next',
+        appUserId: prefs.getString('user_id'),
+      );
+    });
   }
 
   /// Plays a scripted opening one beat at a time, stopping the instant the

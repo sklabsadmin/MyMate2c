@@ -1,0 +1,41 @@
+-- How a visit ended, and how much of it the visitor actually watched.
+--
+-- duration_ms on a leave row is wall-clock since arrival and stays exactly
+-- that, so historical dwell figures remain comparable. These columns carry
+-- what it could never say.
+--
+-- visible_ms   Time the page was actually on screen, summed across
+--              backgroundings. On a hide row it is the running total at that
+--              checkpoint; on a leave row it is the final figure. This is the
+--              number that should have been "dwell" all along: the old one
+--              stopped at the first visibilitychange and never resumed, so a
+--              visitor who backgrounded the app for a second — or began an
+--              interruptible swipe-to-dismiss on a Meta in-app browser sheet
+--              and cancelled it — was frozen at that instant forever. On
+--              production data 24 of 68 sessions kept reporting screen_ping
+--              ticks after their own recorded departure.
+--
+-- hide_count   How many times the page was backgrounded before it ended. 0 is
+--              an uninterrupted visit.
+--
+-- exit_mode    On leave rows only:
+--                dismissed  destroyed while on screen — sheet closed, tab shut
+--                hidden     destroyed after being backgrounded, never returned
+--                bfcache    frozen rather than destroyed; a back gesture can
+--                           bring this same visit back, so it is not an ending
+--              A visit with no leave row at all ended in a way the browser
+--              never reported: process reaped, or the beacon lost. Those are
+--              distinguishable now because the hide checkpoints survive them.
+--
+-- nav_type     On arrive rows: navigate / reload / back_forward, from the
+--              Navigation Timing API. A reload mints a fresh visit id and so
+--              counts as another arrival for the same person — the inflation
+--              docs/ANALYTICS_HANDOFF.md 4.1 describes, which until now could
+--              only be inferred from timestamps sitting close together.
+--
+-- All nullable and none backfilled: rows written before the client sent these
+-- genuinely do not know, and a default would invent an ending nobody had.
+ALTER TABLE site_visits ADD COLUMN visible_ms INTEGER;
+ALTER TABLE site_visits ADD COLUMN hide_count INTEGER;
+ALTER TABLE site_visits ADD COLUMN exit_mode TEXT;
+ALTER TABLE site_visits ADD COLUMN nav_type TEXT;
