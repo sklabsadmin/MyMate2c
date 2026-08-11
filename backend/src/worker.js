@@ -276,8 +276,7 @@ export default {
                     SELECT v.visit_id,
                            MIN(v.source) AS source,
                            MIN(${visitClientSql("v")}) AS client,
-                           (SELECT MAX(l.duration_ms) FROM site_visits l
-                             WHERE l.visit_id = v.visit_id AND l.event = 'leave') AS dwell_ms,
+                           ${visitDwellMsSql("v")} AS dwell_ms,
                            (SELECT MIN(r.duration_ms) FROM site_visits r
                              WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
                            EXISTS (SELECT 1 FROM site_visits r
@@ -313,8 +312,7 @@ export default {
                        MIN(a.utm_campaign) AS utm_campaign, MIN(a.country) AS country,
                        MIN(a.referer) AS referer,
                        MIN(${visitClientSql("a")}) AS client,
-                       (SELECT MAX(l.duration_ms) FROM site_visits l
-                         WHERE l.visit_id = a.visit_id AND l.event = 'leave') AS duration_ms,
+                       ${visitDwellMsSql("a")} AS duration_ms,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
@@ -496,8 +494,16 @@ export default {
                        a.source, a.path, a.country, a.viewport_w, a.viewport_h,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
-                       (SELECT MAX(l.duration_ms) FROM site_visits l
-                         WHERE l.visit_id = a.visit_id AND l.event = 'leave') AS dwell_ms,
+                       ${visitDwellMsSql("a")} AS dwell_ms,
+                       ${visitVisibleMsSql("a")} AS visible_ms,
+                       (SELECT l.exit_mode FROM site_visits l
+                         WHERE l.visit_id = a.visit_id AND l.event = 'leave'
+                         ORDER BY l.created_at DESC LIMIT 1) AS exit_mode,
+                       (SELECT COUNT(*) FROM site_visits h
+                         WHERE h.visit_id = a.visit_id AND h.event = 'hide') AS hide_count,
+                       (SELECT a2.nav_type FROM site_visits a2
+                         WHERE a2.visit_id = a.visit_id AND a2.event = 'arrive'
+                           AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
                        (SELECT t.detail FROM site_visits t
@@ -1924,7 +1930,7 @@ async function recordSiteVisit(raw, request, env) {
     const ALLOWED_EVENTS = [
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
         "first_message", "login_gate", "send_failed", "screen_ping",
-        "strip_rotate", "leave",
+        "strip_rotate", "hide", "show", "leave",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -1969,6 +1975,16 @@ async function recordSiteVisit(raw, request, env) {
     const failureReason = String(payload.failureReason || "").slice(0, 60) || null;
     const viewportW = Number(payload.viewportW);
     const viewportH = Number(payload.viewportH);
+    // Visible time, backgrounding count and how the visit ended. Whitelisted
+    // rather than stored as sent: exit_mode is rendered on the sessions page
+    // and read by the dwell queries, so an arbitrary client string has no
+    // business reaching either.
+    const visibleMs = Number(payload.visibleMs);
+    const hideCount = Number(payload.hideCount);
+    const EXIT_MODES = ["dismissed", "hidden", "bfcache"];
+    const exitMode = EXIT_MODES.includes(payload.exitMode) ? payload.exitMode : null;
+    const NAV_TYPES = ["navigate", "reload", "back_forward", "prerender"];
+    const navType = NAV_TYPES.includes(payload.navType) ? payload.navType : null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -1976,8 +1992,9 @@ async function recordSiteVisit(raw, request, env) {
                 id, visit_id, event, path, query, source,
                 utm_medium, utm_campaign, referer, user_agent,
                 country, colo, duration_ms, detail, app_user_id,
-                viewport_w, viewport_h, failure_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewport_w, viewport_h, failure_reason,
+                visible_ms, hide_count, exit_mode, nav_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -1996,7 +2013,11 @@ async function recordSiteVisit(raw, request, env) {
             appUserId,
             Number.isFinite(viewportW) && viewportW > 0 ? Math.round(viewportW) : null,
             Number.isFinite(viewportH) && viewportH > 0 ? Math.round(viewportH) : null,
-            failureReason
+            failureReason,
+            Number.isFinite(visibleMs) && visibleMs >= 0 ? Math.round(visibleMs) : null,
+            Number.isFinite(hideCount) && hideCount >= 0 ? Math.round(hideCount) : null,
+            exitMode,
+            navType
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -2084,6 +2105,45 @@ function isRealUserId(userId) {
 function realUserIdSql(column) {
     return `(${column} GLOB 'user_[0-9]*' AND length(${column}) = 18
              OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
+}
+
+/// Wall-clock time from arrival to the last thing the browser reported, as SQL.
+///
+/// Unchanged in meaning from when a leave row was the only source — this is
+/// still "how long between arriving and the browser saying something last" —
+/// but it no longer requires a leave row to exist. leave now fires on pagehide
+/// alone, so a visit that was backgrounded and then killed has no leave at all;
+/// its hide checkpoints carry the same clock and are used instead. That is a
+/// gain in coverage, not a change of definition: on production data 8 of 25
+/// lost sessions had no leave row and so no dwell at all.
+///
+/// Kept alongside visitVisibleMsSql rather than replaced by it, so every
+/// historical dwell stays comparable with every new one.
+function visitDwellMsSql(alias) {
+    return `COALESCE(
+        (SELECT MAX(l.duration_ms) FROM site_visits l
+          WHERE l.visit_id = ${alias}.visit_id AND l.event = 'leave'),
+        (SELECT MAX(h.duration_ms) FROM site_visits h
+          WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
+    )`;
+}
+
+/// Time the page was actually on screen, summed across backgroundings.
+///
+/// The honest version of dwell, and the one to trust where both exist. Wall
+/// clock counts every second the visit was sitting behind another app; this
+/// counts only the seconds the visitor could see it.
+///
+/// NULL for every row written before the client sent it, which is why it is a
+/// separate column rather than a redefinition of the one above — a visit that
+/// simply predates the measurement must read as unknown, not as zero.
+function visitVisibleMsSql(alias) {
+    return `COALESCE(
+        (SELECT MAX(l.visible_ms) FROM site_visits l
+          WHERE l.visit_id = ${alias}.visit_id AND l.event = 'leave'),
+        (SELECT MAX(h.visible_ms) FROM site_visits h
+          WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
+    )`;
 }
 
 /// Which app rendered the page, as SQL over the stored user_agent.
@@ -2981,7 +3041,8 @@ async function getVisitEvents(env, visitIds) {
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT visit_id, created_at, event, detail, duration_ms,
                source, utm_medium, utm_campaign, referer, user_agent,
-               path, query, country, colo, viewport_w, failure_reason
+               path, query, country, colo, viewport_w, viewport_h, failure_reason,
+               visible_ms, hide_count, exit_mode, nav_type
         FROM site_visits
         WHERE visit_id IN (${placeholders})
         ORDER BY created_at ASC
@@ -3044,8 +3105,22 @@ async function getVisitDetail(env, visitId, character) {
         first_tick_at: ticks.length ? ticks[0].created_at : null,
         last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
         left_at: leave ? leave.created_at : null,
-        dwell_ms: leave ? leave.duration_ms : null,
+        // Falls back to the last hide checkpoint, because leave now fires only
+        // on pagehide — a visit backgrounded and then killed has no leave row
+        // at all, and used to report no dwell either.
+        dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
+        visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
+        hide_count: events.filter((e) => e.event === "hide").length,
+        exit_mode: leave ? leave.exit_mode : null,
+        nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
     };
+}
+
+/// The most recent hide checkpoint, or null. Stands in for a leave row on a
+/// visit the browser never reported the end of — which is most of the ones that
+/// used to vanish, since a page killed while backgrounded fires no pagehide.
+function lastHideOf(events) {
+    return events.filter((e) => e.event === "hide").pop() || null;
 }
 
 /** All exchanges of one conversation, oldest first. */
@@ -3083,7 +3158,14 @@ async function getTranscript(env, userId, chatId) {
         first_tick_at: ticks.length ? ticks[0].created_at : null,
         last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
         left_at: leave ? leave.created_at : null,
-        dwell_ms: leave ? leave.duration_ms : null,
+        // Falls back to the last hide checkpoint, because leave now fires only
+        // on pagehide — a visit backgrounded and then killed has no leave row
+        // at all, and used to report no dwell either.
+        dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
+        visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
+        hide_count: events.filter((e) => e.event === "hide").length,
+        exit_mode: leave ? leave.exit_mode : null,
+        nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
     };
 }
 
@@ -3917,11 +3999,41 @@ function renderVisitDetail(cell, detail, messages) {
       esc(utcClock(f.created_at)) + ' — ' + esc(f.reason));
   }
   if (detail.left_at) {
+    // How it ended, in the browser's own terms. "dismissed" is the page being
+    // destroyed while still on screen; "hidden" is it being destroyed after
+    // having been put away and never brought back; "bfcache" is not an ending
+    // at all — the page was frozen and a back gesture can restore this very
+    // visit. Which control they used is not knowable: on a Meta in-app browser
+    // the X, the swipe and the back gesture are all the host app's chrome, and
+    // a webview is never told which one dismissed it.
+    const ENDINGS = {
+      dismissed: 'closed while on screen',
+      hidden: 'backgrounded, then never came back',
+      bfcache: 'frozen, not closed — a back gesture could restore it',
+    };
     lines.push('Left <b>' + esc(utcClock(detail.left_at)) + '</b>' +
-      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : ''));
+      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : '') +
+      (ENDINGS[detail.exit_mode] ? ' &mdash; ' + ENDINGS[detail.exit_mode] : ''));
   } else {
-    lines.push('<span class="muted">No leave event — the tab was closed without ' +
-      'firing one, so the exit time is unknown.</span>');
+    lines.push('<span class="muted">No leave event — the page was destroyed ' +
+      'without firing one, so the exit time is unknown.</span>');
+  }
+  // Wall clock counts every second the visit spent behind another app; this
+  // counts only the seconds it was on screen. They diverge exactly when
+  // someone backgrounded the app — including an interruptible swipe-to-dismiss
+  // begun and cancelled — which the old single latched leave recorded as a
+  // departure and never revised.
+  if (detail.visible_ms !== null && detail.visible_ms !== undefined) {
+    lines.push('Actually on screen for <b>' + fmtDuration(detail.visible_ms) + '</b>' +
+      (detail.hide_count
+        ? ', backgrounded ' + detail.hide_count +
+          (detail.hide_count === 1 ? ' time' : ' times')
+        : ' without interruption'));
+  }
+  if (detail.nav_type && detail.nav_type !== 'navigate') {
+    lines.push('<span class="muted">Arrived by ' + esc(detail.nav_type) +
+      ' &mdash; a reload or back-forward mints a new visit id, so this is the ' +
+      'same person arriving again.</span>');
   }
   summary.innerHTML = lines.join('<br>');
   wrap.appendChild(summary);
