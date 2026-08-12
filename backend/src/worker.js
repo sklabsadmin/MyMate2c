@@ -170,8 +170,13 @@ export default {
             // select a bare character_id, which conversation_logs has never
             // had — that column only ever existed on referral_visits — so
             // every "view" link on the sessions and visits pages answered 500.
+            // latency_ms rides along because this is where it is read: the
+            // question migration 0007 added it for — "did a slow reply lose
+            // this visitor" — is only answerable with the wait time sitting
+            // next to the message that preceded them leaving.
             const COLUMNS = `created_at, chat_id AS character_id, scenario,
-                             user_message, assistant_message, status, error`;
+                             user_message, assistant_message, status, error,
+                             latency_ms`;
 
             // Straight off the visit id, which conversation_logs has carried
             // since migration 0007. This endpoint predates that column, which
@@ -484,10 +489,19 @@ export default {
             // slice of it, and it is the visitor's choice rather than a
             // constant. Whitelisted: the value is interpolated into the SQL
             // below, not bound.
+            //
+            // The CSV export ignores that choice and takes the lot. The limit
+            // exists because sorting happens in the browser; a file opened in
+            // a spreadsheet has no such constraint, and an export that
+            // silently stopped at whatever the page had loaded would be the
+            // exact half-truth the footnote warns about.
+            const wantsCsv = url.searchParams.get("format") === "csv";
             const rawSessionLimit = parseInt(url.searchParams.get("limit"), 10);
-            const SESSION_LIMIT = [500, 1000, 5000].includes(rawSessionLimit)
-                ? rawSessionLimit
-                : 500;
+            const SESSION_LIMIT = wantsCsv
+                ? SESSION_EXPORT_LIMIT
+                : [500, 1000, 5000].includes(rawSessionLimit)
+                    ? rawSessionLimit
+                    : 500;
             const sessions = await db.prepare(`
                 SELECT a.visit_id,
                        MIN(a.created_at) AS created_at,
@@ -499,8 +513,15 @@ export default {
                        (SELECT l.exit_mode FROM site_visits l
                          WHERE l.visit_id = a.visit_id AND l.event = 'leave'
                          ORDER BY l.created_at DESC LIMIT 1) AS exit_mode,
-                       (SELECT COUNT(*) FROM site_visits h
-                         WHERE h.visit_id = a.visit_id AND h.event = 'hide') AS hide_count,
+                       -- Whether the browser reported an ending at all, which
+                       -- a NULL exit_mode cannot say on its own: a visit that
+                       -- predates migration 0009 has a leave row and no mode,
+                       -- and a visit killed outright has neither. Those are
+                       -- different outcomes and the page has to tell them
+                       -- apart rather than calling both "unknown".
+                       EXISTS (SELECT 1 FROM site_visits l2
+                                WHERE l2.visit_id = a.visit_id AND l2.event = 'leave') AS reported_leave,
+                       ${visitHideCountSql("a")} AS hide_count,
                        (SELECT a2.nav_type FROM site_visits a2
                          WHERE a2.visit_id = a.visit_id AND a2.event = 'arrive'
                            AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
@@ -560,13 +581,38 @@ export default {
                 ) a
             `).bind(param).first();
 
+            // Where the arrivals came from, geographically. Counted over the
+            // whole window like the tally above rather than over the rows that
+            // survived the limit — a country list assembled from the newest
+            // 500 sessions would describe the last few hours of a boost, not
+            // the range on the selector.
+            //
+            // One row per visit first, same as everywhere else on this page:
+            // counting arrive rows would weight a visit that reloaded twice as
+            // three visitors from that country.
+            //
+            // The code is what Cloudflare gives us (request.cf.country) and
+            // the only thing stored; the full name is resolved in the browser,
+            // where Intl already knows all of them.
+            const countries = await db.prepare(`
+                SELECT a.country AS country, COUNT(*) AS visits
+                FROM (
+                    SELECT v.visit_id, MIN(v.country) AS country
+                    FROM site_visits v
+                    WHERE v.event = 'arrive' AND ${where.replace(/\ba\./g, "v.")}
+                    GROUP BY v.visit_id
+                ) a
+                GROUP BY a.country
+                ORDER BY visits DESC, country ASC
+            `).bind(param).all();
+
             // Messages for the same visits. conversation_logs.created_at is
             // ISO-8601 with a T and a Z while site_visits uses SQLite's own
             // format, so these are selected by visit rather than by their own
             // timestamp — comparing the two formats as strings goes wrong
             // inside a single day.
             const messages = await db.prepare(`
-                SELECT c.visit_id, c.user_message, c.scenario, c.status
+                SELECT c.visit_id, c.user_message, c.scenario, c.status, c.latency_ms
                 FROM conversation_logs c
                 WHERE c.visit_id IS NOT NULL
                   AND c.visit_id IN (
@@ -578,10 +624,20 @@ export default {
             const byVisit = new Map();
             for (const m of messages.results || []) {
                 if (!byVisit.has(m.visit_id)) {
-                    byVisit.set(m.visit_id, { messages: 0, tapped: 0, typed: 0, failed: 0 });
+                    byVisit.set(m.visit_id, {
+                        messages: 0, tapped: 0, typed: 0, failed: 0, slowest_reply_ms: null,
+                    });
                 }
                 const agg = byVisit.get(m.visit_id);
                 agg.messages += 1;
+                // The worst wait, not the average: one 14s reply in a session
+                // of four is what makes someone leave, and an average with
+                // three fast replies in it hides exactly that. NULL stays NULL
+                // — rows written before migration 0007 have no timing, and a
+                // zero would read as an instant reply.
+                if (Number.isFinite(m.latency_ms)) {
+                    agg.slowest_reply_ms = Math.max(agg.slowest_reply_ms ?? 0, m.latency_ms);
+                }
                 // A successful row is status "completed"; everything else
                 // ("ai_error", "rejected_validation", "rate_limited") is a
                 // message the visitor sent and got nothing usable back from.
@@ -590,24 +646,43 @@ export default {
                 else agg.typed += 1;
             }
 
+            const sessionRows = rows.map((r) => {
+                const agg = byVisit.get(r.visit_id)
+                    || { messages: 0, tapped: 0, typed: 0, failed: 0, slowest_reply_ms: null };
+                return {
+                    ...r,
+                    ...agg,
+                    // A tap recorded by the funnel that no message text
+                    // matches means the starters moved on since this visit
+                    // and backend/src/starters.generated.js is stale. Say
+                    // so on the row rather than counting the tap as typed.
+                    starter_unmatched: Boolean(r.tapped_starter) && agg.messages > 0 && agg.tapped === 0,
+                };
+            });
+
+            if (wantsCsv) {
+                const scope = isDay ? day : `last-${days}-days`;
+                return new Response(sessionsCsv(sessionRows), {
+                    headers: {
+                        "Content-Type": "text/csv; charset=utf-8",
+                        "Content-Disposition": `attachment; filename="mythos-sessions-${scope}.csv"`,
+                        // Read by the page so it can say the file was capped.
+                        // A CSV cannot carry that warning in its own body
+                        // without becoming a CSV that lies about its columns.
+                        "X-Sessions-Truncated": truncated ? "1" : "0",
+                        "X-Sessions-Rows": String(sessionRows.length),
+                    },
+                });
+            }
+
             return jsonResponse({
                 day: isDay ? day : null,
                 days: isDay ? null : days,
                 truncated,
                 limit: SESSION_LIMIT,
                 totals,
-                sessions: rows.map((r) => {
-                    const agg = byVisit.get(r.visit_id) || { messages: 0, tapped: 0, typed: 0, failed: 0 };
-                    return {
-                        ...r,
-                        ...agg,
-                        // A tap recorded by the funnel that no message text
-                        // matches means the starters moved on since this visit
-                        // and backend/src/starters.generated.js is stale. Say
-                        // so on the row rather than counting the tap as typed.
-                        starter_unmatched: Boolean(r.tapped_starter) && agg.messages > 0 && agg.tapped === 0,
-                    };
-                }),
+                countries: countries.results || [],
+                sessions: sessionRows,
             });
         }
 
@@ -704,6 +779,116 @@ export default {
                     headers: {
                         "Content-Type": "text/plain; charset=utf-8",
                         "Content-Disposition": `attachment; filename="mymate-chat-logs-${stamp}.txt"`,
+                    },
+                });
+            } catch (e) {
+                return jsonResponse({ error: `Server error: ${e.message}` }, { status: 500 });
+            }
+        }
+
+        if (request.method === "GET" && url.pathname === "/admin/deploys") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminDeploysPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (url.pathname === "/api/admin/deploys") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            if (request.method === "GET") {
+                try {
+                    const rawLimit = parseInt(url.searchParams.get("limit"), 10);
+                    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 500);
+                    // Ordered by when the deploy happened, not when the row was
+                    // written: a deploy recorded the morning after still belongs
+                    // in its own place on the timeline.
+                    const { results } = await db.prepare(`
+                        SELECT id, version, deployed_at, target, notes, created_at
+                        FROM deploy_log
+                        ORDER BY deployed_at DESC
+                        LIMIT ?
+                    `).bind(limit).all();
+                    return jsonResponse({ deploys: results || [] });
+                } catch (e) {
+                    // Until migration 0010 is applied the table is simply not
+                    // there. Say exactly that, with the fix, rather than
+                    // reporting a server error the page cannot act on.
+                    return jsonResponse({
+                        error: `Could not read deploy_log: ${e.message}`,
+                        hint: "Apply backend/migrations/0010_deploy_log.sql to this database.",
+                    }, { status: 503 });
+                }
+            }
+
+            if (request.method === "POST") {
+                let body;
+                try {
+                    body = await request.json();
+                } catch (_) {
+                    return jsonResponse({ error: "Body must be JSON" }, { status: 400 });
+                }
+
+                const version = String(body.version || "").trim().slice(0, 60);
+                if (!version) return jsonResponse({ error: "version is required" }, { status: 400 });
+
+                // Accepts what a datetime-local input produces
+                // ("2026-08-12T09:30") as well as a full timestamp, and stores
+                // the one format every query on this database expects. Anything
+                // else is refused rather than stored and left to sort wrongly
+                // among rows that are well-formed.
+                const deployedAt = normaliseDeployedAt(body.deployed_at);
+                if (!deployedAt) {
+                    return jsonResponse({
+                        error: "deployed_at must look like 2026-08-12 09:30:00 (UTC)",
+                    }, { status: 400 });
+                }
+
+                const TARGETS = ["app", "worker", "both"];
+                const target = TARGETS.includes(body.target) ? body.target : null;
+                const notes = String(body.notes || "").trim().slice(0, 500) || null;
+
+                try {
+                    const id = crypto.randomUUID();
+                    await db.prepare(`
+                        INSERT INTO deploy_log (id, version, deployed_at, target, notes)
+                        VALUES (?, ?, ?, ?, ?)
+                    `).bind(id, version, deployedAt, target, notes).run();
+                    return jsonResponse({
+                        deploy: { id, version, deployed_at: deployedAt, target, notes },
+                    });
+                } catch (e) {
+                    return jsonResponse({
+                        error: `Could not write deploy_log: ${e.message}`,
+                        hint: "Apply backend/migrations/0010_deploy_log.sql to this database.",
+                    }, { status: 503 });
+                }
+            }
+
+            return jsonResponse({ error: "Method not allowed" }, { status: 405 });
+        }
+
+        // Everything logged in a window, raw, as one JSON file. The prose
+        // export above is for reading; this is for keeping — a snapshot that
+        // can be re-queried offline after D1 retention or a bad migration has
+        // taken the original away.
+        if (request.method === "GET" && url.pathname === "/api/admin/export-all") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            try {
+                const dump = await exportAllTables(env, url.searchParams);
+                const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+                return new Response(JSON.stringify(dump, null, 2), {
+                    headers: {
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Content-Disposition":
+                            `attachment; filename="mythos-all-${dump.window_hours}h-${stamp}.json"`,
+                        "X-Export-Rows": String(dump.total_rows),
+                        "X-Export-Truncated": dump.truncated ? "1" : "0",
                     },
                 });
             } catch (e) {
@@ -1906,8 +2091,9 @@ async function recordSiteVisit(raw, request, env) {
     //                 (failure_reason says why; "network" means the request
     //                 never reached us, so no conversation_logs row exists)
     //   screen_ping   still on the chat screen, not yet engaged (detail =
-    //                 character id). Fired twice a second starting at
-    //                 character_tap, capped at 30s (60 ticks), and stopped
+    //                 character id). Two-phase: twice a second for the first
+    //                 10s, then every 3s, starting at character_tap and
+    //                 capped at SCREEN_PING_MAX_SECONDS (30s), and stopped
     //                 the moment the visitor actually engages — see leave for
     //                 full-page dwell; this measures dwell on the chat screen
     //                 specifically, for the population that opened a
@@ -1916,7 +2102,21 @@ async function recordSiteVisit(raw, request, env) {
     //                 (visitor population and duration) so it stays cheap:
     //                 only the "opened a character" cohort ever sends these,
     //                 and never for more than 60 ticks each.
-    //   leave         page hidden/closed (duration = dwell)
+    //   strip_rotate  the quick-reply strip swapped in a new set of prompts
+    //                 (detail = "<character>#<set index>"), so a visitor who
+    //                 tapped nothing can be told apart from one who was never
+    //                 offered the prompt they would have tapped
+    //   hide          page backgrounded — a checkpoint, not an ending
+    //                 (duration = wall clock so far, visible_ms = time on
+    //                 screen so far, hide_count = how many times so far)
+    //   show          page came back (duration = how long they were away). A
+    //                 hide/show pair a few hundred ms apart is an aborted
+    //                 swipe-to-dismiss; forty seconds apart is an app switch.
+    //   leave         pagehide only — the page is genuinely going away
+    //                 (duration = wall-clock dwell, visible_ms = time actually
+    //                 on screen, exit_mode = how it ended). A visit with no
+    //                 leave row at all was killed without the browser
+    //                 reporting it; its hide checkpoints stand in.
     //
     // input_typed and starter_tap split the character_tap -> first_message gap,
     // which is where almost everyone is lost: they separate visitors who never
@@ -2142,6 +2342,98 @@ function visitVisibleMsSql(alias) {
         (SELECT MAX(l.visible_ms) FROM site_visits l
           WHERE l.visit_id = ${alias}.visit_id AND l.event = 'leave'),
         (SELECT MAX(h.visible_ms) FROM site_visits h
+          WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
+    )`;
+}
+
+/// Rows the CSV export will carry at most.
+///
+/// High enough that no real range hits it — 90 days of current traffic is
+/// three orders of magnitude below — but not unbounded, because the whole
+/// result is serialised in memory before it is sent. When it does bite, the
+/// page says so rather than handing over a file that looks complete.
+const SESSION_EXPORT_LIMIT = 20000;
+
+/// The sessions table as CSV, one row per visit, in the order the page shows.
+///
+/// Written out column by column rather than from Object.keys(row): a query
+/// that gains a column should not silently change the shape of everyone's
+/// saved spreadsheet, and the names here are the page's names rather than the
+/// database's — `seen_ms` is what the column is called on screen, and an
+/// export whose headers disagree with the UI makes every question about it
+/// harder to answer.
+///
+/// Booleans are written as 1/0 and unknowns as empty. Empty specifically, not
+/// 0: a visit that predates visible_ms did not spend zero seconds on screen,
+/// and a spreadsheet averaging that column has to be able to tell.
+const SESSION_CSV_COLUMNS = [
+    ["visit_id", (r) => r.visit_id],
+    ["arrived_at_utc", (r) => r.created_at],
+    ["source", (r) => r.source],
+    ["path", (r) => r.path],
+    ["character", (r) => r.character_id],
+    ["country", (r) => r.country],
+    ["nav_type", (r) => r.nav_type],
+    ["viewport_w", (r) => r.viewport_w],
+    ["viewport_h", (r) => r.viewport_h],
+    ["load_ms", (r) => r.load_ms],
+    ["dwell_ms", (r) => r.dwell_ms],
+    ["seen_ms", (r) => r.visible_ms],
+    ["exit_mode", (r) => r.exit_mode],
+    ["reported_leave", (r) => (r.reported_leave ? 1 : 0)],
+    ["hide_count", (r) => r.hide_count],
+    ["ticks", (r) => (r.opened_character ? r.ticks || 0 : null)],
+    ["opened_character", (r) => (r.opened_character ? 1 : 0)],
+    ["tapped_starter", (r) => (r.tapped_starter ? 1 : 0)],
+    ["messages", (r) => r.messages || 0],
+    ["tapped", (r) => r.tapped || 0],
+    ["typed", (r) => r.typed || 0],
+    ["slowest_reply_ms", (r) => r.slowest_reply_ms],
+    ["failed_messages", (r) => r.failed || 0],
+    ["send_failed", (r) => r.send_failed || 0],
+    ["starter_unmatched", (r) => (r.starter_unmatched ? 1 : 0)],
+];
+
+function sessionsCsv(rows) {
+    const lines = [SESSION_CSV_COLUMNS.map(([name]) => name).join(",")];
+    for (const row of rows) {
+        lines.push(SESSION_CSV_COLUMNS.map(([, read]) => csvCell(read(row))).join(","));
+    }
+    // Trailing newline: without one, some tools treat the last line as
+    // incomplete and drop it.
+    return lines.join("\n") + "\n";
+}
+
+/// One CSV field. Quotes only when it has to, which keeps the numeric columns
+/// bare and the file readable in a terminal as well as a spreadsheet.
+///
+/// A leading =, +, - or @ is prefixed with a single quote: Excel and Sheets
+/// read those as formulas, and `source` and `path` come off a URL a stranger
+/// controls. Nothing in this export should be able to execute in a spreadsheet.
+function csvCell(value) {
+    if (value === null || value === undefined) return "";
+    let text = String(value);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    return text;
+}
+
+/// How many times the visit was backgrounded, as SQL.
+///
+/// Reads the count the client reported rather than counting `hide` rows: the
+/// beacon stops writing rows after MAX_VISIBILITY_EVENTS (20) because chrome
+/// that hides on scroll can flap, but it keeps counting — so past twenty, the
+/// rows undercount and the column does not. Falls back to counting for rows
+/// written before the column existed, which is also the only case where the
+/// two can disagree in the other direction.
+///
+/// Both leave and hide rows carry it, so a visit killed while backgrounded —
+/// no leave row at all — still reports its true count.
+function visitHideCountSql(alias) {
+    return `COALESCE(
+        (SELECT MAX(v.hide_count) FROM site_visits v
+          WHERE v.visit_id = ${alias}.visit_id AND v.hide_count IS NOT NULL),
+        (SELECT COUNT(*) FROM site_visits h
           WHERE h.visit_id = ${alias}.visit_id AND h.event = 'hide')
     )`;
 }
@@ -2755,7 +3047,8 @@ async function listConversationLogs(env, params) {
 
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT id, created_at, user_id, chat_id, scenario, language, model, status, status_code,
-               user_message, assistant_message, error, prompt_tokens, completion_tokens, total_tokens
+               user_message, assistant_message, error, prompt_tokens, completion_tokens, total_tokens,
+               visit_id, latency_ms
         FROM conversation_logs
         ${where}
         ORDER BY created_at DESC
@@ -2788,6 +3081,7 @@ const CONVERSATION_SORTS = {
     tick_count: "tick_count",
     error_count: "error_count",
     total_tokens: "total_tokens",
+    slowest_reply_ms: "slowest_reply_ms",
     chat_id: "chat_id",
 };
 
@@ -2881,6 +3175,11 @@ async function listConversations(env, params) {
                           AND cl2.visit_id IS NOT NULL)) AS tick_count,
                SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END) AS error_count,
                SUM(COALESCE(total_tokens, 0)) AS total_tokens,
+               -- The worst wait in the conversation, not the mean: one long
+               -- reply is what ends a session, and an average with three fast
+               -- ones beside it hides exactly that. NULL for rows written
+               -- before migration 0007, which is unknown rather than instant.
+               MAX(latency_ms) AS slowest_reply_ms,
                MIN(created_at) AS first_at,
                MAX(created_at) AS last_at,
                NULL AS dwell_ms
@@ -2929,11 +3228,16 @@ async function listConversations(env, params) {
                SUM(CASE WHEN sv.event = 'screen_ping' THEN 1 ELSE 0 END) AS tick_count,
                0 AS error_count,
                0 AS total_tokens,
+               -- A visit that never sent a message never waited on a reply.
+               NULL AS slowest_reply_ms,
                MIN(sv.created_at) AS first_at,
                MAX(sv.created_at) AS last_at,
-               (SELECT l.duration_ms FROM site_visits l
-                 WHERE l.visit_id = sv.visit_id AND l.event = 'leave'
-                 ORDER BY l.created_at DESC LIMIT 1) AS dwell_ms
+               -- Falls back to the last hide checkpoint, same as everywhere
+               -- else: leave fires on pagehide alone now, so a visit that was
+               -- backgrounded and then killed has no leave row and used to
+               -- report no dwell at all — and a silent visit is exactly the
+               -- kind this page exists to show.
+               ${visitDwellMsSql("sv")} AS dwell_ms
         FROM site_visits sv
         WHERE ${visitFilters.join(" AND ")}
         GROUP BY sv.visit_id, sv.detail`;
@@ -3028,11 +3332,12 @@ async function listConversations(env, params) {
 /**
  * Funnel events for one visit, oldest first — the tick trail.
  *
- * screen_ping fires twice a second while a character screen sits open and
- * unengaged, stopping the moment anything is typed, so the tick count is a
- * direct measure of how long someone looked at a character before either
- * starting to type or giving up. 'leave' carries the dwell time for the whole
- * page visit.
+ * screen_ping fires while a character screen sits open and unengaged —
+ * twice a second for the first 10s, then every 3s — stopping the moment
+ * anything is typed. A tick count is therefore not a count of half-seconds:
+ * convert it with screenPingSeconds, or read the span between the first and
+ * last tick. 'leave' carries the dwell time for the whole page visit, and the
+ * 'hide' checkpoints carry it for a visit that never got to send one.
  */
 async function getVisitEvents(env, visitIds) {
     const ids = (visitIds || []).filter(Boolean);
@@ -3074,6 +3379,11 @@ function visitContext(events) {
         country: arrive.country || null,
         colo: arrive.colo || null,
         viewport_w: arrive.viewport_w || null,
+        // Height decides how much of the quick-reply strip the visitor was
+        // shown, so the detail panel spells out which band they landed in.
+        // Selected here since migration 0008 but dropped on the way out, which
+        // meant that band never rendered for anyone.
+        viewport_h: arrive.viewport_h || null,
     };
 }
 
@@ -3099,9 +3409,10 @@ async function getVisitDetail(env, visitId, character) {
         context: visitContext(events),
         failures,
         tick_count: ticks.length,
-        // Ticks are 500ms apart, but derive the span from the timestamps
-        // rather than multiplying — a backgrounded tab stops firing, and
-        // counting would then overstate how long they actually looked.
+        // Derive the span from the timestamps rather than from the tick
+        // count: the rate changes from 0.5s to 3s ten seconds in, so no single
+        // multiplier is right, and a backgrounded tab stops firing entirely —
+        // counting would claim attention that never happened.
         first_tick_at: ticks.length ? ticks[0].created_at : null,
         last_tick_at: ticks.length ? ticks[ticks.length - 1].created_at : null,
         left_at: leave ? leave.created_at : null,
@@ -3110,7 +3421,7 @@ async function getVisitDetail(env, visitId, character) {
         // at all, and used to report no dwell either.
         dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
         visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
-        hide_count: events.filter((e) => e.event === "hide").length,
+        hide_count: hideCountOf(events),
         exit_mode: leave ? leave.exit_mode : null,
         nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
     };
@@ -3123,6 +3434,18 @@ function lastHideOf(events) {
     return events.filter((e) => e.event === "hide").pop() || null;
 }
 
+/// How many times a visit was backgrounded. The JS half of visitHideCountSql,
+/// and the same reasoning: the client stops writing hide rows after twenty but
+/// keeps counting, so the reported number is the true one wherever it exists
+/// and counting rows is only the fallback for events written before it did.
+function hideCountOf(events) {
+    const counted = (events || []).filter((e) => e.event === "hide").length;
+    const reported = (events || [])
+        .map((e) => e.hide_count)
+        .filter((n) => Number.isFinite(n));
+    return reported.length ? Math.max(counted, ...reported) : counted;
+}
+
 /** All exchanges of one conversation, oldest first. */
 async function getTranscript(env, userId, chatId) {
     if (!env.CHAT_LOGS_DB) {
@@ -3130,7 +3453,7 @@ async function getTranscript(env, userId, chatId) {
     }
     const { results } = await env.CHAT_LOGS_DB.prepare(`
         SELECT id, created_at, user_message, assistant_message, status, status_code,
-               model, error, total_tokens, visit_id
+               model, error, total_tokens, visit_id, latency_ms
         FROM conversation_logs
         WHERE user_id = ? AND chat_id = ?
         ORDER BY created_at ASC
@@ -3163,9 +3486,120 @@ async function getTranscript(env, userId, chatId) {
         // at all, and used to report no dwell either.
         dwell_ms: leave ? leave.duration_ms : lastHideOf(events)?.duration_ms ?? null,
         visible_ms: leave?.visible_ms ?? lastHideOf(events)?.visible_ms ?? null,
-        hide_count: events.filter((e) => e.event === "hide").length,
+        hide_count: hideCountOf(events),
         exit_mode: leave ? leave.exit_mode : null,
         nav_type: events.find((e) => e.event === "arrive" && e.nav_type)?.nav_type ?? null,
+    };
+}
+
+/// A hand-entered deploy time, as the one format this database stores.
+///
+/// Takes "2026-08-12T09:30" (what a datetime-local input gives), the same with
+/// seconds, an ISO string with a Z, or the space-separated form, and returns
+/// "2026-08-12 09:30:00". Returns null for anything it cannot read, so a
+/// malformed entry is refused at the door — a deploy row that sorts wrongly is
+/// worse than a missing one, because every window query silently believes it.
+///
+/// Treated as UTC throughout, matching every other timestamp in the schema.
+/// The form says so out loud, because a person typing local time into a field
+/// labelled only "when" is exactly how a timeline goes an hour wrong.
+function normaliseDeployedAt(value) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const match = text.match(
+        /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?Z?$/
+    );
+    if (!match) return null;
+    const [, y, mo, d, h, mi, s] = match;
+    // Rejects 2026-13-40 and 25:00, which the shape above happily matches.
+    const stamp = Date.UTC(+y, +mo - 1, +d, +h, +mi, +(s || 0));
+    const back = new Date(stamp);
+    if (
+        Number.isNaN(stamp) ||
+        back.getUTCFullYear() !== +y || back.getUTCMonth() !== +mo - 1 ||
+        back.getUTCDate() !== +d || back.getUTCHours() !== +h ||
+        back.getUTCMinutes() !== +mi
+    ) {
+        return null;
+    }
+    return `${y}-${mo}-${d} ${h}:${mi}:${s || "00"}`;
+}
+
+/// Rows any one table will contribute to a full export. High enough that a
+/// day of current traffic is nowhere near it, low enough that the whole dump
+/// is serialised in memory without trouble. When it bites, the file says so
+/// per table rather than looking complete.
+const EXPORT_ALL_TABLE_LIMIT = 50000;
+
+/// Every row in every table this app writes, within a window. Raw columns, no
+/// aliasing, no aggregation.
+///
+/// Deliberately not the prose export: this is the one to take before a
+/// migration, a retention window, or a schema change removes the ability to
+/// ask a question nobody has thought of yet. Newest first inside each table.
+///
+/// Each table is fetched in its own try/catch and reports its own error,
+/// because they fail independently — deploy_log does not exist until
+/// migration 0010 is applied, and an export that 500s as a whole because one
+/// table is missing would be useless exactly when it is most wanted.
+async function exportAllTables(env, params) {
+    const rawHours = parseInt(params.get("hours") || "24", 10);
+    const hours = Math.min(Math.max(Number.isFinite(rawHours) ? rawHours : 24, 1), 24 * 90);
+    const since = `-${hours} hours`;
+
+    if (!env.CHAT_LOGS_DB) {
+        return { error: "CHAT_LOGS_DB is not configured", window_hours: hours, total_rows: 0, truncated: false };
+    }
+
+    // conversation_logs writes ISO-8601 ("2026-08-12T09:00:00.000Z") while
+    // every other table takes SQLite's own "2026-08-12 09:00:00" default. As
+    // strings those do not compare: "T" sorts above " ", so an ISO row is
+    // greater than any bound sharing its date and slips through a window it
+    // does not belong in. Normalising the separator is what makes the two
+    // comparable — the same trap dayBounds documents.
+    const TABLES = [
+        ["site_visits", "created_at"],
+        ["conversation_logs", "replace(created_at, 'T', ' ')"],
+        ["referral_visits", "created_at"],
+        ["deploy_log", "created_at"],
+    ];
+
+    const tables = {};
+    let totalRows = 0;
+    let truncated = false;
+
+    for (const [name, timeExpr] of TABLES) {
+        try {
+            const { results } = await env.CHAT_LOGS_DB.prepare(`
+                SELECT * FROM ${name}
+                WHERE ${timeExpr} >= datetime('now', ?)
+                ORDER BY created_at DESC
+                LIMIT ${EXPORT_ALL_TABLE_LIMIT + 1}
+            `).bind(since).all();
+            const rows = results || [];
+            const capped = rows.length > EXPORT_ALL_TABLE_LIMIT;
+            if (capped) rows.length = EXPORT_ALL_TABLE_LIMIT;
+            totalRows += rows.length;
+            truncated = truncated || capped;
+            tables[name] = { count: rows.length, truncated: capped, rows };
+        } catch (e) {
+            // A missing table is the expected case, not an exception worth
+            // failing the export over: say which one and what it said.
+            tables[name] = { count: 0, truncated: false, error: e.message, rows: [] };
+        }
+    }
+
+    return {
+        generated_at: new Date().toISOString(),
+        window_hours: hours,
+        // What "since" resolves to is the database's clock, not this one, so
+        // it is reported as the expression rather than as a timestamp this
+        // worker computed and might disagree about.
+        window: `created_at >= datetime('now', '${since}')`,
+        total_rows: totalRows,
+        truncated,
+        row_limit_per_table: EXPORT_ALL_TABLE_LIMIT,
+        tables,
     };
 }
 
@@ -3633,6 +4067,33 @@ function renderTimeline(container, events, fmtTime) {
       item.appendChild(t2);
       var label = e.event + (e.detail ? " (" + e.detail + ")" : "");
       if (isLeave && e.duration_ms) label += " - dwell " + fmtDuration(e.duration_ms);
+      // hide and show are checkpoints, not endings, and the gap between a
+      // pair is the whole point of them: a few hundred milliseconds is an
+      // aborted swipe-to-dismiss, forty seconds is an app switch they came
+      // back from. Rendered as bare event names, the two were indistinguishable
+      // — which is the confusion the events were added to clear up.
+      if (e.event === "hide") {
+        label = "hide - put away" +
+          (e.visible_ms !== null && e.visible_ms !== undefined
+            ? ", " + fmtDuration(e.visible_ms) + " on screen so far" : "");
+      }
+      if (e.event === "show") {
+        label = "show - came back" +
+          (e.duration_ms ? " after " + fmtDuration(e.duration_ms) + " away" : "");
+      }
+      // What the ending actually was. "bfcache" especially: the page was
+      // frozen rather than destroyed, so this visit can still resume.
+      if (isLeave) {
+        var ENDINGS = {
+          dismissed: "closed while on screen",
+          hidden: "backgrounded, then never came back",
+          bfcache: "frozen, not closed - a back gesture could restore it",
+        };
+        if (e.visible_ms !== null && e.visible_ms !== undefined) {
+          label += ", seen " + fmtDuration(e.visible_ms);
+        }
+        if (ENDINGS[e.exit_mode]) label += " - " + ENDINGS[e.exit_mode];
+      }
       item.appendChild(document.createTextNode(label));
       if (e.failure_reason) {
         var why = document.createElement("span");
@@ -3647,15 +4108,183 @@ function renderTimeline(container, events, fmtTime) {
   container.appendChild(wrap);
 }
 
-// Ticks are half a second apart while a character screen sits unengaged.
-// Report the span between first and last rather than count x interval: a
-// backgrounded tab stops ticking, so multiplying would claim attention that
-// never happened.
+// Ticks are 0.5s apart for the first ten seconds and 3s apart after that, so
+// there is no single interval to multiply by. Report the span between first
+// and last instead — which is also right when a backgrounded tab stops
+// ticking, where multiplying would claim attention that never happened.
 function tickSpanMs(data) {
   if (!data.first_tick_at || !data.last_tick_at) return 0;
   return parseUtc(data.last_tick_at) - parseUtc(data.first_tick_at);
 }
 `;
+}
+
+/// Hand-written record of what shipped and when.
+///
+/// Every question the other pages answer is a before/after question, and the
+/// "before" is a deploy. Nothing recorded them: git log holds commit times,
+/// which are not deploy times, and docs/ANALYTICS_HANDOFF.md 3 had to be
+/// reconstructed from memory with half its rows carrying a "~".
+///
+/// Entered by hand on purpose. The deploy script runs from a laptop and cannot
+/// be relied on to hold database credentials, and a deploy that half-failed
+/// still changed what visitors saw — a row here means a person watched it go
+/// out, which is the only claim worth trusting on a timeline.
+function adminDeploysPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — Deploy log</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #14101a; color: #eee; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #999; margin: 0 0 18px; max-width: 74ch; line-height: 1.5; }
+  form { background: #1d1726; border: 1px solid #2c2438; border-radius: 10px;
+         padding: 14px 16px; margin: 0 0 20px; max-width: 74ch; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  label { display: block; font-size: 12px; color: #999; margin-bottom: 4px; }
+  input, select, textarea, button {
+    background: #241d2e; color: #eee; border: 1px solid #443; padding: 7px 10px;
+    border-radius: 6px; font: inherit; }
+  textarea { width: 100%; min-height: 52px; resize: vertical; }
+  button { cursor: pointer; background: #37294d; border-color: #7e57c2; }
+  button:hover:not(:disabled) { background: #453163; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #2c2438;
+           vertical-align: top; }
+  th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  .muted { color: #777; }
+  .warn { color: #e5a373; }
+  .err { color: #e57373; }
+  .ver { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .hint { font-size: 12px; color: #777; margin: 6px 0 0; line-height: 1.5; }
+  #msg { margin-left: 10px; font-size: 13px; }
+</style></head><body>
+<p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a></p>
+<h1>Deploy log</h1>
+<p class="sub">What shipped, and when — written down by hand, because nothing else
+   records it. Commit time is not deploy time, and a version sitting in git says
+   nothing about the hour real visitors started seeing it. Every time in this
+   table is <b>UTC</b>, matching every other timestamp in the admin tools.</p>
+
+<form id="f" onsubmit="return save(event)">
+  <div class="row">
+    <div>
+      <label for="version">Version</label>
+      <input id="version" placeholder="1.6.4+60" size="14" required>
+    </div>
+    <div>
+      <label for="deployed">Deployed at (UTC)</label>
+      <input id="deployed" type="datetime-local" step="1" required>
+    </div>
+    <div>
+      <label for="target">What shipped</label>
+      <select id="target">
+        <option value="both">app + worker</option>
+        <option value="app">Flutter app</option>
+        <option value="worker">worker only</option>
+      </select>
+    </div>
+  </div>
+  <div>
+    <label for="notes">Notes — what changed, in a sentence</label>
+    <textarea id="notes" placeholder="Quick-reply attention cues; visible-time analytics"></textarea>
+  </div>
+  <p class="hint">The clock below the field is <b>your</b> clock; this form sends what you
+     typed as UTC. The button prefills it with the current UTC time.</p>
+  <div class="row" style="margin-top:8px">
+    <button type="submit" id="submit">Record deploy</button>
+    <button type="button" onclick="prefillNow()">Now (UTC)</button>
+    <span id="msg"></span>
+  </div>
+</form>
+
+<div id="out">Loading…</div>
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+// A datetime-local input reads and writes local time with no zone attached, so
+// the value is built from the UTC parts explicitly. Reading Date.toISOString()
+// straight in would be right; letting the browser format it would not.
+function utcNowForInput() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) +
+         'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+}
+function prefillNow() { document.getElementById('deployed').value = utcNowForInput(); }
+
+async function save(ev) {
+  ev.preventDefault();
+  const btn = document.getElementById('submit');
+  const msg = document.getElementById('msg');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/admin/deploys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: document.getElementById('version').value,
+        deployed_at: document.getElementById('deployed').value,
+        target: document.getElementById('target').value,
+        notes: document.getElementById('notes').value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error || 'HTTP ' + res.status) + (data.hint ? ' — ' + data.hint : ''));
+    msg.innerHTML = '<span class="muted">Recorded.</span>';
+    document.getElementById('notes').value = '';
+    load();
+  } catch (err) {
+    msg.innerHTML = '<span class="err">' + esc(err && err.message ? err.message : err) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+  return false;
+}
+
+async function load() {
+  const out = document.getElementById('out');
+  try {
+    const res = await fetch('/api/admin/deploys');
+    const data = await res.json();
+    if (!res.ok) {
+      out.innerHTML = '<p class="warn">' + esc(data.error || 'HTTP ' + res.status) + '</p>' +
+        (data.hint ? '<p class="hint">' + esc(data.hint) + '</p>' : '');
+      return;
+    }
+    const rows = data.deploys || [];
+    if (!rows.length) {
+      out.innerHTML = '<p class="muted">Nothing recorded yet. The next deploy is the one to start with.</p>';
+      return;
+    }
+    let h = '<table><tr><th>Deployed (UTC)</th><th>Version</th><th>What</th>' +
+            '<th>Notes</th><th>Recorded</th></tr>';
+    for (const r of rows) {
+      // Recorded-at is shown only when it is not the same day as the deploy:
+      // a row written days later is worth knowing about, and one written on
+      // the spot is noise in a column.
+      const late = String(r.created_at || '').slice(0, 10) !== String(r.deployed_at || '').slice(0, 10);
+      h += '<tr><td>' + esc(r.deployed_at) + '</td>' +
+           '<td class="ver">' + esc(r.version) + '</td>' +
+           '<td>' + esc(r.target || '') + '</td>' +
+           '<td>' + esc(r.notes || '') + '</td>' +
+           '<td class="muted">' + (late ? esc(r.created_at) : '') + '</td></tr>';
+    }
+    h += '</table>';
+    out.innerHTML = h;
+  } catch (err) {
+    out.innerHTML = '<p class="err">Could not load: ' + esc(err && err.message ? err.message : err) + '</p>';
+  }
+}
+prefillNow();
+load();
+</script></body></html>`;
 }
 
 /// Landing page for the admin tools. They accumulated one at a time and there
@@ -3677,6 +4306,18 @@ function adminIndexPageHtml() {
   .t { font-weight: 600; color: #fff; margin-bottom: 3px; }
   .t .em { color: #b39ddb; font-size: 12px; font-weight: 400; margin-left: 8px; }
   .d { color: #999; font-size: 13px; line-height: 1.45; }
+  /* The export is a control, not a destination, so it sits in the same card
+     shape as the links without pretending to be one. */
+  .card.export { background: #1d1726; border: 1px solid #2c2438; border-radius: 12px;
+                 padding: 16px 18px; margin-bottom: 12px; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  select, button { background: #241d2e; color: #eee; border: 1px solid #443;
+                   padding: 6px 10px; border-radius: 6px; font: inherit; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { background: #2f2740; }
+  button:disabled { opacity: .5; cursor: default; }
+  #note { color: #777; font-size: 12px; }
+  .warn { color: #e5a373; }
   footer { color: #666; font-size: 12px; margin-top: 26px; line-height: 1.6; }
 </style></head><body><div class="wrap">
 <h1>Mythos Live — Admin</h1>
@@ -3709,6 +4350,68 @@ function adminIndexPageHtml() {
   <div class="d">Conversation transcripts by user and character.</div>
 </a>
 
+<a class="card" href="/admin/deploys">
+  <div class="t">Deploy log <span class="em">written by hand</span></div>
+  <div class="d">What shipped and when. Every number on the other pages is a
+     before/after question, and the &ldquo;before&rdquo; is a deploy — commit
+     time is not deploy time, so nothing else on this system knows.</div>
+</a>
+
+<div class="card export">
+  <div class="t">Export everything</div>
+  <div class="d">Every row this app writes — visits, messages, campaign hits and the
+     deploy log — raw, as one JSON file. Take one before a migration or a schema
+     change: it is the only copy that survives the question nobody thought to ask.</div>
+  <div class="controls">
+    <select id="hours">
+      <option value="24" selected>last 24 hours</option>
+      <option value="168">last 7 days</option>
+      <option value="720">last 30 days</option>
+    </select>
+    <button id="export" onclick="exportAll()">Download JSON</button>
+    <span id="note"></span>
+  </div>
+</div>
+
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+// Fetched rather than linked, so the per-table cap can be reported. A dump that
+// stopped at 50,000 rows of one table looks exactly like a complete one once
+// the file is closed and the traffic that produced it is gone.
+async function exportAll() {
+  const btn = document.getElementById('export');
+  const note = document.getElementById('note');
+  btn.disabled = true;
+  note.textContent = 'Exporting…';
+  try {
+    const hours = document.getElementById('hours').value;
+    const res = await fetch('/api/admin/export-all?hours=' + encodeURIComponent(hours));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mythos-all-' + hours + 'h.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    const rows = res.headers.get('X-Export-Rows') || '?';
+    note.innerHTML = res.headers.get('X-Export-Truncated') === '1'
+      ? '<span class="warn">' + rows + ' rows — one or more tables hit the cap. Narrow the window.</span>'
+      : rows + ' rows exported.';
+  } catch (err) {
+    note.innerHTML = '<span class="warn">Export failed: ' +
+      esc(err && err.message ? err.message : err) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+
 <footer>
   Visits vs Campaigns: Visits needs a real browser running JavaScript, so it is
   the closer proxy for actual people. Campaigns is recorded by the worker itself
@@ -3726,8 +4429,12 @@ function adminSessionsPageHtml() {
          background: #14101a; color: #eee; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   p.sub { color: #999; margin: 0 0 12px; max-width: 70ch; }
-  select { background: #241d2e; color: #eee; border: 1px solid #443; padding: 6px 10px;
-           border-radius: 6px; margin-bottom: 18px; }
+  select, button { background: #241d2e; color: #eee; border: 1px solid #443; padding: 6px 10px;
+           border-radius: 6px; margin-bottom: 18px; font: inherit; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { background: #2f2740; }
+  button:disabled { opacity: .5; cursor: default; }
+  #export-note { color: #777; font-size: 12px; margin-left: 10px; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #2c2438; }
   th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
@@ -3753,6 +4460,20 @@ function adminSessionsPageHtml() {
   .tally .head { color: #e6e6ea; font-weight: 600; }
   .tally .gloss { color: #777; font-size: 12px; line-height: 1.5;
                   margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #2a2a33; }
+  /* Where the arrivals came from. A wrapping row of name+count pairs rather
+     than a table: it is read as a list of places, and at 30-odd countries a
+     table of two columns would push the sessions off the screen entirely. */
+  .countries { border: 1px solid #2a2a33; border-radius: 8px; padding: 12px 14px;
+               margin: 0 0 14px; max-width: 90ch; }
+  .countries h2 { font-size: 12px; color: #b39ddb; text-transform: uppercase;
+                  letter-spacing: .04em; margin: 0 0 8px; font-weight: 600; }
+  .countries ul { list-style: none; margin: 0; padding: 0; display: flex;
+                  flex-wrap: wrap; gap: 4px 18px; }
+  .countries li { font-size: 13px; color: #ddd; }
+  .countries li b { color: #e6e6ea; font-variant-numeric: tabular-nums; }
+  .countries .code { color: #777; font-size: 11px; }
+  .countries .gloss { color: #777; font-size: 12px; line-height: 1.5;
+                      margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #2a2a33; }
   /* Where the visit came from and what it arrived on. Two columns rather than
      a sentence: these are lookup values, read one at a time. */
   .vc-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr);
@@ -3788,7 +4509,11 @@ ${visitTimelineCss()}
   <option value="1000">1,000 rows</option>
   <option value="5000">5,000 rows</option>
 </select>
+<button id="export" onclick="exportCsv()"
+        title="every session in the selected range as CSV — the whole range, not just the rows loaded above">Export CSV</button>
+<span id="export-note" class="note"></span>
 <div id="tally"></div>
+<div id="countries"></div>
 <div id="out">Loading…</div>
 <p class="note" id="footnote"></p>
 <script>
@@ -3814,6 +4539,48 @@ function utcClock(ts) {
 // A day drilled into from the Visits page pins the range; the selector then has
 // nothing to control, so it is hidden rather than left there looking live.
 const DAY = new URLSearchParams(location.search).get('day');
+// The range the table is showing, as query parameters. One definition, used by
+// both the table and the export, so a file can never describe a different
+// window from the page that produced it.
+function rangeQuery() {
+  return DAY ? 'day=' + encodeURIComponent(DAY)
+             : 'days=' + document.getElementById('days').value;
+}
+// Every session in the range as CSV — the whole range, not the rows loaded
+// above. Fetched rather than linked so the cap can be reported: a file that
+// stopped at 20,000 rows looks exactly like a complete one once it is open in
+// a spreadsheet.
+async function exportCsv() {
+  const btn = document.getElementById('export');
+  const note = document.getElementById('export-note');
+  btn.disabled = true;
+  note.textContent = 'Exporting…';
+  try {
+    const res = await fetch('/api/admin/sessions?' + rangeQuery() + '&format=csv');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const name = 'mythos-sessions-' + (DAY || 'last-' + document.getElementById('days').value + '-days') + '.csv';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoked on a turn of the event loop rather than immediately: Safari
+    // cancels the download if the object URL dies in the same tick.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    const rows = res.headers.get('X-Sessions-Rows') || '?';
+    note.innerHTML = res.headers.get('X-Sessions-Truncated') === '1'
+      ? '<span class="warn">' + rows + ' rows — capped. Narrow the range for a complete file.</span>'
+      : rows + ' rows exported.';
+  } catch (err) {
+    note.innerHTML = '<span class="warn">Export failed: ' +
+      esc(err && err.message ? err.message : err) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
 function pick() { load(); }
 function load() {
   const out = document.getElementById('out');
@@ -3831,10 +4598,47 @@ function load() {
 function sv(value) {
   return ' data-sv="' + (value === null || value === undefined ? '' : value) + '"';
 }
+// Full country names, resolved in the browser. Only the two-letter code is
+// stored — it is what request.cf.country gives us — and a code is a poor thing
+// to read a market list from: MY and MX sit one letter apart and are two
+// different countries. Intl already carries the whole ISO 3166 list, so this
+// ships nothing and cannot go stale the way a table in the worker would.
+const REGION_NAMES = (function () {
+  try { return new Intl.DisplayNames(['en'], { type: 'region' }); }
+  catch (e) { return null; }
+})();
+function countryName(code) {
+  if (!code) return 'Unknown';
+  // Cloudflare's two non-country answers: T1 is a Tor exit node, XX is "could
+  // not tell". Neither is a region, and Intl throws on both.
+  if (code === 'T1') return 'Tor network';
+  if (code === 'XX') return 'Unknown';
+  try {
+    const name = REGION_NAMES ? REGION_NAMES.of(code) : null;
+    return name || code;
+  } catch (e) { return code; }
+}
+// Where the arrivals came from, over the whole window rather than the rows
+// that were loaded. The code stays beside the name so this list can be read
+// against the Country column in the table below, which has room for two
+// letters and not for "United Kingdom".
+function renderCountries(rows, arrivals) {
+  const box = document.getElementById('countries');
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const items = rows.map(function (r) {
+    const pc = arrivals ? Math.round(100 * r.visits / arrivals) : 0;
+    return '<li>' + esc(countryName(r.country)) + ' <b>' + r.visits + '</b>' +
+           ' <span class="code">(' + (pc ? pc + '%' : '&lt;1%') +
+           (r.country ? ' &middot; ' + esc(r.country) : '') + ')</span></li>';
+  });
+  box.innerHTML = '<div class="countries"><h2>Countries &mdash; ' + rows.length +
+    ' in this range</h2><ul>' + items.join('') + '</ul>' +
+    '<p class="gloss">Visits, not people, and counted over the whole range rather than the ' +
+    'rows loaded below. <b>Unknown</b> is a visit the edge could not place, not a country. ' +
+    'Percentages are of all arrivals in the range.</p></div>';
+}
 async function render(out) {
-  const q = (DAY ? 'day=' + encodeURIComponent(DAY)
-                 : 'days=' + document.getElementById('days').value) +
-            '&limit=' + document.getElementById('rows').value;
+  const q = rangeQuery() + '&limit=' + document.getElementById('rows').value;
   const res = await fetch('/api/admin/sessions?' + q);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const d = await res.json();
@@ -3843,9 +4647,14 @@ async function render(out) {
   let h = '<div class="wrap"><table class="sortable"><tr><th data-sorted="desc">When (UTC)</th>' +
           '<th>Source</th><th>Path</th>' +
           '<th>Character</th><th>Country</th><th data-type="num">Load</th>' +
-          '<th data-type="num">Dwell</th><th data-type="num">Ticks</th>' +
+          '<th data-type="num" title="wall clock from arrival to the last thing the browser reported">Dwell</th>' +
+          '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Seen</th>' +
+          '<th title="how the visit ended, and how often it was backgrounded first">Exit</th>' +
+          '<th data-type="num">Ticks</th>' +
           '<th data-type="num">Messages</th><th data-type="num">Tapped</th>' +
-          '<th data-type="num">Typed</th><th data-type="num">Failed</th>' +
+          '<th data-type="num">Typed</th>' +
+          '<th data-type="num" title="the longest the visitor waited for a reply in this session">Slowest reply</th>' +
+          '<th data-type="num">Failed</th>' +
           '<th data-nosort>Detail</th></tr>';
   for (const r of rows) {
     // Ticks stop the moment a visitor engages, so they only mean anything for
@@ -3858,15 +4667,35 @@ async function render(out) {
       ? '<span class="warn" title="the funnel recorded a starter tap but no message matches a known starter — backend/src/starters.generated.js is probably stale">starter (unmatched)</span>'
       : '<span class="num">' + (r.tapped || 0) + '</span>';
     const failures = (r.failed || 0) + (r.send_failed || 0);
+    // How the visit ended, in a word, with the number of backgroundings
+    // beside it. A missing exit mode is not "fine" — it means the browser
+    // never reported an ending at all, which is its own outcome and has to
+    // read as unknown rather than as an empty cell.
+    const EXITS = {
+      dismissed: ['closed', 'destroyed while still on screen'],
+      hidden: ['backgrounded', 'destroyed after being put away, and never came back'],
+      bfcache: ['frozen', 'frozen rather than closed — a back gesture can restore this same visit'],
+    };
+    const exit = EXITS[r.exit_mode] || (r.reported_leave
+      ? ['<span class="muted">ended</span>',
+         'the browser reported an ending, but this visit predates the column that says which kind']
+      : ['<span class="muted">unknown</span>',
+         'the browser never reported an ending — the page was destroyed without one, or the beacon was lost']);
+    const hides = r.hide_count
+      ? ' <span class="muted" title="times backgrounded before it ended">&times;' + r.hide_count + '</span>'
+      : '';
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.source) +
          '</td><td>' + esc(r.path) + '</td><td>' + esc(r.character_id || '') +
          '</td><td>' + esc(r.country) +
          '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.dwell_ms) + '>' + dur(r.dwell_ms) +
+         '</td><td class="num"' + sv(r.visible_ms) + '>' + dur(r.visible_ms) +
+         '</td><td title="' + exit[1] + '"' + sv(r.exit_mode || '') + '>' + exit[0] + hides +
          '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' + ticks +
          '</td><td class="num"' + sv(r.messages || 0) + '>' + (r.messages || 0) +
          '</td><td class="num"' + sv(r.tapped || 0) + '>' + tapped +
          '</td><td class="num"' + sv(r.typed || 0) + '>' + (r.typed || 0) +
+         '</td><td class="num"' + sv(r.slowest_reply_ms) + '>' + dur(r.slowest_reply_ms) +
          '</td><td class="num"' + sv(failures) + '>' +
          (failures
            ? '<span class="warn">' + failures + '</span>'
@@ -3879,9 +4708,9 @@ async function render(out) {
          '" data-c="' + esc(r.character_id || '') + '">' +
          (r.messages ? 'chat + trail' : 'trail') + '</a>' +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="13"></td></tr>';
+         '" style="display:none"><td colspan="16"></td></tr>';
   }
-  if (!rows.length) h += '<tr><td colspan="13" class="muted">No sessions in this range.</td></tr>';
+  if (!rows.length) h += '<tr><td colspan="16" class="muted">No sessions in this range.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);
@@ -3920,6 +4749,8 @@ async function render(out) {
       '</div>'
     : '';
 
+  renderCountries(d.countries || [], arrivals);
+
   document.getElementById('footnote').innerHTML =
     esc(rows.length + ' session(s) ' + scope + ' — visits, not people.') +
     // Sorting is done in the browser, so a truncated range sorts the slice
@@ -3936,7 +4767,15 @@ async function render(out) {
     // here would be wrong the moment the cadence moves, which is the same trap
     // the dwell-bucket headers fell into.
     'Ticks stop at the first sign of engagement and cap at ${screenPingSeconds(SCREEN_PING_MAX_TICKS)}s, so they measure hesitation, not session length. ' +
-    'Dwell is reported by the browser on page hide and latches at the first tab switch — treat it as directional. ' +
+    // Dwell no longer latches at the first visibilitychange — leave fires on
+    // pagehide alone and the hide checkpoints carry the clock — so the caveat
+    // that used to sit here ("latches at the first tab switch") is now simply
+    // untrue, and the two columns need telling apart instead.
+    'Dwell is wall clock from arrival to the last thing the browser reported; <b>Seen</b> is the time the page was ' +
+    'actually on screen, summed across backgroundings, and is the honest figure where both exist. ' +
+    'Both are blank for visits that predate the measurement — unknown, not zero. ' +
+    'Exit says how the visit ended: <b>frozen</b> is not an ending at all, since a back gesture can restore that same visit. ' +
+    'Slowest reply is the longest the visitor waited on the AI in that session, and is blank when no message was sent. ' +
     'Tapped vs typed is decided by matching the message against the starters that character offers.';
 
   out.querySelectorAll('a.drill').forEach(function (a) {
@@ -4108,6 +4947,14 @@ function renderVisitDetail(cell, detail, messages) {
            '<div class="muted" style="font-size:12px;margin-bottom:3px">' +
            esc(utcClock(m.created_at)) + ' &middot; ' + esc(m.character_id || m.scenario || '') +
            (m.status && m.status !== 'completed' ? ' &middot; <b>' + esc(m.status) + '</b>' : '') +
+           // How long they waited on this one reply. Marked when it crosses
+           // ten seconds, because that is the wait worth explaining a
+           // departure by — and it is the whole reason the column exists.
+           (m.latency_ms
+             ? ' &middot; <span' + (m.latency_ms >= 10000 ? ' class="warn"' : '') +
+               ' title="how long this reply took, end to end">waited ' +
+               dur(m.latency_ms) + '</span>'
+             : '') +
            '</div>' +
            '<div style="margin-bottom:3px"><b>User:</b> ' + esc(m.user_message) + '</div>' +
            '<div class="muted"><b>Reply:</b> ' +
@@ -4661,6 +5508,7 @@ ${visitTimelineCss()}
             <th class="sortable" data-sort="message_count">Messages</th>
             <th class="sortable" data-sort="tick_count">Ticks</th>
             <th class="sortable" data-sort="error_count">Errors</th>
+            <th class="sortable" data-sort="slowest_reply_ms" title="the longest this conversation waited for a reply">Slowest reply</th>
             <th class="sortable" data-sort="total_tokens">Tokens</th>
             <th class="sortable" data-sort="first_at">First</th>
             <th class="sortable" data-sort="last_at">Last active</th>
@@ -4890,7 +5738,7 @@ ${visitTimelineJs()}
   }
 
   function loadConversations() {
-    emptyMessage(convRowsEl, 8, "Loading...", "empty");
+    emptyMessage(convRowsEl, 9, "Loading...", "empty");
     summaryEl.textContent = "";
     var sp = filterParams();
     sp.set("limit", state.limit);
@@ -4899,7 +5747,7 @@ ${visitTimelineJs()}
       .then(function (r) { return r.json(); })
       .then(renderConversations)
       .catch(function (err) {
-        emptyMessage(convRowsEl, 8, "Failed to load: " + err.message, "error");
+        emptyMessage(convRowsEl, 9, "Failed to load: " + err.message, "error");
       });
   }
 
@@ -4907,7 +5755,7 @@ ${visitTimelineJs()}
     lastData = data;
     convRowsEl.innerHTML = "";
     if (data.error) {
-      emptyMessage(convRowsEl, 8, data.error, "error");
+      emptyMessage(convRowsEl, 9, data.error, "error");
       pageInfoEl.textContent = "";
       prevBtnEl.disabled = state.offset === 0;
       nextBtnEl.disabled = true;
@@ -4915,7 +5763,7 @@ ${visitTimelineJs()}
     }
     var convs = data.conversations || [];
     if (convs.length === 0) {
-      emptyMessage(convRowsEl, 8, "No conversations match these filters.", "empty");
+      emptyMessage(convRowsEl, 9, "No conversations match these filters.", "empty");
     }
     prevBtnEl.disabled = state.offset === 0;
     nextBtnEl.disabled = typeof data.total === "number"
@@ -4942,6 +5790,15 @@ ${visitTimelineJs()}
       var errCell = td(c.error_count > 0 ? c.error_count : "");
       if (c.error_count > 0) errCell.className = "err-badge";
       row.appendChild(errCell);
+
+      // Blank rather than zero when nothing was ever waited on — a silent
+      // visit did not get an instant reply, it got no reply to wait for. Long
+      // waits are flagged at the ten-second mark, which is where a wait starts
+      // being a plausible reason the conversation stopped.
+      var waitCell = td(c.slowest_reply_ms ? fmtDuration(c.slowest_reply_ms) : "");
+      if (c.slowest_reply_ms >= 10000) waitCell.className = "err-badge";
+      row.appendChild(waitCell);
+
       row.appendChild(td(silent ? "" : (c.total_tokens || 0)));
       row.appendChild(td(fmtTime(c.first_at)));
       row.appendChild(td(fmtTime(c.last_at)));
@@ -5175,7 +6032,11 @@ ${visitTimelineJs()}
 
     transcriptText = buildTranscriptText(name, data, msgs);
 
-    if (data.tick_count || data.left_at) {
+    // visible_ms counts too: a visit killed while backgrounded has no leave
+    // row and may have no ticks either, and its hide checkpoints are then the
+    // only account of it there is.
+    if (data.tick_count || data.left_at ||
+        data.visible_ms !== null && data.visible_ms !== undefined) {
       var sum = document.createElement("div");
       sum.className = "tl-summary";
       var parts = [];
@@ -5184,8 +6045,24 @@ ${visitTimelineJs()}
           fmtDuration(tickSpanMs(data)) + " looking at the character)");
       }
       if (data.left_at) {
+        var ENDINGS = {
+          dismissed: "closed while on screen",
+          hidden: "backgrounded, then never came back",
+          bfcache: "frozen, not closed - a back gesture could restore it",
+        };
         parts.push("left <b>" + fmtTime(data.left_at) + "</b>" +
-          (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : ""));
+          (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : "") +
+          (ENDINGS[data.exit_mode] ? " - " + ENDINGS[data.exit_mode] : ""));
+      }
+      // The same pair the sessions page reports, and for the same reason: wall
+      // clock counts the seconds this visit spent behind another app, and this
+      // counts only the ones it was watched for. They diverge exactly where
+      // someone backgrounded it, which the old latching leave read as leaving.
+      if (data.visible_ms !== null && data.visible_ms !== undefined) {
+        parts.push("on screen for <b>" + fmtDuration(data.visible_ms) + "</b>" +
+          (data.hide_count
+            ? ", backgrounded " + data.hide_count + (data.hide_count === 1 ? " time" : " times")
+            : " without interruption"));
       }
       sum.innerHTML = parts.join("<br>");
       messagesEl.appendChild(sum);
@@ -5221,7 +6098,10 @@ ${visitTimelineJs()}
       var meta = document.createElement("div");
       meta.className = "ex-meta";
       meta.textContent = fmtTime(m.created_at) + " | " + m.status + " (" + m.status_code + ") | " + m.model +
-        (m.total_tokens ? " | " + m.total_tokens + " tokens" : "");
+        (m.total_tokens ? " | " + m.total_tokens + " tokens" : "") +
+        // What the visitor actually waited, on the exchange they waited it on.
+        // Absent on rows written before migration 0007 rather than shown as 0.
+        (m.latency_ms ? " | waited " + fmtDuration(m.latency_ms) : "");
       if (m.error) {
         var errSpan = document.createElement("span");
         errSpan.className = "err-text";

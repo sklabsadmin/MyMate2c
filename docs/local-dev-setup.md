@@ -84,6 +84,34 @@ Then `http://localhost:8788` (or `/c/<character>` for a specific one).
 For a faster restart that skips the Flutter rebuild (e.g. after only editing
 `.dev.vars`): `SKIP_BUILD=1 bash tool/preview_web.sh serve`.
 
+## Worker tests
+
+```bash
+npm test
+```
+
+No setup, no server, no network: `backend/test/` builds a SQLite database from
+the real files in `backend/migrations/`, wraps it in a D1-shaped shim, imports
+the real `backend/src/worker.js`, and drives the admin routes through
+`worker.fetch`. Runs in about a second on Node's built-in test runner — no
+dependencies to install.
+
+The point of building the schema from the migrations rather than from a
+fixture: a test written against a hand-rolled `CREATE TABLE` only ever proves
+that the test agrees with itself. This one fails when a query and a migration
+disagree, which is the failure that actually happens here.
+
+What it covers: the session, visit-detail, transcript, conversation and visits
+endpoints; the CSV and whole-database exports; the deploy log, including the
+paths taken when migration 0010 has not been applied; and every admin page
+rendered with its inline script parsed — a stray backtick in one of those
+template literals otherwise serves a 200 that does nothing.
+
+Adding a test: seed what you need in `harness.mjs` and name the test after the
+mistake it catches, not the function it calls. Two of the current names are
+"backgrounding count comes from the reported column, not the hide rows" and
+"CSV writes unknowns as empty, never as zero" — both are bugs that shipped.
+
 ## What this local setup cannot do, by design
 
 From `tool/preview_web.sh`'s own docs — not bugs, not things to try to fix:

@@ -392,7 +392,16 @@
       hiddenAt = Date.now();
       hideCount++;
       if (hideCount <= MAX_VISIBILITY_EVENTS) {
-        send('hide', { durationMs: Date.now() - ARRIVED_AT, visibleMs: visibleMs });
+        // The running count rides along on every checkpoint, not only on
+        // leave. A visit killed while backgrounded never sends a leave at all
+        // — the population this whole change exists to see — and counting the
+        // hide rows instead would stop at MAX_VISIBILITY_EVENTS and quietly
+        // report a flapping visit as exactly 20 backgroundings.
+        send('hide', {
+          durationMs: Date.now() - ARRIVED_AT,
+          visibleMs: visibleMs,
+          hideCount: hideCount
+        });
       }
     }
 

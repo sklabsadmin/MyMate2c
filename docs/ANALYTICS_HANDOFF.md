@@ -18,12 +18,29 @@ Cloudflare D1 database `mymate2_db` (binding `CHAT_LOGS_DB`), on worker
 | Table | One row per | Key columns |
 |---|---|---|
 | `conversation_logs` | chat message | `user_id`, `chat_id`, `visit_id`, `latency_ms`, `status`, `total_tokens`, `created_at` |
-| `site_visits` | funnel event | `visit_id`, `event`, `source`, `path`, `duration_ms`, `detail`, `viewport_w`, `failure_reason` |
+| `site_visits` | funnel event | `visit_id`, `event`, `source`, `path`, `duration_ms`, `detail`, `viewport_w`, `viewport_h`, `failure_reason`, `visible_ms`, `hide_count`, `exit_mode`, `nav_type` |
 | `referral_visits` | `/c/<char>` arrival | `character_id`, `source`, `utm_*`, `known_character` |
+| `deploy_log` | deploy, entered by hand | `version`, `deployed_at`, `target`, `notes` |
 | `user_profiles` / `linked_accounts` | signed-in user | identity only, no behaviour |
 
 `site_visits.event` is one of: `arrive`, `app_ready`, `character_tap`,
-`first_message`, `login_gate`, `send_failed`, `leave`.
+`input_typed`, `starter_tap`, `first_message`, `login_gate`, `send_failed`,
+`screen_ping`, `strip_rotate`, `hide`, `show`, `leave`.
+
+Three of those need reading carefully:
+
+- **`screen_ping`** is not a fixed interval. Twice a second for the first ten
+  seconds, then every three seconds, capped at thirty. A tick count is
+  therefore not a count of half-seconds — convert with `screenPingSeconds` in
+  the worker, or use the span between the first and last tick. Rows recorded
+  before 2026-08-08 were a flat 0.5s and are **not comparable**.
+- **`hide` / `show`** are checkpoints, not endings. `leave` fires on `pagehide`
+  alone, so a visit backgrounded and then killed has no `leave` row at all and
+  its last `hide` is the only account of how it ended. Both the dwell and the
+  visible-time helpers in the worker fall back to it.
+- **`duration_ms` means three different things** by event: time-to-app-ready on
+  `app_ready`, wall-clock-so-far on `hide` and `leave`, and time-spent-away on
+  `show`.
 
 Rough scale as of 2026-07-31: `conversation_logs` ~153 rows, `site_visits` ~674
 rows. **This is a small dataset.** Most differences will not be statistically
@@ -87,6 +104,8 @@ and irrelevant to the data). Use these as query boundaries.
 | 2026-07-31 07:42 | Splash 3s dwell removed; **no splash at all on `/c/` links** | Expect bounce-under-3s to change. This is the big before/after. |
 | 2026-07-31 09:50 | New dark splash logo as WebP (886KB → 78KB at 3x) | Load times on `/` should improve. |
 | 2026-08-10 | Real-user-id guard on writes + 57 junk rows deleted (see 4.5) | `conversation_logs` stops accepting invented ids; `site_visits.app_user_id` stops storing them. 2026-08-03..05 message counts drop sharply — that is the fake traffic leaving, not real usage falling. |
+| 2026-08-11 | `viewport_h`; `visible_ms` / `hide_count` / `exit_mode` / `nav_type`; `leave` stops latching | **The dwell break.** Before this, `leave` fired on the first `visibilitychange` and latched, so a visit backgrounded for a second was recorded as having ended there — 24 of 68 sessions kept firing ticks after their own recorded departure. Dwell before and after this date measure different things; do not pool them. `visible_ms` is the honest figure and exists only after it. |
+| 2026-08-12 | `deploy_log` (migration 0010) + admin deploy log | Deploy times stop being reconstructed from memory. Rows before this date do not exist — this table starts empty, and everything above it in this section is the historical record it replaces. |
 
 ---
 
@@ -232,6 +251,24 @@ Any analysis using them starts at that timestamp.
 
 `latency_ms` measures the AI call only — not network time to the user's device.
 
+`site_visits.viewport_h` starts 2026-08-11, and `visible_ms`, `hide_count`,
+`exit_mode` and `nav_type` start with the deploy the same day. Same rule: NULL
+in those columns means *not measured*, never zero. A visit with no `visible_ms`
+is one that predates the measurement, and averaging it as 0 understates every
+figure it touches — which is precisely the mistake the latching `leave` made
+for a fortnight.
+
+### 4.8 Where these columns are surfaced
+
+Written and never read is the failure mode this section exists to prevent —
+`latency_ms` sat unread for twelve days. As of 2026-08-12 they are all on
+screen: `/admin/sessions` shows dwell, visible time, exit mode and slowest
+reply per session, with the full event trail and per-message wait in the
+drill-down; `/admin/logs` shows slowest reply per conversation. `hide_count` is
+read from the column rather than counted from `hide` rows — the client stops
+writing those at 20 while continuing to count, so counting rows caps a flapping
+visit at exactly 20.
+
 ---
 
 ## 5. What was already found (don't re-derive)
@@ -300,7 +337,8 @@ Ranked by value, given the caveats:
 2. **Where in messages 1→5 do people stop?** `conversation_logs` grouped by
    `visit_id`, post-2026-07-30 17:02.
 3. **Does reply latency predict abandonment?** Correlate `latency_ms` against
-   whether the session sent another message.
+   whether the session sent another message. The sessions page now carries
+   slowest-reply per session, so this can be eyeballed before it is queried.
 4. **Left waiting vs left after reading** — compare `leave` timestamp against
    `created_at + latency_ms` of the last message.
 5. **Why is Penelope converting at 11%** when Zeus manages 33%?
