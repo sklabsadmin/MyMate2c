@@ -176,17 +176,35 @@ chat_check "oedipus"  "Oedipus (King of Thebes)"   "chat via Inworld"
 # Comparing to build/web/version.json is what turns it from a report into a
 # test. Only possible when run right after a build; when that file is absent
 # (smoke-testing a URL from elsewhere) fall back to reporting what is served.
-version="$(curl -s --max-time 30 -A "$UA" "$URL/version.json?smoke=$$-$(date +%s)" || true)"
+# It RETRIES, because the first version of this check did not and that was
+# wrong. On 2026-08-12 it failed a good deploy of 1.6.5+61: the edge was still
+# serving the previous version.json at that instant and agreed a minute later.
+# The unique query string does not reliably bust Cloudflare's cache for assets —
+# verify_deploy.sh exists precisely because of that and retries with sleeps.
+# Failing on the first read turned a known-transient lag into a red deploy, and
+# because the deploy chain is && -joined it aborted before assert_domains ran,
+# so the domain check was skipped by a false alarm. A check whose own failure
+# message says "re-run in a minute" should do the re-running itself.
+version=""
+for attempt in 1 2 3 4 5 6; do
+  version="$(curl -s --max-time 30 -A "$UA" "$URL/version.json?smoke=$$-$(date +%s)-$attempt" || true)"
+  # Nothing to compare against, or already agrees: done either way.
+  [[ ! -f build/web/version.json ]] && break
+  [[ "$version" == "$(cat build/web/version.json)" ]] && break
+  [[ "$attempt" == 6 ]] && break
+  sleep 10
+done
+
 if [[ "$version" != *'"version"'* ]]; then
   fail=1
   note "version.json" "FAILED — not served"
 elif [[ -f build/web/version.json ]] && [[ "$version" != "$(cat build/web/version.json)" ]]; then
   fail=1
-  note "version.json" "FAILED — served version is not the local build
+  note "version.json" "FAILED — served version is not the local build, after 6 tries over ~1 minute
        served: $(printf '%s' "$version" | tr -d '{}\"' | tr ',' ' ')
        built : $(tr -d '{}"' < build/web/version.json | tr ',' ' ')
-       Either the edge is still serving the previous copy (re-run in a minute)
-       or the build did not pick up the pubspec version."
+       Persisting this long means the build did not pick up the pubspec version,
+       rather than the edge lagging — check pubspec.yaml and rebuild."
 else
   note "version.json" "$(printf '%s' "$version" | tr -d '{}"' | tr ',' ' ')"
 fi
