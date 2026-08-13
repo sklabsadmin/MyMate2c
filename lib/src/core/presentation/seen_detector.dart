@@ -76,22 +76,50 @@ class _SeenDetectorState extends State<SeenDetector> {
   Timer? _dwellTimer;
   int _dwellAttempts = 0;
   bool _reported = false;
+  bool _checkScheduled = false;
 
   @override
   void initState() {
     super.initState();
-    widget.revalidate.addListener(_check);
-    // First chance to be visible is the frame after this one — geometry does not
-    // exist until layout has run.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+    widget.revalidate.addListener(_scheduleCheck);
+    _scheduleCheck();
+  }
+
+  /// Queues a check for after the current frame, once at a time.
+  ///
+  /// Never checks synchronously, and that is the entire point. A scroll
+  /// notifies its listeners *before* the frame it causes is laid out, so a
+  /// check run from the listener reads the position the bubble had a frame ago.
+  /// For a bubble already on screen that is merely inaccurate; for one arriving
+  /// on screen it is fatal, because the stale answer is "off screen" and a
+  /// scroll relayouts without rebuilding — so nothing calls build(), no further
+  /// notification arrives once the list settles, and the bubble is never looked
+  /// at again.
+  ///
+  /// That cost one bubble per scroll, scattered through the conversation rather
+  /// than clustered, which is precisely the shape that reads as a delivery
+  /// fault rather than a client bug.
+  void _scheduleCheck() {
+    if (_checkScheduled || _reported) return;
+    _checkScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkScheduled = false;
+      _check();
+    });
+    // addPostFrameCallback does not ask for a frame, it only books a seat on the
+    // next one. A scroll produces a frame anyway, but the app coming back to the
+    // foreground dirties nothing — so without this the check for every bubble
+    // already on screen waits for something unrelated to trigger a repaint, and
+    // on a still screen that can be never.
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   @override
   void didUpdateWidget(SeenDetector oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.revalidate != widget.revalidate) {
-      oldWidget.revalidate.removeListener(_check);
-      widget.revalidate.addListener(_check);
+      oldWidget.revalidate.removeListener(_scheduleCheck);
+      widget.revalidate.addListener(_scheduleCheck);
     }
     // List items are recycled onto different messages as the list scrolls, so a
     // new id here means this slot is now showing a different bubble and has to
@@ -100,13 +128,13 @@ class _SeenDetectorState extends State<SeenDetector> {
       _reported = false;
       _dwellAttempts = 0;
       _dwellTimer?.cancel();
-      WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+      _scheduleCheck();
     }
   }
 
   @override
   void dispose() {
-    widget.revalidate.removeListener(_check);
+    widget.revalidate.removeListener(_scheduleCheck);
     _dwellTimer?.cancel();
     super.dispose();
   }
@@ -177,5 +205,11 @@ class _SeenDetectorState extends State<SeenDetector> {
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) {
+    // A rebuild is the one signal that always accompanies this bubble arriving
+    // somewhere new, whether the list scrolled, grew, or recycled this slot onto
+    // a different message.
+    _scheduleCheck();
+    return widget.child;
+  }
 }

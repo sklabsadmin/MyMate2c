@@ -219,13 +219,27 @@ class DeliveryLog {
   bool _flushing = false;
   int _turnCounter = 0;
 
+  /// Set while no chat screen is alive to receive bubbles.
+  ///
+  /// A retry timer that outlives the screen achieves nothing: the receipts it
+  /// would send are already on disk, and the next [init] picks them up. Left
+  /// running it is simply a timer nobody is waiting on — which is also why the
+  /// existing chat-screen tests failed the moment this class was wired in, with
+  /// a five-minute backoff still pending after the tree was disposed.
+  bool _stopped = false;
+
   /// Loads any receipts left over from a previous run and tries to send them.
   ///
   /// The leftovers are the interesting ones — a queue that survived a reload is
   /// usually a queue that could not be delivered — so this runs at startup
   /// rather than waiting for the first new bubble.
   Future<void> init() async {
-    if (_ready) return;
+    // Re-entered every time a chat screen opens, not only on the first one.
+    _stopped = false;
+    if (_ready) {
+      _scheduleFlush();
+      return;
+    }
     try {
       _prefs = await SharedPreferences.getInstance();
       _ready = true;
@@ -417,8 +431,20 @@ class DeliveryLog {
     }
   }
 
+  /// Stands the queue down when the last chat screen goes away.
+  ///
+  /// Not a teardown: nothing is discarded. The receipts stay on disk and the
+  /// next [init] resumes them — this only stops timers that have no screen left
+  /// to serve.
+  void stop() {
+    _stopped = true;
+    _flushTimer?.cancel();
+    _retryTimer?.cancel();
+  }
+
   /// Coalesces the several bubbles of one reply into a single request.
   void _scheduleFlush() {
+    if (_stopped) return;
     if (!_hasDirty) return;
     if (_flushTimer?.isActive == true) return;
     _flushTimer = Timer(
@@ -575,6 +601,7 @@ class DeliveryLog {
 
   void _scheduleRetry({bool immediate = false}) {
     _retryTimer?.cancel();
+    if (_stopped) return;
     if (!_hasDirty) return;
 
     if (immediate) {

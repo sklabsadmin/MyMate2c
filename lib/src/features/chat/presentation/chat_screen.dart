@@ -364,7 +364,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Leaving the chat is the last moment a bubble drawn a second ago can still
     // be reported. Not awaited — dispose cannot wait — but the receipts are
     // already on disk, so the worst case is that they go out on the next run.
+    //
+    // Then stand the queue down: with no chat screen left, a pending retry has
+    // nothing to serve that the next launch will not pick up anyway.
     DeliveryLog.instance.flush();
+    DeliveryLog.instance.stop();
     _surfaceChanged.dispose();
     super.dispose();
   }
