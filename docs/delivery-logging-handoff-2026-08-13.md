@@ -27,7 +27,7 @@ network one.
 
 | | |
 |---|---|
-| Flutter tests | 21 pass |
+| Flutter tests | 36 pass |
 | Backend tests | 48 pass |
 | Analyzer errors | 0 |
 | Deployed | no |
@@ -48,6 +48,9 @@ network one.
   exactly what the provider returned.
 - `lib/src/core/services/delivery_log.dart` — the durable queue.
 - `lib/src/core/presentation/seen_detector.dart` — decides "seen".
+- `test/delivery_log_test.dart` — the queue's own tests: the round trip, what it
+  is allowed to forget, the dropped count, and the three failure modes (refused,
+  unreachable, partially acked).
 - `chat_screen.dart` — `_addMessage` now requires an `origin`, so a new way for
   the character to speak cannot go unlogged by omission.
 - `/admin/delivery` + `/api/admin/delivery` — the read surface.
@@ -71,25 +74,32 @@ Verified live against a local `wrangler dev --local` with the Odysseus opening:
    `local_fallback`, and — most importantly — **the fidelity check** are
    untested against real data. `fidelity.checkable` was `0` in every run.
    This is the actual product; the rest is scaffolding around it.
-2. **The offline/tombstone path.** Failed flush → queue survives → backoff
-   retry → `queued_ms` records the outage. Only the happy path has been seen,
-   and this mechanism is what the whole regional theory rests on. Testable by
-   pointing the client at a dead port.
+2. **The offline/tombstone path, live.** Failed flush → queue survives → backoff
+   retry → `queued_ms` records the outage. `test/delivery_log_test.dart` now
+   covers the queue's half of this against a fake adapter that refuses, that
+   never connects, and that acks only some of a batch — but nothing has yet
+   watched a real row land after a real outage, and `queued_ms` in particular
+   has only ever been observed at ~240ms. Testable by pointing the client at a
+   dead port.
 3. **`seen`, after the last two fixes.** Nine unit tests cover it, but the final
    live run reported `seen=0` because the browser pane was hidden — which is
    correct behaviour, not a regression. Needs one run with the pane visible.
-4. `queue_dropped` / the queue cap. Never reached.
+4. `queue_dropped` / the queue cap, live. The unit tests pin down what the
+   client sends; the cap itself has still never been reached by a real session.
 
 ## Bugs already found and fixed — do not re-introduce
 
-All four were silent, and all four produced *the same signature as the regional
-fault this feature exists to detect*: rows with intent recorded and nothing
-after. That is why this cannot be trusted without the calibration above.
+1–5 were silent, and every one of them produced *the same signature as the
+regional fault this feature exists to detect*: rows with intent recorded and
+nothing after. 6 and 7 are worse in a different way — they corrupt rows that
+did arrive, so they do not look like absence at all. That is why this cannot be
+trusted without the calibration above.
 
 1. **Acked receipts were deleted from the queue.** Intent for a whole reply is
    flushed within 250ms; the bubbles are not drawn for another ten seconds, so
    every render and sighting arrived to find its receipt gone. Receipts now stay
-   until the bubble is *seen*, with a `dirty` flag so acknowledged ones are not
+   until the bubble is *seen* — or until the screen that could report it goes
+   away, which is 5 below — with a `dirty` flag so acknowledged ones are not
    resent on every flush.
 2. **A dwell that elapsed mid-scroll gave up permanently.** Now re-arms.
 3. **Scroll checks read stale geometry.** Scroll listeners fire *before* the
@@ -100,10 +110,37 @@ after. That is why this cannot be trusted without the calibration above.
    anyway, but the app returning to the foreground dirties nothing, so checks
    for bubbles already on screen waited on an unrelated repaint. It now calls
    `scheduleFrame()`.
+5. **The queue never released a receipt it could no longer complete.** A receipt
+   was freed only once its bubble was *seen*. But a receipt is reachable only
+   through the chat screen's own map of bubble ids — a message restored from
+   history deliberately carries none — so the moment that screen was disposed,
+   every bubble the visitor had not scrolled to became unstampable and was kept
+   forever anyway. An abandoned welcome script is dozens of those (the live run:
+   51 declared, 3 seen), so the queue reached its 1000 cap within a few dozen
+   sessions, re-encoding the whole thing to disk on every recorded bubble along
+   the way. `stop()` now closes the receipts and drops what it cannot complete,
+   `init()` keeps only what is still undelivered, and an ack frees a closed
+   receipt instead of holding it.
+6. **`queue_dropped` was multiplied by the batch size.** The count was stamped on
+   every receipt in a flush, and `deliveryReport` sums the column across rows —
+   so five dropped receipts riding out with forty others reported as two
+   hundred. It is a property of the queue, not of a bubble; one receipt in the
+   batch carries it now. This mattered more than an ordinary off-by-N: it is the
+   one number that says a session's record is incomplete.
+7. **`bubble_id` was not unique across visitors.** `turn_<ms>_<counter>` with the
+   counter restarting each run makes `turn_<ms>_1` the first turn of every
+   session on every device, and `bubble_id` is a primary key across the whole
+   table. Two visitors starting a chat in the same millisecond would collide,
+   and the worker's `ON CONFLICT` does not overwrite `user_id` or `text` — so
+   one visitor's bubbles would be folded into the other's row rather than
+   rejected. A per-run random tag now sits in the turn id.
 
 `test/seen_detector_test.dart` pins down 2–4, plus the cases that must *not*
 report: below the fold, flicked past, hidden tab, and a message restored from
 history (which has no receipt and must never be reported as freshly read).
+`test/delivery_log_test.dart` pins down 1 and 5–7. Each of those four was
+confirmed by backing the fix out and watching the test fail — 6 in particular
+reports `[7, 7, 7]` where the report should see `[7]`.
 
 ## How to run it
 

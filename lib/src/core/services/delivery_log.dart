@@ -59,6 +59,7 @@ class _Receipt {
     this.seenAt,
     this.attempts = 0,
     this.dirty = true,
+    this.closed = false,
   });
 
   final String bubbleId;
@@ -94,6 +95,18 @@ class _Receipt {
   /// along with it.
   bool dirty;
 
+  /// Whether the screen that could still stamp this receipt has gone away.
+  ///
+  /// A receipt is only reachable while its chat screen is alive: the bubble ids
+  /// live in that screen's own map, and a message restored from history
+  /// deliberately carries none. So once the screen is disposed — or the app
+  /// restarted — [DeliveryLog.markRendered] and [DeliveryLog.markSeen] can
+  /// never name this receipt again.
+  ///
+  /// Not persisted, because anything read back from disk is by definition from
+  /// a previous run; [fromJson] sets it unconditionally.
+  bool closed;
+
   /// True once there is nothing further to learn about this bubble: it was seen,
   /// so no later event can change the record.
   ///
@@ -104,6 +117,16 @@ class _Receipt {
   /// intent would have nothing left to attach the render and the sighting to,
   /// and both would be lost in silence. Only a sighting ends the story.
   bool get isComplete => seenAt != null;
+
+  /// True once keeping this receipt can no longer teach anything: either the
+  /// bubble was seen, or the screen that could have reported it is gone.
+  ///
+  /// The second half is what stops the queue growing forever. Waiting only on
+  /// [isComplete] means a bubble the visitor never scrolled to is kept for a
+  /// sighting that has become impossible — and most of a welcome script is
+  /// exactly that, so an abandoned opening left dozens of receipts on disk that
+  /// nothing could ever complete or remove.
+  bool get canDiscard => isComplete || closed;
 
   Map<String, dynamic> toJson() => {
     'bubbleId': bubbleId,
@@ -153,6 +176,10 @@ class _Receipt {
       seenAt: json['seenAt'] as String?,
       attempts: json['attempts'] is int ? json['attempts'] as int : 0,
       dirty: json['dirty'] != false,
+      // A receipt read back from disk belongs to a run that has ended. Its
+      // bubble cannot be stamped again, so it is kept only long enough to be
+      // delivered.
+      closed: true,
     );
   }
 }
@@ -219,6 +246,38 @@ class DeliveryLog {
   bool _flushing = false;
   int _turnCounter = 0;
 
+  /// Tells apart two devices that began a turn in the same millisecond.
+  ///
+  /// message_delivery.bubble_id is a primary key across every visitor, and a
+  /// turn id of millisecond-plus-counter is not unique enough to be one:
+  /// [_turnCounter] restarts at zero each run, which makes `turn_<ms>_1` the
+  /// first turn of every session on every device. Two visitors opening a chat
+  /// in the same millisecond would then claim the same bubble ids, and the
+  /// worker's ON CONFLICT — which does not overwrite user_id or text — would
+  /// fold one visitor's bubbles into the other's row instead of rejecting
+  /// them. Silently, and leaving the same trace as a delivery failure.
+  final String _runTag = _makeRunTag();
+
+  /// Random.secure rather than Random, because the default generator is seeded
+  /// from the clock on some platforms — which would correlate on exactly the
+  /// two devices this is meant to separate. Falls back instead of throwing:
+  /// nothing in this class may break a chat.
+  static String _makeRunTag() {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    Random random;
+    try {
+      random = Random.secure();
+    } catch (_) {
+      random = Random();
+    }
+    return String.fromCharCodes(
+      List.generate(
+        6,
+        (_) => alphabet.codeUnitAt(random.nextInt(alphabet.length)),
+      ),
+    );
+  }
+
   /// Set while no chat screen is alive to receive bubbles.
   ///
   /// A retry timer that outlives the screen achieves nothing: the receipts it
@@ -254,11 +313,23 @@ class DeliveryLog {
           for (final entry in decoded) {
             if (entry is Map<String, dynamic>) {
               final receipt = _Receipt.fromJson(entry);
-              if (receipt != null) _pending[receipt.bubbleId] = receipt;
+              // Still unsent is the only reason to keep one: everything read
+              // back from disk is closed, so a receipt the worker has already
+              // acknowledged has nothing left to send and no way left to learn
+              // anything. Dropping those here is what stops the queue carrying
+              // every unseen bubble of every previous session for the life of
+              // the install — an abandoned welcome script is dozens of them.
+              if (receipt != null && receipt.dirty) {
+                _pending[receipt.bubbleId] = receipt;
+              }
             }
           }
         }
       }
+      // The load above may have discarded some of what is on disk. Write the
+      // survivors back rather than waiting for the next bubble, so a run that
+      // adds nothing still shrinks the stored queue.
+      _persist();
 
       try {
         final info = await PackageInfo.fromPlatform();
@@ -303,7 +374,7 @@ class DeliveryLog {
   /// welcome script.
   String beginTurn() {
     _turnCounter++;
-    return 'turn_${DateTime.now().millisecondsSinceEpoch}_$_turnCounter';
+    return 'turn_${_runTag}_${DateTime.now().millisecondsSinceEpoch}_$_turnCounter';
   }
 
   /// Records that the app has committed to showing this bubble, and returns the
@@ -401,11 +472,15 @@ class DeliveryLog {
     final doomed = <String>[];
     for (final entry in _pending.entries) {
       if (doomed.length >= overflow) break;
-      if (entry.value.isComplete) doomed.add(entry.key);
+      if (entry.value.canDiscard) doomed.add(entry.key);
     }
+    // Set rather than a list scan: this runs on every recorded bubble, and
+    // contains() over a thousand keys inside a thousand-iteration loop is a
+    // million comparisons on the frame that draws the bubble.
+    final alreadyDoomed = doomed.toSet();
     for (final key in _pending.keys) {
       if (doomed.length >= overflow) break;
-      if (!doomed.contains(key)) doomed.add(key);
+      if (!alreadyDoomed.contains(key)) doomed.add(key);
     }
 
     for (final key in doomed) {
@@ -433,13 +508,24 @@ class DeliveryLog {
 
   /// Stands the queue down when the last chat screen goes away.
   ///
-  /// Not a teardown: nothing is discarded. The receipts stay on disk and the
-  /// next [init] resumes them — this only stops timers that have no screen left
-  /// to serve.
+  /// Stops the timers, which have no screen left to serve, and closes the
+  /// receipts: with that screen gone nothing holds their bubble ids any more,
+  /// so no render or sighting can ever be reported against them again.
+  ///
+  /// Undelivered receipts stay — on disk, and resumed by the next [init]. What
+  /// goes is the ones that were only being kept in the hope of a stamp that has
+  /// now become impossible. Leaving those was a slow leak of exactly the
+  /// receipts a session produces most of: an opening the visitor walked away
+  /// from is dozens of bubbles that were drawn and never seen.
   void stop() {
     _stopped = true;
     _flushTimer?.cancel();
     _retryTimer?.cancel();
+    for (final receipt in _pending.values) {
+      receipt.closed = true;
+    }
+    _pending.removeWhere((_, receipt) => !receipt.dirty);
+    _persist();
   }
 
   /// Coalesces the several bubbles of one reply into a single request.
@@ -479,33 +565,52 @@ class DeliveryLog {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final droppedAtSend = _dropped;
 
-      final body = jsonEncode({
-        'receipts': batch.map((r) {
-          // queuedAtMs, attempts and dirty are the queue's own bookkeeping —
-          // queuedMs and flushAttempts below are what the worker is told.
-          final json = r.toJson()
-            ..remove('queuedAtMs')
-            ..remove('attempts')
-            ..remove('dirty');
-          return {
-            ...json,
-            'queuedMs': max(0, nowMs - r.queuedAtMs),
-            'flushAttempts': r.attempts + 1,
-            if (droppedAtSend > 0) 'queueDropped': droppedAtSend,
-            'userId': _userId,
-            if (_appVersion != null) 'appVersion': _appVersion,
-            // Straight off the platform rather than from intl, which reports
-            // whatever the app last formatted with and is null until something
-            // has. This is the visitor's actual locale, and the same call works
-            // on both platforms.
-            'locale': PlatformDispatcher.instance.locale.toLanguageTag(),
-            'tzOffsetMin': DateTime.now().timeZoneOffset.inMinutes,
-            if (connectionType() != null) 'connectionType': connectionType(),
-            if (_viewportW != null) 'viewportW': _viewportW,
-            if (_viewportH != null) 'viewportH': _viewportH,
-          };
-        }).toList(growable: false),
-      });
+      // Describes the flush rather than any one bubble, so it is built once and
+      // copied onto each row. Keeping the distinction visible matters: treating
+      // a property of the queue as a property of a bubble is what made the
+      // dropped count below wrong in the first place.
+      final environment = <String, dynamic>{
+        'userId': _userId,
+        // Straight off the platform rather than from intl, which reports
+        // whatever the app last formatted with and is null until something has.
+        // This is the visitor's actual locale, and the same call works on both
+        // platforms.
+        'locale': PlatformDispatcher.instance.locale.toLanguageTag(),
+        'tzOffsetMin': DateTime.now().timeZoneOffset.inMinutes,
+      };
+      final appVersion = _appVersion;
+      if (appVersion != null) environment['appVersion'] = appVersion;
+      final connection = connectionType();
+      if (connection != null) environment['connectionType'] = connection;
+      final viewportW = _viewportW;
+      if (viewportW != null) environment['viewportW'] = viewportW;
+      final viewportH = _viewportH;
+      if (viewportH != null) environment['viewportH'] = viewportH;
+
+      final receipts = <Map<String, dynamic>>[];
+      for (var i = 0; i < batch.length; i++) {
+        final r = batch[i];
+        // queuedAtMs, attempts and dirty are the queue's own bookkeeping —
+        // queuedMs and flushAttempts below are what the worker is told.
+        final json = r.toJson()
+          ..remove('queuedAtMs')
+          ..remove('attempts')
+          ..remove('dirty');
+        receipts.add({
+          ...json,
+          'queuedMs': max(0, nowMs - r.queuedAtMs),
+          'flushAttempts': r.attempts + 1,
+          // Carried by one receipt in the batch, not all of them. The count is
+          // a property of the queue rather than of any bubble, and the admin
+          // report sums the column across rows — so repeating it on every
+          // receipt would multiply the loss by the batch size, and forty
+          // receipts each saying "five were dropped" would read as two hundred.
+          if (droppedAtSend > 0 && i == 0) 'queueDropped': droppedAtSend,
+          ...environment,
+        });
+      }
+
+      final body = jsonEncode({'receipts': receipts});
 
       // Signed with the timestamp of this flush, not of the bubbles inside it.
       // The worker refuses anything older than five minutes as a replay, and a
@@ -534,8 +639,9 @@ class DeliveryLog {
         for (final id in acked) {
           final receipt = _pending[id];
           if (receipt == null) continue;
-          if (receipt.isComplete) {
-            // Seen: the record is closed and nothing further can arrive.
+          if (receipt.canDiscard) {
+            // Seen, or belonging to a screen that has gone: either way the
+            // record is finished and nothing further can arrive for it.
             _pending.remove(id);
           } else {
             // Stored, but the bubble may still be drawn or come into view. Keep
@@ -637,4 +743,20 @@ class DeliveryLog {
 
   @visibleForTesting
   int get droppedCount => _dropped;
+
+  /// How many of those are still waiting to be sent, as opposed to being held
+  /// open for a stamp. The difference is what [_Receipt.dirty] exists for, and
+  /// getting it wrong is invisible from [pendingCount] alone.
+  @visibleForTesting
+  int get unsentCount => _pending.values.where((r) => r.dirty).length;
+
+  /// A DeliveryLog that is not the singleton, so one test's queue cannot leak
+  /// into the next. Production has exactly one, reached through [instance].
+  @visibleForTesting
+  static DeliveryLog debugCreate() => DeliveryLog._();
+
+  /// The Dio the flush posts through, so a test can give it an adapter instead
+  /// of a network.
+  @visibleForTesting
+  Dio get debugDio => _dio;
 }
