@@ -2276,8 +2276,8 @@ async function recordSiteVisit(raw, request, env) {
                 utm_medium, utm_campaign, referer, user_agent,
                 country, colo, duration_ms, detail, app_user_id,
                 viewport_w, viewport_h, failure_reason,
-                visible_ms, hide_count, exit_mode, nav_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                visible_ms, hide_count, exit_mode, nav_type, platform
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -2300,7 +2300,8 @@ async function recordSiteVisit(raw, request, env) {
             Number.isFinite(visibleMs) && visibleMs >= 0 ? Math.round(visibleMs) : null,
             Number.isFinite(hideCount) && hideCount >= 0 ? Math.round(hideCount) : null,
             exitMode,
-            navType
+            navType,
+            detectPlatform(request)
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -2315,8 +2316,8 @@ async function recordReferralVisit(env, visit) {
         await env.CHAT_LOGS_DB.prepare(`
             INSERT INTO referral_visits (
                 id, character_id, source, utm_medium, utm_campaign,
-                referer, user_agent, known_character
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                referer, user_agent, known_character, platform
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visit.characterId || null,
@@ -2325,7 +2326,11 @@ async function recordReferralVisit(env, visit) {
             visit.utmCampaign || null,
             visit.referer || null,
             (visit.userAgent || "").slice(0, 400) || null,
-            visit.known ? 1 : 0
+            visit.known ? 1 : 0,
+            // No request here — this is called with the fields already lifted
+            // off it, so the detector reads them directly rather than a fake
+            // request being assembled to feed it.
+            detectPlatformFrom(visit.userAgent, visit.referer)
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "referral_visit_log_failed", error: error.message }));
@@ -2549,6 +2554,64 @@ function visitClientSql(alias) {
 /// in their own in-app browser, which identifies itself in the user-agent —
 /// that is the only signal for a link posted without utm parameters, since
 /// Instagram strips the referrer.
+const REFERER_PLATFORMS = [
+    [/(^|\.)facebook\.com$/i, "facebook"],
+    [/(^|\.)instagram\.com$/i, "instagram"],
+    [/(^|\.)threads\.(net|com)$/i, "threads"],
+    [/(^|\.)tiktok\.com$/i, "tiktok"],
+    [/(^|\.)(youtube\.com|youtu\.be)$/i, "youtube"],
+    [/(^|\.)(twitter\.com|x\.com|t\.co)$/i, "x"],
+    [/(^|\.)google\./i, "google"],
+];
+
+/// Which app actually opened the link, recorded separately from `source`.
+///
+/// Deliberately never looks at utm_source, because utm_source is not evidence:
+/// it is whatever was typed into the link. Every reel link is hardcoded
+/// ?utm_source=ig and detectTrafficSource returns that tag before it ever
+/// reaches the user-agent check below — so 260 of 270 arrivals on
+/// calypso-reel-20260805 came through Facebook's in-app browser and every one
+/// was filed as Instagram. Measured across all arrivals since 2026-08-05,
+/// excluding country='TH': 6,175 facebook against 94 instagram.
+///
+/// The tag is not wrong, which is exactly why this is a second column rather
+/// than a reordering of those checks. The link WAS handed over for an Instagram
+/// post, so the tag correctly says where it was published; Meta then served
+/// that content on Facebook placements, so where it was CLICKED is a different
+/// fact that only the user-agent and the referring host know. Letting the
+/// user-agent overwrite the tag would answer the second question by destroying
+/// the first — and the gap between them is itself the finding, because it
+/// measures how much of an Instagram campaign Meta delivered on Facebook.
+///
+/// Carried over from claude/distracted-jepsen-f66243 (1823676) before that
+/// branch was deleted. Its admin-dashboard half was left behind: it was written
+/// against a worker.js 2,500 lines smaller than this one and the tables it
+/// regrouped have been redesigned twice since. This is the capture half only,
+/// which is what stops new rows recording platform = NULL.
+function detectPlatformFrom(userAgent, referer) {
+    const ua = userAgent || "";
+    // Instagram first, so a Meta user-agent carrying both tokens is not filed
+    // as Facebook.
+    if (/Instagram/i.test(ua)) return "instagram";
+    if (/FBAN|FBAV/i.test(ua)) return "facebook";
+
+    if (referer) {
+        try {
+            const host = new URL(referer).hostname.replace(/^www\./, "");
+            const known = REFERER_PLATFORMS.find(([pattern]) => pattern.test(host));
+            return known ? known[1] : host.slice(0, 60);
+        } catch (_) {}
+    }
+    return "direct";
+}
+
+function detectPlatform(request) {
+    return detectPlatformFrom(
+        request.headers.get("User-Agent"),
+        request.headers.get("Referer")
+    );
+}
+
 function detectTrafficSource(request, url) {
     const utm = url.searchParams.get("utm_source");
     if (utm) return utm.toLowerCase().slice(0, 60);
