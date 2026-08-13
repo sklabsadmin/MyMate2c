@@ -230,6 +230,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
 
+  /// The signed-in app user id, read once and held.
+  ///
+  /// Every funnel event used to be logged inside
+  /// `SharedPreferences.getInstance().then(...)`, purely to read this one
+  /// string — eight call sites, none with an error path. On web SharedPreferences
+  /// is localStorage, and an in-app browser with restricted storage rejects that
+  /// future, so the `.then` never ran and the event was silently dropped. That is
+  /// the worst possible failure for a funnel: `character_tap` is what classifies
+  /// a visit as having reached the chat screen, so losing it makes an engaged
+  /// visitor indistinguishable from one the app never delivered to — in exactly
+  /// the browser that is most of the traffic.
+  ///
+  /// Read once here, used synchronously everywhere else. An event that fires
+  /// before this resolves carries a null id, which is the right trade: visit_id
+  /// is what the funnel actually joins on, and an event with no app user id is
+  /// worth incomparably more than no event.
+  String? _appUserId;
+
+  Future<void> _loadAppUserId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      _appUserId = prefs.getString('user_id');
+    } catch (_) {
+      // Storage unavailable. The id stays null and every funnel event still
+      // fires; swallowing this is the entire point.
+    }
+  }
+
   /// Guards the one-shot first_message funnel event.
   bool _sentFirstMessage = false;
 
@@ -273,6 +302,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // catch an OAuth return.
       ref.read(authProvider.notifier).refresh();
 
+      // Deliberately not awaited. The funnel events below must fire whether or
+      // not storage ever answers — that is the whole point of caching the id
+      // rather than logging inside a future that can reject and take the event
+      // with it. Events raced by this carry a null app user id and are counted
+      // exactly the same.
+      _loadAppUserId();
+
       ref
           .read(activeChatProvider.notifier)
           .setActive(widget.scenario ?? 'Unknown', _currentVibe);
@@ -285,25 +321,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       //
       // initState runs once per screen, so this needs no one-shot guard of its
       // own, and the funnel counts distinct visits anyway.
-      SharedPreferences.getInstance().then((prefs) {
+      logFunnelEvent(
+        'character_tap',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
+      // The strip's opening set. _quickReplyIndex starts at 0 without going
+      // through _setQuickReplyIndex, so the first thing a visitor is offered
+      // is the one offer that would otherwise never be recorded — and it is
+      // the offer nearly everyone sees, since most leave before the strip
+      // ever changes.
+      if (_quickRepliesFor(widget.characterId) != null) {
         logFunnelEvent(
-          'character_tap',
-          detail: widget.characterId,
-          appUserId: prefs.getString('user_id'),
+          'strip_rotate',
+          detail: '${widget.characterId}#0',
+          appUserId: _appUserId,
         );
-        // The strip's opening set. _quickReplyIndex starts at 0 without going
-        // through _setQuickReplyIndex, so the first thing a visitor is offered
-        // is the one offer that would otherwise never be recorded — and it is
-        // the offer nearly everyone sees, since most leave before the strip
-        // ever changes.
-        if (_quickRepliesFor(widget.characterId) != null) {
-          logFunnelEvent(
-            'strip_rotate',
-            detail: '${widget.characterId}#0',
-            appUserId: prefs.getString('user_id'),
-          );
-        }
-      });
+      }
       _startScreenPing();
 
       // An opener tapped on the profile card before entering the chat. Sent
@@ -414,13 +448,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // was distracted. A logged position is whatever was actually on screen.
     final position =
         '${widget.characterId}#t$_scriptPausesReached#s$_quickReplyIndex';
-    SharedPreferences.getInstance().then((prefs) {
-      logFunnelEvent(
-        'screen_ping',
-        detail: position,
-        appUserId: prefs.getString('user_id'),
-      );
-    });
+    logFunnelEvent(
+      'screen_ping',
+      detail: position,
+      appUserId: _appUserId,
+    );
     // Drop to the slow cadence once the decisive first 10s are recorded. The
     // timer is replaced rather than left running and skipped, so the device
     // stops waking six times as often as it needs to.
@@ -462,13 +494,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (_loggedTyping) return;
     _loggedTyping = true;
     _stopScreenPing();
-    SharedPreferences.getInstance().then((prefs) {
-      logFunnelEvent(
-        'input_typed',
-        detail: widget.characterId,
-        appUserId: prefs.getString('user_id'),
-      );
-    });
+    logFunnelEvent(
+      'input_typed',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
   }
 
   Future<void> _loadReplyCount() async {
@@ -1648,13 +1678,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     //
     // The set index goes in detail so the admin side can pair a rotation with
     // the tap that followed it, and see which sets are ever reached at all.
-    SharedPreferences.getInstance().then((prefs) {
-      logFunnelEvent(
-        'strip_rotate',
-        detail: '${widget.characterId}#$next',
-        appUserId: prefs.getString('user_id'),
-      );
-    });
+    logFunnelEvent(
+      'strip_rotate',
+      detail: '${widget.characterId}#$next',
+      appUserId: _appUserId,
+    );
   }
 
   /// Plays a scripted opening one beat at a time, stopping the instant the
@@ -2189,13 +2217,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
       // Funnel: the conversion bottleneck — 31 people have chatted and 3
       // have signed in, and until now the drop-off was invisible.
-      SharedPreferences.getInstance().then((prefs) {
-        logFunnelEvent(
-          'login_gate',
-          detail: widget.characterId,
-          appUserId: prefs.getString('user_id'),
-        );
-      });
+      logFunnelEvent(
+        'login_gate',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
       _showLoginGate();
       return;
     }
@@ -2213,13 +2239,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _sentFirstMessage = true;
       // Same id the chat API sends as x-user-id, so this row joins straight
       // onto conversation_logs.
-      SharedPreferences.getInstance().then((prefs) {
-        logFunnelEvent(
-          'first_message',
-          detail: widget.characterId,
-          appUserId: prefs.getString('user_id'),
-        );
-      });
+      logFunnelEvent(
+        'first_message',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
     }
 
     _textController.clear();
@@ -2279,14 +2303,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // event is the ONLY record that the send happened at all — without it a
       // failed send looks identical to never having typed.
       final reason = _aiService!.lastFailureReason;
-      SharedPreferences.getInstance().then((prefs) {
-        logFunnelEvent(
-          'send_failed',
-          detail: widget.characterId,
-          appUserId: prefs.getString('user_id'),
-          failureReason: reason,
-        );
-      });
+      logFunnelEvent(
+        'send_failed',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+        failureReason: reason,
+      );
     }
 
     if (!mounted) return;
@@ -2942,13 +2964,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // monologue arriving behind the gate.
     if (_hasOpeningScript) _welcomeAbandoned = true;
     _stopScreenPing();
-    SharedPreferences.getInstance().then((prefs) {
-      logFunnelEvent(
-        'starter_tap',
-        detail: widget.characterId,
-        appUserId: prefs.getString('user_id'),
-      );
-    });
+    logFunnelEvent(
+      'starter_tap',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
     _textController.text = text;
     _handleSend();
   }
