@@ -38,6 +38,15 @@ so any comparison with earlier days is a comparison of different measurements.
 | `screen_ping.detail` | Script position: `odysseus#t<turns>#s<set>` |
 | `viewport_h` | Which of three strip layouts they saw (see §5) |
 | `nav_type` | `navigate` / `reload` / `back_forward` — reload inflation is now a fact, not an inference |
+| `last_tick_ms` | Elapsed time the final tick reported. Cadence-proof, unlike a tick count |
+| `app_ready.failure_reason` | `splash_cap_timeout` marks the 15s cap firing, so a timeout stops being averaged in as a slow load |
+
+**Funnel events were being silently dropped** before 12 Aug. All eight were
+logged inside `SharedPreferences.getInstance().then(...)` with no error path, and
+on web that is localStorage — an in-app browser with restricted storage rejects
+it and the event never fires. `character_tap` is among them, so some visits
+counted as "never reached the chat screen" may simply have lost the row. Treat
+the 25-of-99 figure below as an upper bound.
 
 ---
 
@@ -77,23 +86,31 @@ load 2.4s for never-reached vs 1.2s for reached.
 `tool/beat_map.mjs` + `test/odysseus_beat_map_dump.dart`. Plays the real
 `ChatScreen` on flutter_test's virtual clock, so these are exact, not estimated.
 
+**As it stands now**, after turn 1 was cut from five bubbles to three:
+
 ```
-first line lands        0.4s
-FIRST QUESTION asked    6.3s   "What have you heard?"
-strip swaps to set 2   15.4s
-strip swaps to set 3   26.9s
+first line lands        0.5s
+FIRST QUESTION asked    3.5s   "You may already have an opinion of me.
+                                What have you heard?"
+strip swaps to set 2   13.4s
+strip swaps to set 3   24.8s
 ```
 
-Against the 74 chat opens: **51% left before the first question**, 78% before
-the strip changed once, 89% before it changed twice.
+**Before that cut** the question landed at 6.3s, and against the 74 chat opens
+**51% left before being asked anything**. At 3.5s that share is **20%** — 23
+visitors who would now be invited to speak and previously were not. The median
+stay on that screen was 5.5s, so the question used to arrive one beat after half
+the audience had gone.
 
-`_briskPacing` was tuned to reach the first question at 6.2s and hits 6.3s — it
-meets its own target. The target is simply set later than half the audience
-stays.
+That change also retired a rule. A test asserted the question lands within
+5–8s, from the v2 document; the 5s floor was written before any production data
+and, measured, guaranteed roughly half the audience was never asked anything —
+the exact failure the rule existed to prevent. The 8s upper bound is kept. The
+floor is now only that he introduces himself before asking.
 
-**Also:** the strip carries set 1 from 0.1s, but set 1 is *answers* to "What
-have you heard?" — a question that arrives at 6.3s. For the first six seconds
-every visitor is offered three replies to something nobody asked.
+**Still true and still worth fixing:** the strip carries set 1 from 0.1s, but
+set 1 is *answers* to a question that does not arrive until 3.5s. Better than
+6.3s, not yet right.
 
 Virtual-clock timings are a **floor**. A backgrounded tab is throttled to ~1Hz
 and quantises every delay to a whole second, so real visitors reach each line at
@@ -111,9 +128,18 @@ load-bucket comparison survives (like vs like); any absolute "they left at X"
 from before the deploy does not. This is what the `hide`/`show` split fixes.
 
 **Ticks are not session length.** `screen_ping` stops at the first sign of
-engagement and caps at 28s. Someone who read for three minutes and someone who
-left at 28s are identical. Use `visible_ms` for duration; ticks measure
-hesitation before engaging.
+engagement. Someone who read for three minutes and someone who stopped at the
+cap are identical. Use `visible_ms` for duration; ticks measure hesitation
+before engaging.
+
+**The tick cadence changed on 12 Aug** and any tick COUNT means something
+different either side of it. It was 0.5s to 10s then 3s to a 28s cap (26
+ticks); it is now 0.5s to 15s, 1s to 35s, then 3s to a 119s cap (78 ticks).
+Sessions therefore report **`last_tick_ms`** — the elapsed time the final tick
+itself carried — and that is the column to trust when comparing across the
+change. A count read through today's constants silently misdates every older
+row. The dwell buckets were re-cut to match: <5s, 5–15s, 15–35s, 35–90s,
+reached 90s.
 
 **`source` is the utm tag, not the client.** `detectTrafficSource` returns
 `utm_source` before it looks at the user-agent, so the bio link tags everything
