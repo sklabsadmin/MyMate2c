@@ -610,6 +610,17 @@ export default {
                            AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
+                       -- The elapsed time the last tick actually reported, rather
+                       -- than a tick COUNT converted through screenPingSeconds.
+                       -- Every in-app event already carries durationMs since
+                       -- arrival (mythosVisitBeacon stamps it), so the rows have
+                       -- carried the truth all along and the read path was
+                       -- reconstructing it from the cadence constants instead.
+                       -- That reconstruction is only right while the cadence never
+                       -- changes: retune the phases and every historical count
+                       -- silently means something new. This column does not care.
+                       (SELECT MAX(g.duration_ms) FROM site_visits g
+                         WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS last_tick_ms,
                        (SELECT t.detail FROM site_visits t
                          WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
                          ORDER BY t.created_at LIMIT 1) AS character_id,
@@ -2465,7 +2476,12 @@ const SESSION_CSV_COLUMNS = [
     ["exit_mode", (r) => r.exit_mode],
     ["reported_leave", (r) => (r.reported_leave ? 1 : 0)],
     ["hide_count", (r) => r.hide_count],
-    ["ticks", (r) => (r.opened_character ? r.ticks || 0 : null)],
+    ["last_tick_ms", (r) => r.last_tick_ms],
+    // Not gated on opened_character. A visit with ticks but no character_tap
+    // is the signature of a lost event — the screen mounted, the ping timer it
+    // starts ran, and the tap row never arrived — and blanking the ticks hid
+    // exactly the evidence for it in the view you would check.
+    ["ticks", (r) => r.ticks || 0],
     ["opened_character", (r) => (r.opened_character ? 1 : 0)],
     ["tapped_starter", (r) => (r.tapped_starter ? 1 : 0)],
     ["messages", (r) => r.messages || 0],
@@ -4781,7 +4797,7 @@ async function render(out) {
          '</td><td class="num"' + sv(r.dwell_ms) + '>' + dur(r.dwell_ms) +
          '</td><td class="num"' + sv(r.visible_ms) + '>' + dur(r.visible_ms) +
          '</td><td title="' + exit[1] + '"' + sv(r.exit_mode || '') + '>' + exit[0] + hides +
-         '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' + ticks +
+         '</td><td class="num"' + sv(r.ticks || 0) + '>' + ticks +
          '</td><td class="num"' + sv(r.messages || 0) + '>' + (r.messages || 0) +
          '</td><td class="num"' + sv(r.tapped || 0) + '>' + tapped +
          '</td><td class="num"' + sv(r.typed || 0) + '>' + (r.typed || 0) +

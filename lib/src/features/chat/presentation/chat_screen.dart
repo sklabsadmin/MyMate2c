@@ -1310,13 +1310,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // third, a minute in.
     (
       pauseMs: 2500,
+      // Three bubbles, not five. Measured against 74 chat opens, 51% of
+      // visitors left before this turn's question arrived at 6.3s — the median
+      // stay on the chat screen was 5.5s, so half the audience was gone one
+      // beat before being asked anything at all.
+      //
+      // _briskPacing was already tuned for this and hits its own 6.2s target;
+      // the target was simply set later than people stay. The fix is fewer
+      // bubbles rather than faster ones, which is what the pacing comment
+      // itself concluded — past a point, speeding up just means long sentences
+      // go by unread.
+      //
+      // 'Well now...' went because it is throat-clearing: it costs a beat and
+      // says nothing, in the one window where every beat is expensive. The
+      // 'old stories' line went as a bubble but not as a thought — it is what
+      // makes 'What have you heard?' a fair question rather than a non-sequitur,
+      // so it is folded into the question's own bubble instead of deleted.
       lines: [
-        'Well now...',
         "I wasn't expecting company.",
         "I'm Odysseus — sailor, king of Ithaca, occasional troublemaker.",
-        'Although if you know the old stories, you may already have an opinion '
-            'of me.',
-        'What have you heard?',
+        'You may already have an opinion of me. What have you heard?',
       ],
     ),
     // 2 — ODY2_P02
