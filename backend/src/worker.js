@@ -2036,23 +2036,35 @@ async function checkRateLimit(kv, userId) {
 /// tick was 0.5s then and is 2s now, so a visit logged under the old rate looks
 /// four times longer than it was. Only compare dwell data within one era.
 const SCREEN_PING_PHASE1_INTERVAL_SECONDS = 0.5;
-const SCREEN_PING_PHASE1_SECONDS = 10;
-const SCREEN_PING_PHASE2_INTERVAL_SECONDS = 3;
-const SCREEN_PING_MAX_SECONDS = 30;
+const SCREEN_PING_PHASE1_SECONDS = 15;
+const SCREEN_PING_PHASE2_INTERVAL_SECONDS = 1;
+const SCREEN_PING_PHASE2_SECONDS = 35;
+const SCREEN_PING_PHASE3_INTERVAL_SECONDS = 3;
+const SCREEN_PING_MAX_SECONDS = 120;
 
 const SCREEN_PING_PHASE1_TICKS =
     SCREEN_PING_PHASE1_SECONDS / SCREEN_PING_PHASE1_INTERVAL_SECONDS;
-const SCREEN_PING_MAX_TICKS = SCREEN_PING_PHASE1_TICKS + Math.floor(
-    (SCREEN_PING_MAX_SECONDS - SCREEN_PING_PHASE1_SECONDS) /
+const SCREEN_PING_PHASE2_TICKS = SCREEN_PING_PHASE1_TICKS + Math.floor(
+    (SCREEN_PING_PHASE2_SECONDS - SCREEN_PING_PHASE1_SECONDS) /
     SCREEN_PING_PHASE2_INTERVAL_SECONDS);
+// 78 ticks, and the last one lands at 119s rather than 120: 3s steps from 35
+// reach 119 and the next would overshoot. Named here rather than discovered
+// later, because the previous scheme said 30 and silently meant 28.
+const SCREEN_PING_MAX_TICKS = SCREEN_PING_PHASE2_TICKS + Math.floor(
+    (SCREEN_PING_MAX_SECONDS - SCREEN_PING_PHASE2_SECONDS) /
+    SCREEN_PING_PHASE3_INTERVAL_SECONDS);
 
 /// Seconds on the chat screen that a given tick count represents.
 function screenPingSeconds(ticks) {
     if (ticks <= SCREEN_PING_PHASE1_TICKS) {
         return ticks * SCREEN_PING_PHASE1_INTERVAL_SECONDS;
     }
-    return SCREEN_PING_PHASE1_SECONDS +
-        (ticks - SCREEN_PING_PHASE1_TICKS) * SCREEN_PING_PHASE2_INTERVAL_SECONDS;
+    if (ticks <= SCREEN_PING_PHASE2_TICKS) {
+        return SCREEN_PING_PHASE1_SECONDS +
+            (ticks - SCREEN_PING_PHASE1_TICKS) * SCREEN_PING_PHASE2_INTERVAL_SECONDS;
+    }
+    return SCREEN_PING_PHASE2_SECONDS +
+        (ticks - SCREEN_PING_PHASE2_TICKS) * SCREEN_PING_PHASE3_INTERVAL_SECONDS;
 }
 
 /// The first tick whose elapsed time reaches `seconds` — the inverse of the
@@ -5318,12 +5330,17 @@ const PING = ${JSON.stringify({
         phase1Interval: SCREEN_PING_PHASE1_INTERVAL_SECONDS,
         phase1Seconds: SCREEN_PING_PHASE1_SECONDS,
         phase2Interval: SCREEN_PING_PHASE2_INTERVAL_SECONDS,
+        phase2Ticks: SCREEN_PING_PHASE2_TICKS,
+        phase2Seconds: SCREEN_PING_PHASE2_SECONDS,
+        phase3Interval: SCREEN_PING_PHASE3_INTERVAL_SECONDS,
         maxTicks: SCREEN_PING_MAX_TICKS,
     })};
 function screenPingSeconds(ticks) {
-  return ticks <= PING.phase1Ticks
-    ? ticks * PING.phase1Interval
-    : PING.phase1Seconds + (ticks - PING.phase1Ticks) * PING.phase2Interval;
+  if (ticks <= PING.phase1Ticks) return ticks * PING.phase1Interval;
+  if (ticks <= PING.phase2Ticks) {
+    return PING.phase1Seconds + (ticks - PING.phase1Ticks) * PING.phase2Interval;
+  }
+  return PING.phase2Seconds + (ticks - PING.phase2Ticks) * PING.phase3Interval;
 }
 // Anything thrown in here used to leave "Loading…" on screen with the real
 // error only in the console, which is indistinguishable from a slow request.

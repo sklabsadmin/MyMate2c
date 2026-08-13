@@ -384,12 +384,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   ///
   /// Cost is why it is not 500ms throughout: every tick is a D1 row, and per
   /// the figures below most visits that open a character never engage, so they
-  /// pay the full run. A flat 500ms is 60 rows a visit and around 1,600 such
-  /// visits exhausts D1's 100k daily writes — during a boost, which is exactly
-  /// when the data matters. Those writes share a database with
-  /// conversation_logs, so running the quota dry degrades chat itself. Splitting
-  /// the cadence costs 26 rows instead and gives up nothing in the window that
-  /// actually answers the question.
+  /// pay the full run.
+  ///
+  /// The cadence used to be justified by D1's free-tier ceiling of 100k writes
+  /// a day, which a flat 500ms would have reached at around 1,600 visits. That
+  /// figure no longer applies: this project is on Workers Paid, where the
+  /// allowance is ~50M rows a month and overage bills rather than stops. At 78
+  /// ticks a visit that is roughly 19,000 visits a day before the included
+  /// allowance is touched, against about a hundred today.
+  ///
+  /// So the cadence is now shaped by what the data is worth rather than by what
+  /// it costs: half-second resolution through the window where visitors
+  /// actually leave, one second while the script is still asking, and three
+  /// seconds across the long tail where the only question is whether they are
+  /// still there at all.
   ///
   /// The gap the funnel could not see: character_tap fires and, most of the
   /// time, nothing else ever does — for Facebook traffic specifically, 86% of
@@ -414,9 +422,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// have to agree on all four numbers, not just the interval. Change one
   /// without the other and every dwell figure shifts, silently and plausibly.
   static const Duration _screenPingPhase1Interval = Duration(milliseconds: 500);
-  static const Duration _screenPingPhase2Interval = Duration(seconds: 3);
-  static const int _screenPingPhase1Ticks = 20; // 20 x 500ms = first 10s
-  static const int _maxScreenPingTicks = 26; // + 6 x 3s = 28s, inside the 30s cap
+  static const Duration _screenPingPhase2Interval = Duration(seconds: 1);
+  static const Duration _screenPingPhase3Interval = Duration(seconds: 3);
+  static const int _screenPingPhase1Ticks = 30; // 30 x 500ms = first 15s
+  static const int _screenPingPhase2Ticks = 50; // + 20 x 1s   = 35s
+  static const int _maxScreenPingTicks = 78; // + 28 x 3s  = 119s
 
   void _startScreenPing() {
     _screenPingTimer =
@@ -453,13 +463,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       detail: position,
       appUserId: _appUserId,
     );
-    // Drop to the slow cadence once the decisive first 10s are recorded. The
-    // timer is replaced rather than left running and skipped, so the device
-    // stops waking six times as often as it needs to.
+    // Step down the cadence at each phase boundary. The timer is replaced
+    // rather than left running and skipped, so the device stops waking more
+    // often than it needs to.
     if (_screenPingTicks == _screenPingPhase1Ticks) {
       _screenPingTimer?.cancel();
       _screenPingTimer =
           Timer.periodic(_screenPingPhase2Interval, _onScreenPingTick);
+    } else if (_screenPingTicks == _screenPingPhase2Ticks) {
+      _screenPingTimer?.cancel();
+      _screenPingTimer =
+          Timer.periodic(_screenPingPhase3Interval, _onScreenPingTick);
     }
   }
 
