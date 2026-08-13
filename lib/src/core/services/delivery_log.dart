@@ -1,0 +1,564 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../config/app_config.dart';
+import 'analytics.dart';
+import 'delivery_env.dart';
+
+/// Where a line the visitor read actually came from.
+///
+/// The distinction is the point. All of these render as the character speaking
+/// and are indistinguishable on screen, but they fail for unrelated reasons: a
+/// missing [aiReply] is a delivery problem, a missing [welcomeScript] bubble is
+/// someone leaving before the opening finished, and a [localFallback] means the
+/// visitor was told the character was "having trouble thinking" — which reads to
+/// them as the product being broken and has no server-side record at all.
+///
+/// The wire names must match DELIVERY_ORIGINS in backend/src/worker.js, which
+/// drops an origin it does not recognise rather than folding it into a known
+/// one. Adding a value here means adding it there in the same change.
+enum DeliveryOrigin {
+  aiReply('ai_reply'),
+  welcomeScript('welcome_script'),
+  idleNudge('idle_nudge'),
+  portrait('portrait'),
+  localFallback('local_fallback'),
+  systemBanner('system_banner'),
+  user('user');
+
+  const DeliveryOrigin(this.wireName);
+  final String wireName;
+}
+
+/// One bubble's delivery record, as it sits in the local queue.
+class _Receipt {
+  _Receipt({
+    required this.bubbleId,
+    required this.turnId,
+    required this.seq,
+    required this.origin,
+    required this.isUser,
+    required this.queuedAtMs,
+    this.visitId,
+    this.chatId,
+    this.characterId,
+    this.conversationLogId,
+    this.text,
+    this.textSha256,
+    this.textLen,
+    this.failureReason,
+    this.intendedAt,
+    this.renderedAt,
+    this.seenAt,
+    this.attempts = 0,
+  });
+
+  final String bubbleId;
+  final String turnId;
+  final int seq;
+  final String origin;
+  final bool isUser;
+
+  /// When this receipt first entered the queue, by the device clock. Only ever
+  /// used as a difference against "now" to produce queued_ms, so a device with
+  /// a wrong clock still reports a correct duration.
+  final int queuedAtMs;
+
+  final String? visitId;
+  final String? chatId;
+  final String? characterId;
+  final String? conversationLogId;
+  final String? text;
+  final String? textSha256;
+  final int? textLen;
+  final String? failureReason;
+
+  String? intendedAt;
+  String? renderedAt;
+  String? seenAt;
+  int attempts;
+
+  /// True once there is nothing further to learn about this bubble: it was seen,
+  /// so no later event can change the record. Receipts that are complete are the
+  /// first thing discarded when the queue has to make room.
+  bool get isComplete => seenAt != null;
+
+  Map<String, dynamic> toJson() => {
+    'bubbleId': bubbleId,
+    'turnId': turnId,
+    'seq': seq,
+    'origin': origin,
+    'isUser': isUser,
+    'queuedAtMs': queuedAtMs,
+    if (visitId != null) 'visitId': visitId,
+    if (chatId != null) 'chatId': chatId,
+    if (characterId != null) 'characterId': characterId,
+    if (conversationLogId != null) 'conversationLogId': conversationLogId,
+    if (text != null) 'text': text,
+    if (textSha256 != null) 'textSha256': textSha256,
+    if (textLen != null) 'textLen': textLen,
+    if (failureReason != null) 'failureReason': failureReason,
+    if (intendedAt != null) 'intendedAt': intendedAt,
+    if (renderedAt != null) 'renderedAt': renderedAt,
+    if (seenAt != null) 'seenAt': seenAt,
+    'attempts': attempts,
+  };
+
+  static _Receipt? fromJson(Map<String, dynamic> json) {
+    final bubbleId = json['bubbleId'];
+    final turnId = json['turnId'];
+    if (bubbleId is! String || turnId is! String) return null;
+    return _Receipt(
+      bubbleId: bubbleId,
+      turnId: turnId,
+      seq: json['seq'] is int ? json['seq'] as int : 0,
+      origin: json['origin'] is String ? json['origin'] as String : 'ai_reply',
+      isUser: json['isUser'] == true,
+      queuedAtMs: json['queuedAtMs'] is int
+          ? json['queuedAtMs'] as int
+          : DateTime.now().millisecondsSinceEpoch,
+      visitId: json['visitId'] as String?,
+      chatId: json['chatId'] as String?,
+      characterId: json['characterId'] as String?,
+      conversationLogId: json['conversationLogId'] as String?,
+      text: json['text'] as String?,
+      textSha256: json['textSha256'] as String?,
+      textLen: json['textLen'] as int?,
+      failureReason: json['failureReason'] as String?,
+      intendedAt: json['intendedAt'] as String?,
+      renderedAt: json['renderedAt'] as String?,
+      seenAt: json['seenAt'] as String?,
+      attempts: json['attempts'] is int ? json['attempts'] as int : 0,
+    );
+  }
+}
+
+/// Records what the app actually put in front of the visitor, and gets it to the
+/// worker.
+///
+/// The server already logs every reply it sends (conversation_logs). What it
+/// cannot know is whether the reply reached the screen: one reply is split into
+/// several bubbles and paced out over seconds, the text is rewritten before it
+/// is drawn, and much of what the character "says" early on is composed on the
+/// device and never passes through the worker at all. So the client keeps its own
+/// record, and the comparison between the two is the verification.
+///
+/// Three moments per bubble, because the missing pairs mean different things:
+/// intent with no render is a delivery failure, and a render with no sighting is
+/// a bubble drawn into a hidden tab or below the fold — delivered but unread.
+///
+/// Durability is the whole design. A receipt is written to disk before it is
+/// sent and deleted only when the worker names it in `acked`, because the
+/// sessions worth studying are the ones where the network was failing, and a
+/// fire-and-forget post would lose exactly those. The queue therefore survives a
+/// reload, and rows can arrive long after the moment they describe — anything
+/// reading this data has to treat "not here yet" as different from "never
+/// happened".
+///
+/// Nothing here may ever break a chat. Every entry point swallows its errors;
+/// a lost receipt is a gap in a report, while a thrown exception in
+/// _addMessage is a visitor staring at a blank screen.
+class DeliveryLog {
+  DeliveryLog._();
+
+  static final DeliveryLog instance = DeliveryLog._();
+
+  static const String _queueKey = 'delivery_receipt_queue_v1';
+  static const String _droppedKey = 'delivery_receipts_dropped_v1';
+
+  /// Waits between failed flushes. Climbs to five minutes and stays there: a
+  /// visitor sitting in a dead region for an hour should cost a handful of
+  /// requests, not one every two seconds, and the receipts are equally valid
+  /// whenever they land.
+  static const List<int> _retryBackoffMs = [2000, 5000, 15000, 60000, 300000];
+
+  final Dio _dio = Dio();
+
+  /// Insertion-ordered, keyed by bubble id so a second event for the same bubble
+  /// updates the receipt in place instead of queueing a duplicate.
+  final Map<String, _Receipt> _pending = {};
+
+  SharedPreferences? _prefs;
+  bool _ready = false;
+
+  String? _userId;
+  String? _appVersion;
+  int? _viewportW;
+  int? _viewportH;
+
+  /// Receipts discarded because the queue was full, reported on the next flush
+  /// so a truncated record cannot be mistaken for a quiet session.
+  int _dropped = 0;
+
+  Timer? _flushTimer;
+  Timer? _retryTimer;
+  bool _flushing = false;
+  int _turnCounter = 0;
+
+  /// Loads any receipts left over from a previous run and tries to send them.
+  ///
+  /// The leftovers are the interesting ones — a queue that survived a reload is
+  /// usually a queue that could not be delivered — so this runs at startup
+  /// rather than waiting for the first new bubble.
+  Future<void> init() async {
+    if (_ready) return;
+    try {
+      _prefs = await SharedPreferences.getInstance();
+      _ready = true;
+
+      _userId = _ensureUserId(_prefs!);
+      _dropped = _prefs!.getInt(_droppedKey) ?? 0;
+
+      final raw = _prefs!.getString(_queueKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          for (final entry in decoded) {
+            if (entry is Map<String, dynamic>) {
+              final receipt = _Receipt.fromJson(entry);
+              if (receipt != null) _pending[receipt.bubbleId] = receipt;
+            }
+          }
+        }
+      }
+
+      try {
+        final info = await PackageInfo.fromPlatform();
+        _appVersion = '${info.version}+${info.buildNumber}';
+      } catch (_) {
+        // Version is context, not evidence. Carry on without it.
+      }
+
+      if (_pending.isNotEmpty) _scheduleFlush();
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeliveryLog.init failed: $e');
+    }
+  }
+
+  /// The anonymous id the worker recognises, created here if it does not exist.
+  ///
+  /// OpenAIService creates the same id under the same key on its first send, but
+  /// the welcome script is drawn before any send happens — so without this the
+  /// opening bubbles would carry no user id and the worker would drop them as
+  /// unrecognised, losing the exact stretch of the session this is meant to
+  /// measure. Whichever runs first wins and the other reuses it; the format has
+  /// to stay in step with isRealUserId in the worker ("user_" plus a 13-digit
+  /// millisecond stamp, 18 characters).
+  static String _ensureUserId(SharedPreferences prefs) {
+    final existing = prefs.getString('user_id');
+    if (existing != null && existing.isNotEmpty) return existing;
+    final created = 'user_${DateTime.now().millisecondsSinceEpoch}';
+    prefs.setString('user_id', created);
+    return created;
+  }
+
+  /// The size of the surface the bubbles are being drawn onto, for slicing
+  /// failures by something actionable. Set from the chat screen's MediaQuery
+  /// rather than read from the window, so it is the same number on both
+  /// platforms.
+  void setViewport(int width, int height) {
+    _viewportW = width;
+    _viewportH = height;
+  }
+
+  /// A new group of bubbles that belong together: one reply, or one run of the
+  /// welcome script.
+  String beginTurn() {
+    _turnCounter++;
+    return 'turn_${DateTime.now().millisecondsSinceEpoch}_$_turnCounter';
+  }
+
+  /// Records that the app has committed to showing this bubble, and returns the
+  /// id to report [markRendered] and [markSeen] against.
+  ///
+  /// Called before any pacing delay, which is what makes a bubble that is never
+  /// drawn visible in the data at all. The id is derived from the turn and
+  /// sequence rather than random so that recording the same bubble twice
+  /// collapses onto one row instead of inventing a second.
+  String recordIntended({
+    required String turnId,
+    required int seq,
+    required DeliveryOrigin origin,
+    required String text,
+    bool isUser = false,
+    String? chatId,
+    String? characterId,
+    String? conversationLogId,
+    String? failureReason,
+  }) {
+    final bubbleId = '${turnId}_$seq';
+    try {
+      final now = DateTime.now();
+      _pending[bubbleId] = _Receipt(
+        bubbleId: bubbleId,
+        turnId: turnId,
+        seq: seq,
+        origin: origin.wireName,
+        isUser: isUser,
+        queuedAtMs: now.millisecondsSinceEpoch,
+        visitId: currentVisitId(),
+        chatId: chatId,
+        characterId: characterId,
+        conversationLogId: conversationLogId,
+        text: text,
+        textSha256: sha256.convert(utf8.encode(text)).toString(),
+        textLen: text.length,
+        failureReason: failureReason,
+        intendedAt: now.toIso8601String(),
+      );
+      _afterChange();
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeliveryLog.recordIntended failed: $e');
+    }
+    return bubbleId;
+  }
+
+  /// The bubble reached the widget tree.
+  void markRendered(String bubbleId) =>
+      _stamp(bubbleId, (r, now) => r.renderedAt ??= now);
+
+  /// The bubble was genuinely on screen — see SeenDetector for what that
+  /// requires.
+  void markSeen(String bubbleId) =>
+      _stamp(bubbleId, (r, now) => r.seenAt ??= now);
+
+  void _stamp(String bubbleId, void Function(_Receipt, String) apply) {
+    try {
+      final receipt = _pending[bubbleId];
+      // Absent means it has already been acknowledged and dropped from the
+      // queue. The worker keeps the first value it was given for each of the
+      // three timestamps, so a late stamp for a departed receipt is information
+      // that was already recorded, not information lost.
+      if (receipt == null) return;
+      apply(receipt, DateTime.now().toIso8601String());
+      _afterChange();
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeliveryLog._stamp failed: $e');
+    }
+  }
+
+  void _afterChange() {
+    _enforceQueueCap();
+    _persist();
+    _scheduleFlush();
+  }
+
+  /// Keeps the queue inside AppConfig.deliveryQueueMax, discarding completed
+  /// receipts before incomplete ones.
+  ///
+  /// A receipt that was seen has already told its whole story; one still waiting
+  /// on a render is the potential finding. So when room has to be made, the
+  /// finished rows go first and only then the oldest of the rest — and either way
+  /// the count travels with the next flush, because a queue that silently
+  /// truncated would read as a session that simply went quiet.
+  void _enforceQueueCap() {
+    final overflow = _pending.length - AppConfig.deliveryQueueMax;
+    if (overflow <= 0) return;
+
+    final doomed = <String>[];
+    for (final entry in _pending.entries) {
+      if (doomed.length >= overflow) break;
+      if (entry.value.isComplete) doomed.add(entry.key);
+    }
+    for (final key in _pending.keys) {
+      if (doomed.length >= overflow) break;
+      if (!doomed.contains(key)) doomed.add(key);
+    }
+
+    for (final key in doomed) {
+      _pending.remove(key);
+    }
+    _dropped += doomed.length;
+    _prefs?.setInt(_droppedKey, _dropped);
+    if (kDebugMode) {
+      debugPrint('DeliveryLog dropped ${doomed.length} receipts (queue full)');
+    }
+  }
+
+  void _persist() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    try {
+      final encoded = jsonEncode(
+        _pending.values.map((r) => r.toJson()).toList(growable: false),
+      );
+      prefs.setString(_queueKey, encoded);
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeliveryLog._persist failed: $e');
+    }
+  }
+
+  /// Coalesces the several bubbles of one reply into a single request.
+  void _scheduleFlush() {
+    if (_flushTimer?.isActive == true) return;
+    _flushTimer = Timer(
+      const Duration(milliseconds: AppConfig.deliveryFlushDebounceMs),
+      () => flush(),
+    );
+  }
+
+  /// Sends what is queued, and keeps whatever the worker did not acknowledge.
+  ///
+  /// Cancels any pending debounce, so calling it directly is the urgent path —
+  /// which is what the chat screen does when the surface is going away, as the
+  /// last chance to report a bubble that was on screen a second ago.
+  Future<void> flush() async {
+    if (!_ready) return;
+    if (_flushing) return;
+    if (_pending.isEmpty) return;
+
+    final url = AppConfig.deliveryUrl();
+    if (url.isEmpty) return;
+
+    _flushing = true;
+    _flushTimer?.cancel();
+    _retryTimer?.cancel();
+
+    try {
+      final batch = _pending.values
+          .take(AppConfig.deliveryBatchMax)
+          .toList(growable: false);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final droppedAtSend = _dropped;
+
+      final body = jsonEncode({
+        'receipts': batch.map((r) {
+          final json = r.toJson()
+            ..remove('queuedAtMs')
+            ..remove('attempts');
+          return {
+            ...json,
+            'queuedMs': max(0, nowMs - r.queuedAtMs),
+            'flushAttempts': r.attempts + 1,
+            if (droppedAtSend > 0) 'queueDropped': droppedAtSend,
+            'userId': _userId,
+            if (_appVersion != null) 'appVersion': _appVersion,
+            // Straight off the platform rather than from intl, which reports
+            // whatever the app last formatted with and is null until something
+            // has. This is the visitor's actual locale, and the same call works
+            // on both platforms.
+            'locale': PlatformDispatcher.instance.locale.toLanguageTag(),
+            'tzOffsetMin': DateTime.now().timeZoneOffset.inMinutes,
+            if (connectionType() != null) 'connectionType': connectionType(),
+            if (_viewportW != null) 'viewportW': _viewportW,
+            if (_viewportH != null) 'viewportH': _viewportH,
+          };
+        }).toList(growable: false),
+      });
+
+      // Signed with the timestamp of this flush, not of the bubbles inside it.
+      // The worker refuses anything older than five minutes as a replay, and a
+      // receipt that waited out an outage is far older than that by the time it
+      // leaves — the bubble's own clock is in the body, where nothing expires it.
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final response = await _dio.post(
+        url,
+        data: body,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': _sign(body, timestamp),
+            'x-timestamp': timestamp,
+          },
+          validateStatus: (status) => status != null && status < 600,
+        ),
+      );
+
+      if (response.statusCode == 200) {
+        final data = response.data;
+        final acked = data is Map && data['acked'] is List
+            ? (data['acked'] as List).whereType<String>().toSet()
+            : const <String>{};
+
+        for (final id in acked) {
+          _pending.remove(id);
+        }
+
+        // Only now is the dropped count safely delivered. Clearing it before
+        // the acknowledgement would lose the one signal that says this
+        // session's record is incomplete.
+        if (acked.isNotEmpty && droppedAtSend > 0) {
+          _dropped -= droppedAtSend;
+          if (_dropped < 0) _dropped = 0;
+          _prefs?.setInt(_droppedKey, _dropped);
+        }
+
+        // A receipt the worker did not name is one it never stored, so leave it
+        // queued and count the attempt against it.
+        for (final receipt in batch) {
+          if (!acked.contains(receipt.bubbleId)) receipt.attempts++;
+        }
+        _persist();
+
+        // More waiting behind this batch — keep going rather than waiting for
+        // the next bubble to trigger a flush.
+        if (_pending.isNotEmpty) _scheduleRetry(immediate: true);
+        return;
+      }
+
+      // Anything else (503 when the migration is unapplied, 401, a proxy's 502)
+      // means nothing was stored. Keep the batch.
+      for (final receipt in batch) {
+        receipt.attempts++;
+      }
+      _persist();
+      _scheduleRetry();
+    } catch (e) {
+      // The case this table exists for: the request never arrived. Keep every
+      // receipt and try again later.
+      for (final receipt in _pending.values.take(AppConfig.deliveryBatchMax)) {
+        receipt.attempts++;
+      }
+      _persist();
+      _scheduleRetry();
+      if (kDebugMode) debugPrint('DeliveryLog.flush failed: $e');
+    } finally {
+      _flushing = false;
+    }
+  }
+
+  void _scheduleRetry({bool immediate = false}) {
+    _retryTimer?.cancel();
+    if (_pending.isEmpty) return;
+
+    if (immediate) {
+      _retryTimer = Timer(const Duration(milliseconds: 50), () => flush());
+      return;
+    }
+
+    final attempts = _pending.values.fold<int>(
+      0,
+      (worst, r) => r.attempts > worst ? r.attempts : worst,
+    );
+    final index = min(max(attempts - 1, 0), _retryBackoffMs.length - 1);
+    _retryTimer = Timer(
+      Duration(milliseconds: _retryBackoffMs[index]),
+      () => flush(),
+    );
+  }
+
+  String _sign(String body, String timestamp) {
+    final secret = AppConfig.appSecret;
+    // Empty on web by design (see AppConfig.appSecret), where the worker runs
+    // with REQUIRE_SIGNATURE=false. Same shape as OpenAIService, which also
+    // sends an empty signature there rather than omitting the header.
+    if (secret.isEmpty) return '';
+    return Hmac(sha256, utf8.encode(secret))
+        .convert(utf8.encode(body + timestamp))
+        .toString();
+  }
+
+  /// Test seam: how many receipts are waiting, and how many were discarded.
+  @visibleForTesting
+  int get pendingCount => _pending.length;
+
+  @visibleForTesting
+  int get droppedCount => _dropped;
+}

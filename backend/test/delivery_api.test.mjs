@@ -11,14 +11,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { d1, freshDb, loadWorker, seed } from './harness.mjs';
+import { ADMIN_TOKEN, adminFetch, d1, freshDb, loadWorker, seed } from './harness.mjs';
 
 const APP_SECRET = 'test-app-secret';
 const REAL_USER = 'user_1700000000000';
 
 function envWith({ skip = [], requireSignature = false } = {}) {
     const db = seed(freshDb({ skip }));
-    const env = { CHAT_LOGS_DB: d1(db), APP_SECRET };
+    // ADMIN_TOKEN so the report half of these tests can get past the admin
+    // guard; the ingest half never looks at it.
+    const env = { CHAT_LOGS_DB: d1(db), APP_SECRET, ADMIN_TOKEN };
     // Off by default so most tests are about the storage behaviour rather than
     // about re-proving the HMAC that /api/chat already relies on.
     if (!requireSignature) env.REQUIRE_SIGNATURE = 'false';
@@ -241,6 +243,119 @@ test('delivery logging explains itself when the migration has not been applied',
     // unmigrated deployment nothing stored it. Acking here would throw away
     // every receipt sent before someone remembered to run the migration.
     assert.equal(res.status, 503);
+});
+
+/// Drives the report the way the page does. Separate from `flush` because these
+/// go through the admin auth path.
+const report = (env, days = 7) =>
+    adminFetch(env, `/api/admin/delivery?days=${days}`);
+
+test('the report counts the funnel and separates unrendered from unseen', async () => {
+    const { env } = envWith();
+
+    await flush(env, [
+        // Seen.
+        receipt({ bubbleId: 'b0', seq: 0, renderedAt: '2026-08-13T09:00:01.000Z', seenAt: '2026-08-13T09:00:02.000Z' }),
+        // Drawn, but never in front of anyone — a hidden tab or below the fold.
+        receipt({ bubbleId: 'b1', seq: 1, renderedAt: '2026-08-13T09:00:03.000Z' }),
+        // Never drawn at all: the delivery failure.
+        receipt({ bubbleId: 'b2', seq: 2 }),
+    ]);
+
+    const res = await report(env);
+    assert.equal(res.status, 200);
+    const s = res.json.summary;
+    assert.equal(s.total, 3);
+    assert.equal(s.rendered, 2);
+    assert.equal(s.seen, 1);
+    // The two are different problems and must not be conflated.
+    assert.equal(s.never_rendered, 1);
+    assert.equal(s.rendered_unseen, 1);
+});
+
+test('text fidelity forgives the client stripping and flags anything else', async () => {
+    const { env, db } = envWith();
+
+    // The seeded m1 reply is 'well met'. Give it characters the client is known
+    // to strip before drawing, so the stored reply and the drawn text differ.
+    db.prepare(`UPDATE conversation_logs SET assistant_message = ? WHERE id = 'm1'`)
+        .run('**well met**, "traveller"');
+
+    await flush(env, [
+        // What the client would actually draw after its own cleanup. Different
+        // bytes from assistant_message, and correct.
+        receipt({ bubbleId: 'b_ok', conversationLogId: 'm1', text: 'well met, traveller' }),
+        // Text the reply does not contain at all — the case worth alerting on.
+        receipt({ bubbleId: 'b_bad', conversationLogId: 'm1', text: 'buy cheap watches' }),
+        // Composed on the device: no log row to check it against, counted
+        // separately rather than silently passing.
+        receipt({ bubbleId: 'b_local', origin: 'welcome_script', text: 'What brings you here?' }),
+    ]);
+
+    const f = (await report(env)).json.fidelity;
+    assert.equal(f.checkable, 2);
+    assert.equal(f.verified, 1);
+    assert.equal(f.unexplained, 1);
+    assert.equal(f.unverifiable, 1);
+});
+
+test('the report groups by origin, country and connection', async () => {
+    const { env } = envWith();
+
+    await flush(env, [
+        receipt({ bubbleId: 'a1', origin: 'ai_reply', connectionType: '4g', renderedAt: '2026-08-13T09:00:01.000Z', seenAt: '2026-08-13T09:00:02.000Z' }),
+        receipt({ bubbleId: 'w1', origin: 'welcome_script', connectionType: 'slow-2g' }),
+        receipt({ bubbleId: 'w2', origin: 'welcome_script', connectionType: 'slow-2g' }),
+    ], { cf: { country: 'MY', colo: 'KUL' } });
+
+    const data = (await report(env)).json;
+
+    const welcome = data.by_origin.find((r) => r.origin === 'welcome_script');
+    assert.equal(welcome.total, 2);
+    assert.equal(welcome.never_rendered, 2);
+
+    const my = data.by_country.find((r) => r.country === 'MY');
+    assert.equal(my.total, 3);
+    assert.equal(my.never_rendered, 2);
+
+    const slow = data.by_connection.find((r) => r.connection_type === 'slow-2g');
+    assert.equal(slow.total, 2);
+});
+
+test('a turn cut short is reported once, not once per bubble', async () => {
+    const { env } = envWith();
+
+    await flush(env, [
+        receipt({ bubbleId: 'b0', seq: 0, renderedAt: '2026-08-13T09:00:01.000Z', seenAt: '2026-08-13T09:00:02.000Z' }),
+        receipt({ bubbleId: 'b1', seq: 1 }),
+        receipt({ bubbleId: 'b2', seq: 2 }),
+    ]);
+
+    const cutShort = (await report(env)).json.cut_short;
+    assert.equal(cutShort.length, 1);
+    assert.equal(cutShort[0].turn_id, 't1');
+    assert.equal(cutShort[0].bubbles, 3);
+    assert.equal(cutShort[0].seen, 1);
+    assert.equal(cutShort[0].never_rendered, 2);
+});
+
+test('a turn the visitor saw in full is not reported as cut short', async () => {
+    const { env } = envWith();
+
+    await flush(env, [
+        receipt({ bubbleId: 'b0', seq: 0, renderedAt: '2026-08-13T09:00:01.000Z', seenAt: '2026-08-13T09:00:02.000Z' }),
+        receipt({ bubbleId: 'b1', seq: 1, renderedAt: '2026-08-13T09:00:03.000Z', seenAt: '2026-08-13T09:00:04.000Z' }),
+    ]);
+
+    assert.deepEqual((await report(env)).json.cut_short, []);
+});
+
+test('the report says which migration is missing rather than failing', async () => {
+    const { env } = envWith({ skip: ['0011_message_delivery.sql'] });
+    const res = await report(env);
+
+    assert.equal(res.status, 503);
+    assert.match(res.json.error, /0011/);
 });
 
 test('unseen bubbles are findable per turn', async () => {

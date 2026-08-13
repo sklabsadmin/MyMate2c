@@ -14,6 +14,8 @@ import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/analytics.dart';
 import '../../../core/services/chime.dart';
+import '../../../core/services/delivery_log.dart';
+import '../../../core/presentation/seen_detector.dart';
 import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../character/presentation/character_profile_screen.dart';
@@ -45,7 +47,8 @@ class ChatScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends ConsumerState<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
 
   /// Keeps the caret in the message box: focused when the chat opens, and
@@ -57,6 +60,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final List<ChatMessage> _messages = [];
   final Random _bubbleDelayRandom = Random();
   bool _isTyping = false;
+
+  /// Which delivery receipt belongs to which message, so a bubble that scrolls
+  /// into view can complete the record opened when it was first drawn.
+  ///
+  /// Kept beside the messages rather than on ChatMessage: the model is
+  /// serialised into local history, and a receipt id has no meaning on a later
+  /// run — a restored message must not look like a bubble still awaiting a
+  /// sighting. Absent from this map is exactly the right answer for history.
+  final Map<String, String> _bubbleIdByMessageId = {};
+
+  /// Whether this surface is actually in front of the visitor. False for a
+  /// backgrounded app and, on web, for a hidden tab — Flutter reports the Page
+  /// Visibility API through the same lifecycle callback.
+  bool _surfaceVisible = true;
+
+  /// Bumped whenever the answer to "is this bubble visible" could have changed
+  /// for reasons a scroll notification would not cover.
+  final ValueNotifier<int> _surfaceChanged = ValueNotifier<int>(0);
+
+  /// What SeenDetector listens to: scrolling, plus the lifecycle changes above.
+  late final Listenable _seenRevalidate = Listenable.merge([
+    _scrollController,
+    _surfaceChanged,
+  ]);
 
   /// Idle nudge. If the user goes quiet after a reply, the character says
   /// something neutral to invite them back in. The text is canned and local —
@@ -257,6 +284,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void initState() {
     super.initState();
     _textController.addListener(_onDraftChanged);
+    // Lifecycle drives two things: whether a bubble on screen counts as seen,
+    // and the last-chance flush when the visitor leaves.
+    WidgetsBinding.instance.addObserver(this);
+    // Picks up any receipts stranded by a previous run and tries them again.
+    // Those are the valuable ones — a queue that survived a reload is usually a
+    // queue that could not be delivered.
+    DeliveryLog.instance.init();
     _loadHistory();
     _loadReplyCount();
     // Track active character
@@ -326,7 +360,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _inputFocus.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    // Leaving the chat is the last moment a bubble drawn a second ago can still
+    // be reported. Not awaited — dispose cannot wait — but the receipts are
+    // already on disk, so the worst case is that they go out on the next run.
+    DeliveryLog.instance.flush();
+    _surfaceChanged.dispose();
     super.dispose();
+  }
+
+  /// Foreground/background, which on web is the browser tab becoming hidden or
+  /// visible.
+  ///
+  /// Two jobs. A bubble painted into a hidden tab must not count as seen, so the
+  /// detectors are told to re-evaluate. And going away is the point at which
+  /// queued receipts are most likely to be lost, so they are flushed — a tab
+  /// being hidden is very often a tab about to be closed.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final visible = state == AppLifecycleState.resumed;
+    if (visible == _surfaceVisible) return;
+    _surfaceVisible = visible;
+    _surfaceChanged.value++;
+    if (!visible) DeliveryLog.instance.flush();
   }
 
   /// Rebuilds only when the box crosses between empty and non-empty, not on
@@ -1686,6 +1743,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       delivered.clear();
     }
 
+    // Declare every line of the opening before the first one is drawn.
+    //
+    // The loop below returns the moment the visitor leaves, sends something, or
+    // this run is superseded — and the script can be dozens of lines (Calypso's
+    // is 37), so most sessions never reach the end of it. Declaring the whole
+    // thing up front is what turns that into a measurement: the lines with no
+    // sighting are exactly how far the opening got.
+    //
+    // This is also the honest test of the competing explanation for low
+    // engagement. If people are leaving before the character finishes its
+    // opening, that is pacing and entirely ours to fix; until now it was
+    // indistinguishable from a delivery failure, because neither left a trace.
+    final welcomeTurnId = DeliveryLog.instance.beginTurn();
+    final welcomeBubbleIds = <String>[];
+    for (final segment in script) {
+      for (final line in segment.lines) {
+        welcomeBubbleIds.add(
+          DeliveryLog.instance.recordIntended(
+            turnId: welcomeTurnId,
+            seq: welcomeBubbleIds.length,
+            origin: DeliveryOrigin.welcomeScript,
+            text: line,
+            chatId: widget.scenario,
+            characterId: widget.characterId,
+          ),
+        );
+      }
+    }
+    // Walks the flat list above in step with the nested loops below, which visit
+    // the same lines in the same order.
+    var welcomeSeq = 0;
+
     for (var s = 0; s < script.length; s++) {
       final segment = script[s];
       final lastSegment = s == script.length - 1;
@@ -1726,6 +1815,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             isUser: false,
             timestamp: DateTime.now(),
           ),
+          origin: DeliveryOrigin.welcomeScript,
+          bubbleId: welcomeSeq < welcomeBubbleIds.length
+              ? welcomeBubbleIds[welcomeSeq++]
+              : null,
         );
         delivered.add(line);
 
@@ -1784,6 +1877,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           isSystem: true,
           timestamp: DateTime.now(),
         ),
+        origin: DeliveryOrigin.systemBanner,
       );
       await Future.delayed(const Duration(milliseconds: 1000));
       if (!mounted || _welcomeAbandoned) return;
@@ -1820,6 +1914,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (opener == null) return;
     final lines = <String>[opener];
 
+    // Declared before the typing beat below, for the same reason as the scripted
+    // opening: this is a character's first words, it is delayed by up to five
+    // seconds, and the loop abandons it if the visitor leaves first. One line
+    // today, but the loop is written for more.
+    final openerTurnId = DeliveryLog.instance.beginTurn();
+    final openerBubbleIds = [
+      for (var i = 0; i < lines.length; i++)
+        DeliveryLog.instance.recordIntended(
+          turnId: openerTurnId,
+          seq: i,
+          origin: DeliveryOrigin.welcomeScript,
+          text: lines[i],
+          chatId: widget.scenario,
+          characterId: widget.characterId,
+        ),
+    ];
+
     for (var i = 0; i < lines.length; i++) {
       final text = lines[i];
       if (!mounted || _welcomeAbandoned) return;
@@ -1851,6 +1962,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           isUser: false,
           timestamp: DateTime.now(),
         ),
+        origin: DeliveryOrigin.welcomeScript,
+        bubbleId: openerBubbleIds[i],
       );
     }
 
@@ -1913,7 +2026,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     "What would you like to talk about?",
   ];
 
-  void _addMessage(ChatMessage message) {
+  /// Adds a message to the conversation and records that it was drawn.
+  ///
+  /// [origin] is required so that adding a new way for the character to speak
+  /// forces a decision about how it is logged — the compiler asks, rather than
+  /// the new path quietly going unrecorded, which is how the welcome script and
+  /// the portrait came to have no server-side trace at all.
+  ///
+  /// [bubbleId] is passed by the paths that know their bubbles in advance (an
+  /// AI reply split into several, the welcome script) and have already declared
+  /// the intent to show them. Those declarations are what make a bubble that was
+  /// never drawn visible in the data; a single-bubble path has nothing to gain
+  /// from the two steps and declares its intent here.
+  void _addMessage(
+    ChatMessage message, {
+    required DeliveryOrigin origin,
+    String? bubbleId,
+  }) {
+    final receiptId =
+        bubbleId ??
+        DeliveryLog.instance.recordIntended(
+          turnId: DeliveryLog.instance.beginTurn(),
+          seq: 0,
+          origin: origin,
+          text: message.text,
+          isUser: message.isUser,
+          // The scenario, not _chatId: conversation_logs.chat_id is the scenario
+          // string, and these rows are only worth writing if they join to it.
+          chatId: widget.scenario,
+          characterId: widget.characterId,
+        );
+    _bubbleIdByMessageId[message.id] = receiptId;
+    DeliveryLog.instance.markRendered(receiptId);
+
     setState(() {
       _messages.add(message);
     });
@@ -2153,6 +2298,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         isUser: false,
         timestamp: DateTime.now(),
       ),
+      origin: DeliveryOrigin.idleNudge,
     );
     _scrollToBottom();
     _startIdleTimer();
@@ -2230,6 +2376,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         isUser: true,
         timestamp: DateTime.now(),
       ),
+      origin: DeliveryOrigin.user,
     );
 
     setState(() {
@@ -2302,6 +2449,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
+    // Declare the whole reply before pacing out any of it.
+    //
+    // This is the measurement the loop below would otherwise destroy: the
+    // bubbles are revealed over several seconds, so anyone who leaves mid-reply
+    // never sees the rest — and recording each one only as it was drawn would
+    // leave no trace that the others were ever meant to arrive. Every bubble is
+    // declared now; those that make it to the screen are stamped as they go.
+    //
+    // A fallback ("having trouble thinking", the rate-limit line, the local
+    // translation refusal) reaches this same code path and reads as the
+    // character speaking, so it is tagged for what it is and carries the reason
+    // it happened. lastFailureReason is also the only signal for a send that
+    // never reached the worker, which by definition has no row server-side.
+    final failureReason = _aiService?.lastFailureReason;
+    final fromServer = _aiService?.lastSendSucceeded == true;
+    final turnId = DeliveryLog.instance.beginTurn();
+    final bubbleIds = [
+      for (var i = 0; i < bubbles.length; i++)
+        DeliveryLog.instance.recordIntended(
+          turnId: turnId,
+          seq: i,
+          origin: fromServer
+              ? DeliveryOrigin.aiReply
+              : DeliveryOrigin.localFallback,
+          text: bubbles[i],
+          chatId: widget.scenario,
+          characterId: widget.characterId,
+          // Names the conversation_logs row this was cut from, so the text on
+          // screen can be compared against the text we sent. Null for a
+          // fallback, which no reply row exists for.
+          conversationLogId: fromServer ? _aiService?.lastLogId : null,
+          failureReason: failureReason,
+        ),
+    ];
+
     for (var i = 0; i < bubbles.length; i++) {
       if (!mounted) return;
       setState(() => _isTyping = true);
@@ -2319,6 +2501,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           isUser: false,
           timestamp: DateTime.now(),
         ),
+        origin: fromServer
+            ? DeliveryOrigin.aiReply
+            : DeliveryOrigin.localFallback,
+        bubbleId: bubbleIds[i],
       );
     }
 
@@ -2366,6 +2552,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         timestamp: DateTime.now(),
         imageAsset: portrait,
       ),
+      origin: DeliveryOrigin.portrait,
     );
     _refocusInput();
     _startIdleTimer();
@@ -2525,6 +2712,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    // The surface the bubbles are actually being drawn onto, recorded with each
+    // receipt. Read here rather than from the window so it is the same number on
+    // both platforms, and because a resize should be reflected — a visitor who
+    // shrank the window is a plausible reason for a bubble never coming into
+    // view, and site_visits.viewport_w only ever captured arrival.
+    final viewport = MediaQuery.sizeOf(context);
+    DeliveryLog.instance.setViewport(
+      viewport.width.round(),
+      viewport.height.round(),
+    );
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -2688,11 +2886,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     final next = index + 1 < _messages.length
                         ? _messages[index + 1]
                         : null;
-                    return _ChatBubble(
-                      message: msg,
-                      groupedWithNext:
-                          next != null && next.isUser == msg.isUser,
-                      onReport: () => _reportMessage(msg),
+                    // Wrapped so a bubble reports when it has genuinely been in
+                    // front of the visitor, rather than merely built. The id is
+                    // null for anything restored from local history, which has
+                    // no receipt and must not be reported as freshly seen.
+                    return SeenDetector(
+                      bubbleId: _bubbleIdByMessageId[msg.id],
+                      revalidate: _seenRevalidate,
+                      isSurfaceVisible: () => _surfaceVisible,
+                      onSeen: DeliveryLog.instance.markSeen,
+                      child: _ChatBubble(
+                        message: msg,
+                        groupedWithNext:
+                            next != null && next.isUser == msg.isUser,
+                        onReport: () => _reportMessage(msg),
+                      ),
                     );
                   },
                 ),

@@ -869,6 +869,38 @@ export default {
             }
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/delivery") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminDeliveryPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/delivery") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            try {
+                const rawDays = parseInt(url.searchParams.get("days"), 10);
+                const days = Math.min(Math.max(Number.isFinite(rawDays) ? rawDays : 7, 1), 90);
+                return jsonResponse(await deliveryReport(db, days));
+            } catch (e) {
+                // Same shape as /api/admin/deploys: an unapplied migration is
+                // the expected reason this table is missing, and saying so is
+                // more useful than a 500.
+                const message = e && e.message ? e.message : String(e);
+                if (/no such table/i.test(message)) {
+                    return jsonResponse({
+                        error: "message_delivery does not exist yet — apply migration 0011.",
+                    }, { status: 503 });
+                }
+                return jsonResponse({ error: `Server error: ${message}` }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/admin/deploys") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -1950,6 +1982,164 @@ async function writeConversationLogRow(env, entry) {
     ).run();
 }
 
+/// The client's own text mangling, replayed in SQL.
+///
+/// OpenAIService strips these four characters out of every reply before drawing
+/// it, so a bubble's text never matches the assistant_message it came from and a
+/// naive comparison reports every single row as corrupted. Undoing the same edit
+/// on the server's copy is what turns the comparison into a real check: after
+/// this, a bubble that is still not found inside the reply it claims to come from
+/// is an unexplained difference — text the visitor was shown that we cannot
+/// account for, which is the one thing this table exists to be able to assert.
+///
+/// Must stay in step with the cleanup in OpenAIService.sendMessage. If a
+/// character is added there and not here, every affected row starts reading as a
+/// mismatch.
+const STRIPPED_ASSISTANT_SQL = `
+    replace(replace(replace(c.assistant_message, '*', ''), '"', ''), '''', '')`;
+
+/// Everything the delivery page shows, in one round of queries.
+///
+/// Windowed on server_received_at rather than on any of the client's three
+/// timestamps: a device with a wrong clock would otherwise fall out of every
+/// window, and the sessions with broken clocks are not a random sample of the
+/// sessions with broken delivery.
+async function deliveryReport(db, days) {
+    const since = `-${days} days`;
+
+    const summary = await db.prepare(`
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN intended_at IS NOT NULL THEN 1 ELSE 0 END) AS intended,
+               SUM(CASE WHEN rendered_at IS NOT NULL THEN 1 ELSE 0 END) AS rendered,
+               SUM(CASE WHEN seen_at IS NOT NULL THEN 1 ELSE 0 END) AS seen,
+               -- The finding: meant to be shown, never drawn.
+               SUM(CASE WHEN rendered_at IS NULL THEN 1 ELSE 0 END) AS never_rendered,
+               -- Drawn but never in front of anyone: a hidden tab, or below the
+               -- fold. Delivered and unread, which is a different problem.
+               SUM(CASE WHEN rendered_at IS NOT NULL AND seen_at IS NULL THEN 1 ELSE 0 END) AS rendered_unseen,
+               COUNT(DISTINCT visit_id) AS visits,
+               COALESCE(SUM(queue_dropped), 0) AS dropped
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?)
+    `).bind(since).first();
+
+    // Per origin, because these fail for unrelated reasons and the aggregate
+    // hides which one is actually broken.
+    const byOrigin = await db.prepare(`
+        SELECT origin,
+               COUNT(*) AS total,
+               SUM(CASE WHEN rendered_at IS NULL THEN 1 ELSE 0 END) AS never_rendered,
+               SUM(CASE WHEN seen_at IS NULL THEN 1 ELSE 0 END) AS unseen
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?)
+        GROUP BY origin
+        ORDER BY total DESC
+    `).bind(since).all();
+
+    // The regional hypothesis. NULL is a real bucket — the edge cannot always
+    // place a request — so it is labelled rather than dropped.
+    const byCountry = await db.prepare(`
+        SELECT COALESCE(country, '(unknown)') AS country,
+               COUNT(*) AS total,
+               SUM(CASE WHEN rendered_at IS NULL THEN 1 ELSE 0 END) AS never_rendered,
+               SUM(CASE WHEN seen_at IS NULL THEN 1 ELSE 0 END) AS unseen,
+               COUNT(DISTINCT visit_id) AS visits,
+               MAX(COALESCE(queued_ms, 0)) AS worst_queue_ms
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?)
+        GROUP BY COALESCE(country, '(unknown)')
+        HAVING COUNT(*) > 0
+        ORDER BY never_rendered DESC, total DESC
+        LIMIT 20
+    `).bind(since).all();
+
+    // Safari reports no connection type at all, so '(unknown)' here is a large
+    // and uninformative bucket rather than an anomaly.
+    const byConnection = await db.prepare(`
+        SELECT COALESCE(connection_type, '(unknown)') AS connection_type,
+               COUNT(*) AS total,
+               SUM(CASE WHEN rendered_at IS NULL THEN 1 ELSE 0 END) AS never_rendered,
+               SUM(CASE WHEN seen_at IS NULL THEN 1 ELSE 0 END) AS unseen
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?)
+        GROUP BY COALESCE(connection_type, '(unknown)')
+        ORDER BY total DESC
+    `).bind(since).all();
+
+    // How long receipts waited to get out. A queue delay is the length of an
+    // outage that produced no server-side traffic to observe, so this is the
+    // only place a silent one shows up at all.
+    const queue = await db.prepare(`
+        SELECT COUNT(*) AS delayed,
+               MAX(queued_ms) AS worst_ms,
+               SUM(CASE WHEN queued_ms > 60000 THEN 1 ELSE 0 END) AS over_a_minute,
+               MAX(COALESCE(flush_attempts, 0)) AS worst_attempts
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?) AND COALESCE(queued_ms, 0) > 2000
+    `).bind(since).first();
+
+    // The verification proper: does the text on screen match the reply it was
+    // cut from, once the client's own stripping is undone.
+    //
+    // Only ai_reply rows with a log id can be checked — every other origin was
+    // composed on the device and has nothing on the server to compare against,
+    // which is itself worth knowing and is counted separately.
+    const fidelity = await db.prepare(`
+        SELECT COUNT(*) AS checkable,
+               SUM(CASE WHEN instr(${STRIPPED_ASSISTANT_SQL}, d.text) > 0
+                        THEN 1 ELSE 0 END) AS verified,
+               SUM(CASE WHEN instr(${STRIPPED_ASSISTANT_SQL}, d.text) = 0
+                        THEN 1 ELSE 0 END) AS unexplained
+        FROM message_delivery d
+        JOIN conversation_logs c ON c.id = d.conversation_log_id
+        WHERE d.server_received_at >= datetime('now', ?)
+          AND d.origin = 'ai_reply'
+          AND d.text IS NOT NULL AND d.text <> ''
+          AND c.assistant_message IS NOT NULL
+    `).bind(since).first();
+
+    const unverifiable = await db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?)
+          AND is_user = 0
+          AND conversation_log_id IS NULL
+    `).bind(since).first();
+
+    // Turns that were cut short, worst first — the drilldown behind the
+    // headline. Grouped by turn so "three of five bubbles arrived" is legible as
+    // one event rather than three unrelated rows.
+    const cutShort = await db.prepare(`
+        SELECT turn_id,
+               MIN(origin) AS origin,
+               MIN(visit_id) AS visit_id,
+               MIN(chat_id) AS chat_id,
+               MIN(COALESCE(country, '(unknown)')) AS country,
+               MIN(COALESCE(connection_type, '(unknown)')) AS connection_type,
+               COUNT(*) AS bubbles,
+               SUM(CASE WHEN seen_at IS NOT NULL THEN 1 ELSE 0 END) AS seen,
+               SUM(CASE WHEN rendered_at IS NULL THEN 1 ELSE 0 END) AS never_rendered,
+               MIN(server_received_at) AS at
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?) AND is_user = 0
+        GROUP BY turn_id
+        HAVING SUM(CASE WHEN seen_at IS NULL THEN 1 ELSE 0 END) > 0
+        ORDER BY never_rendered DESC, (bubbles - seen) DESC, at DESC
+        LIMIT 100
+    `).bind(since).all();
+
+    return {
+        days,
+        summary,
+        queue,
+        fidelity: { ...fidelity, unverifiable: unverifiable ? unverifiable.n : 0 },
+        by_origin: byOrigin.results || [],
+        by_country: byCountry.results || [],
+        by_connection: byConnection.results || [],
+        cut_short: cutShort.results || [],
+    };
+}
+
 /// The origins a delivery receipt may claim. Anything else is dropped rather
 /// than coerced — the opposite of ALLOWED_EVENTS in recordSiteVisit, and
 /// deliberately so: an unknown funnel event inflating the arrival count is
@@ -2024,11 +2214,11 @@ async function recordMessageDelivery(rows, request, env) {
                 conversation_log_id, origin, is_user,
                 text, text_sha256, text_len,
                 intended_at, rendered_at, seen_at,
-                failure_reason, queued_ms, flush_attempts,
+                failure_reason, queued_ms, flush_attempts, queue_dropped,
                 app_version, locale, tz_offset_min, connection_type,
                 viewport_w, viewport_h,
                 country, colo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bubble_id) DO UPDATE SET
                 intended_at = COALESCE(message_delivery.intended_at, excluded.intended_at),
                 rendered_at = COALESCE(message_delivery.rendered_at, excluded.rendered_at),
@@ -2039,7 +2229,8 @@ async function recordMessageDelivery(rows, request, env) {
                 -- flush that succeeded instantly would otherwise erase the
                 -- outage that made the first one necessary.
                 queued_ms = MAX(COALESCE(message_delivery.queued_ms, 0), COALESCE(excluded.queued_ms, 0)),
-                flush_attempts = MAX(COALESCE(message_delivery.flush_attempts, 0), COALESCE(excluded.flush_attempts, 0))
+                flush_attempts = MAX(COALESCE(message_delivery.flush_attempts, 0), COALESCE(excluded.flush_attempts, 0)),
+                queue_dropped = MAX(COALESCE(message_delivery.queue_dropped, 0), COALESCE(excluded.queue_dropped, 0))
         `).bind(
             bubbleId,
             turnId,
@@ -2060,6 +2251,7 @@ async function recordMessageDelivery(rows, request, env) {
             stringOrNull(row.failureReason),
             numberOrNull(row.queuedMs),
             numberOrNull(row.flushAttempts),
+            numberOrNull(row.queueDropped),
             stringOrNull(row.appVersion),
             stringOrNull(row.locale),
             numberOrNull(row.tzOffsetMin),
@@ -4438,6 +4630,216 @@ function tickSpanMs(data) {
 `;
 }
 
+/// What the client says it actually put on screen, next to what we sent.
+///
+/// The page is built around one comparison. conversation_logs proves a reply was
+/// generated; nothing proved it arrived. Between the two sit a bubble split, a
+/// pacing delay of several seconds per piece, a text rewrite, and a visitor free
+/// to leave at any point — so "we sent it" and "they read it" had drifted apart
+/// with no way to measure the gap.
+///
+/// Read the three headline numbers as a funnel: intended, rendered, seen. Bubbles
+/// that were never rendered are a delivery failure. Rendered but never seen is a
+/// different thing entirely — drawn into a hidden tab or below the fold, which is
+/// delivered and unread and mostly a pacing question.
+function adminDeliveryPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mythos Live — Message delivery</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #14101a; color: #eee; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; color: #b39ddb; text-transform: uppercase; letter-spacing: .04em;
+       margin: 26px 0 8px; }
+  p.sub { color: #999; margin: 0 0 18px; max-width: 78ch; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #2c2438;
+           vertical-align: top; }
+  th { color: #b39ddb; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
+  .card { background: #1d1726; border: 1px solid #2c2438; border-radius: 10px;
+          padding: 12px 16px; min-width: 132px; }
+  .card .v { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .card .k { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: #777; }
+  .warn { color: #e5a373; }
+  .err { color: #e57373; }
+  .ok { color: #81c784; }
+  .hint { font-size: 12px; color: #777; margin: 4px 0 0; line-height: 1.5; max-width: 78ch; }
+  select, button { background: #241d2e; color: #eee; border: 1px solid #443;
+                   padding: 7px 10px; border-radius: 6px; font: inherit; }
+  button { cursor: pointer; border-color: #7e57c2; }
+</style></head><body>
+<p style="margin:0 0 14px"><a href="/admin" style="color:#b39ddb">&larr; Admin</a></p>
+<h1>Message delivery</h1>
+<p class="sub">What the client says it drew, checked against what the worker sent.
+   <b>Intended</b> is a bubble the app committed to showing; <b>rendered</b> reached the
+   widget tree; <b>seen</b> was genuinely on screen for a moment. Intended but never
+   rendered is a delivery failure. Rendered but never seen is a bubble drawn into a
+   hidden tab or below the fold — delivered and unread, which is a pacing problem
+   rather than a network one. Receipts are queued on the device and retried, so
+   recent rows may still be arriving: <b>missing is not the same as never
+   happened</b>.</p>
+
+<div class="cards" style="margin-bottom:14px">
+  <div><label class="k" for="days">Window</label><br>
+    <select id="days" onchange="load()">
+      <option value="1">24 hours</option>
+      <option value="7" selected>7 days</option>
+      <option value="30">30 days</option>
+    </select>
+  </div>
+</div>
+
+<div id="out">Loading…</div>
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function pct(part, whole) {
+  if (!whole) return '—';
+  return (100 * part / whole).toFixed(1) + '%';
+}
+function secs(ms) {
+  if (!ms) return '—';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return Math.round(ms / 60000) + 'm';
+}
+function card(k, v, cls) {
+  return '<div class="card"><div class="v ' + (cls || '') + '">' + v +
+         '</div><div class="k">' + esc(k) + '</div></div>';
+}
+function rows(list, cols) {
+  if (!list.length) return '<p class="muted">Nothing in this window.</p>';
+  var head = '<tr>' + cols.map(function (c) {
+    return '<th' + (c.n ? ' style="text-align:right"' : '') + '>' + esc(c.label) + '</th>';
+  }).join('') + '</tr>';
+  var body = list.map(function (r) {
+    return '<tr>' + cols.map(function (c) {
+      return '<td' + (c.n ? ' class="n"' : '') + '>' + c.get(r) + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+  return '<table>' + head + body + '</table>';
+}
+
+async function load() {
+  var out = document.getElementById('out');
+  var days = document.getElementById('days').value;
+  out.textContent = 'Loading…';
+  var res = await fetch('/api/admin/delivery?days=' + encodeURIComponent(days));
+  var data = await res.json();
+  if (!res.ok) {
+    out.innerHTML = '<p class="err">' + esc(data.error || 'Failed to load') + '</p>';
+    return;
+  }
+
+  var s = data.summary || {};
+  var f = data.fidelity || {};
+  var q = data.queue || {};
+  var html = '';
+
+  html += '<div class="cards">';
+  html += card('bubbles', s.total || 0);
+  html += card('sessions', s.visits || 0);
+  html += card('seen', pct(s.seen || 0, s.total || 0), (s.total && s.seen === s.total) ? 'ok' : '');
+  html += card('never rendered', (s.never_rendered || 0), (s.never_rendered ? 'err' : 'ok'));
+  html += card('rendered, unseen', (s.rendered_unseen || 0), (s.rendered_unseen ? 'warn' : 'ok'));
+  html += '</div>';
+  if (s.dropped) {
+    html += '<p class="hint warn">' + s.dropped + ' receipt(s) were discarded on-device ' +
+            'because the local queue filled up. The real gap in this window is wider than ' +
+            'the rows above show.</p>';
+  }
+
+  html += '<h2>Text fidelity</h2>';
+  html += '<div class="cards">';
+  html += card('checkable', f.checkable || 0);
+  html += card('verified', pct(f.verified || 0, f.checkable || 0), 'ok');
+  html += card('unexplained', (f.unexplained || 0), (f.unexplained ? 'err' : 'ok'));
+  html += card('no server copy', f.unverifiable || 0, 'muted');
+  html += '</div>';
+  html += '<p class="hint">Every bubble that names a conversation_logs row is compared ' +
+          'against it, after undoing the character stripping the client does before ' +
+          'drawing. <b>Unexplained</b> means text was on screen that the reply it claims ' +
+          'to come from does not contain — a real corruption, not a formatting artefact. ' +
+          '<b>No server copy</b> counts character-voiced bubbles the worker never sent at ' +
+          'all: the welcome script, idle nudges, the portrait, and the "trouble thinking" ' +
+          'fallback. Those cannot be verified against anything, which is exactly why they ' +
+          'are worth counting.</p>';
+
+  html += '<h2>Queue delay</h2>';
+  html += '<div class="cards">';
+  html += card('delayed', q.delayed || 0);
+  html += card('worst wait', secs(q.worst_ms), (q.worst_ms > 60000 ? 'warn' : ''));
+  html += card('over a minute', q.over_a_minute || 0, (q.over_a_minute ? 'warn' : ''));
+  html += card('worst retries', q.worst_attempts || 0);
+  html += '</div>';
+  html += '<p class="hint">How long receipts sat on the device before they landed. This is ' +
+          'the only trace an outage leaves — while it is happening there is no traffic ' +
+          'here to observe, so a long wait is the length of a hole in every other report.</p>';
+
+  html += '<h2>By origin</h2>';
+  html += rows(data.by_origin || [], [
+    { label: 'origin', get: function (r) { return esc(r.origin); } },
+    { label: 'bubbles', n: 1, get: function (r) { return r.total; } },
+    { label: 'never rendered', n: 1, get: function (r) {
+        return r.never_rendered ? '<span class="err">' + r.never_rendered + '</span>' : '0'; } },
+    { label: 'unseen', n: 1, get: function (r) { return r.unseen; } },
+    { label: 'seen', n: 1, get: function (r) { return pct(r.total - r.unseen, r.total); } },
+  ]);
+
+  html += '<h2>By country</h2>';
+  html += rows(data.by_country || [], [
+    { label: 'country', get: function (r) { return esc(r.country); } },
+    { label: 'sessions', n: 1, get: function (r) { return r.visits; } },
+    { label: 'bubbles', n: 1, get: function (r) { return r.total; } },
+    { label: 'never rendered', n: 1, get: function (r) {
+        return r.never_rendered ? '<span class="err">' + r.never_rendered + '</span>' : '0'; } },
+    { label: 'seen', n: 1, get: function (r) { return pct(r.total - r.unseen, r.total); } },
+    { label: 'worst queue', n: 1, get: function (r) { return secs(r.worst_queue_ms); } },
+  ]);
+  html += '<p class="hint">The country of the <b>flush</b>, not necessarily of the moment ' +
+          'the bubble was drawn — a receipt that waited out an outage reports from ' +
+          'wherever the device was when it finally got through.</p>';
+
+  html += '<h2>By connection</h2>';
+  html += rows(data.by_connection || [], [
+    { label: 'connection', get: function (r) { return esc(r.connection_type); } },
+    { label: 'bubbles', n: 1, get: function (r) { return r.total; } },
+    { label: 'never rendered', n: 1, get: function (r) { return r.never_rendered; } },
+    { label: 'seen', n: 1, get: function (r) { return pct(r.total - r.unseen, r.total); } },
+  ]);
+  html += '<p class="hint">The browser\\'s own throughput estimate. Safari reports nothing, ' +
+          'so "(unknown)" is a large bucket rather than an anomaly.</p>';
+
+  html += '<h2>Turns cut short</h2>';
+  html += rows(data.cut_short || [], [
+    { label: 'when (UTC)', get: function (r) { return esc(r.at); } },
+    { label: 'character', get: function (r) { return esc(r.chat_id || '—'); } },
+    { label: 'origin', get: function (r) { return esc(r.origin); } },
+    { label: 'seen / bubbles', n: 1, get: function (r) { return r.seen + ' / ' + r.bubbles; } },
+    { label: 'never rendered', n: 1, get: function (r) {
+        return r.never_rendered ? '<span class="err">' + r.never_rendered + '</span>' : '0'; } },
+    { label: 'country', get: function (r) { return esc(r.country); } },
+    { label: 'connection', get: function (r) { return esc(r.connection_type); } },
+  ]);
+  html += '<p class="hint">One row per turn — a reply, or a run of the welcome script. ' +
+          'A welcome script stopping a few bubbles in is usually someone leaving before ' +
+          'the character finished talking, which is ours to fix by pacing. An ai_reply with ' +
+          'bubbles that never rendered is the delivery case.</p>';
+
+  out.innerHTML = html;
+}
+load();
+</script>
+</body></html>`;
+}
+
 /// Hand-written record of what shipped and when.
 ///
 /// Every question the other pages answer is a before/after question, and the
@@ -4674,6 +5076,14 @@ function adminIndexPageHtml() {
 <a class="card" href="/admin/logs">
   <div class="t">Chat logs</div>
   <div class="d">Conversation transcripts by user and character.</div>
+</a>
+
+<a class="card" href="/admin/delivery">
+  <div class="t">Message delivery</div>
+  <div class="d">What the client says it actually drew, against what we sent. Chat
+     logs prove a reply was generated; this is the only thing that says it reached
+     the screen — and separates a bubble that never arrived from one drawn into a
+     hidden tab.</div>
 </a>
 
 <a class="card" href="/admin/deploys">

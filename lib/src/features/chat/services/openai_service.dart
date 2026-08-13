@@ -19,6 +19,16 @@ class OpenAIService {
   /// whether the free-reply counter should increment.
   bool lastSendSucceeded = false;
 
+  /// The conversation_logs id the worker assigned to the most recent reply, or
+  /// null when there was no reply to log (a network failure, or a message this
+  /// service answered locally without asking the backend).
+  ///
+  /// Delivery receipts carry it so a bubble on screen can be lined up against
+  /// the reply it was cut from. Nothing else can do that job: one reply becomes
+  /// several bubbles, and the text is rewritten below before any of it is drawn,
+  /// so matching on content afterwards would be guesswork.
+  String? lastLogId;
+
   /// Why the most recent [sendMessage] failed, or null if it succeeded.
   ///
   /// "network" is the important one: the request never reached the worker, so
@@ -95,6 +105,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
   Future<String> sendMessage(String message) async {
     lastSendSucceeded = false;
     lastFailureReason = null;
+    lastLogId = null;
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
@@ -161,6 +172,12 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
 
       if (response.statusCode == 200) {
         final data = response.data;
+        // A sibling of `choices`, added by the worker rather than by OpenAI.
+        // Read before the validity checks below so that a reply which arrived
+        // but could not be used is still traceable to its log row.
+        if (data is Map<String, dynamic> && data['log_id'] is String) {
+          lastLogId = data['log_id'] as String;
+        }
         final choices = data is Map<String, dynamic> ? data['choices'] : null;
         if (choices is! List || choices.isEmpty) {
           lastFailureReason = 'empty_response';

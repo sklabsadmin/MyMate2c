@@ -148,6 +148,18 @@ CREATE TABLE IF NOT EXISTS message_delivery (
     queued_ms INTEGER,
     flush_attempts INTEGER,
 
+    -- How many receipts this client had already thrown away when it sent this
+    -- one, because its local queue hit AppConfig.deliveryQueueMax.
+    --
+    -- The queue has to be bounded — it lives in localStorage and an unbounded
+    -- one would eventually throw and take the chat down with it — so under a
+    -- long enough outage some evidence is genuinely lost. This column is what
+    -- keeps that from being a silent lie: a non-zero value means the gap in this
+    -- session is wider than the missing rows suggest. Without it, a truncated
+    -- queue and a quiet session are indistinguishable, which is the same
+    -- ambiguity the whole table exists to remove.
+    queue_dropped INTEGER,
+
     -- Client context, for slicing failures by something actionable. Sent by
     -- the client rather than parsed from the user agent, which cannot tell you
     -- the connection was 2g or the window was 380px.

@@ -140,6 +140,42 @@ class AppConfig {
 
   static String chatUrl() => apiUrl('/api/chat');
 
+  /// Where delivery receipts go — what the client actually drew on screen.
+  ///
+  /// Signed with the same HMAC as chatUrl() where a secret exists, which on web
+  /// is nowhere: appSecret is deliberately empty there, so REQUIRE_SIGNATURE is
+  /// off in production and this endpoint is as unauthenticated as /api/visit
+  /// already is. What keeps the table clean is the worker's user-id guard and
+  /// its batch cap, not the signature.
+  static String deliveryUrl() => apiUrl('/api/delivery');
+
+  /// How long the client waits after a receipt changes before flushing, so the
+  /// several bubbles of one reply leave together instead of as one request each.
+  ///
+  /// "Instantly" in the sense that matters — a quarter second is far below the
+  /// pacing between bubbles (minBubbleDelayMs is 2000), so a receipt is still
+  /// on its way before the next bubble is drawn. Per-bubble requests were the
+  /// alternative and would have meant five in-flight posts during a single
+  /// reply on a connection already suspected of dropping them.
+  static const int deliveryFlushDebounceMs = 250;
+
+  /// Receipts per request. Matches DELIVERY_BATCH_MAX in the worker, which
+  /// refuses anything larger — a queue that drained after a long outage is
+  /// split into batches of this size rather than sent as one oversized post
+  /// that can never succeed.
+  static const int deliveryBatchMax = 200;
+
+  /// How many receipts the local queue holds before it starts discarding the
+  /// oldest.
+  ///
+  /// A bound is necessary — the queue lives in SharedPreferences (localStorage
+  /// on web) and an unbounded one would eventually throw and take the chat down
+  /// with it. Set high enough that only a genuinely long outage reaches it: a
+  /// busy session produces tens of receipts, not thousands. Reaching this cap is
+  /// itself a finding, and the count of what was dropped rides along on the next
+  /// flush so it does not vanish silently.
+  static const int deliveryQueueMax = 1000;
+
   static String instagramAuthUrl(String returnTo) {
     return apiUrl(
       '/auth/instagram/start',
