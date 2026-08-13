@@ -219,22 +219,30 @@
     // cap. First to fire wins; the rest become no-ops.
     function mythosOnFlutterReady(cb) {
       var fired = false, observer = null;
-      function fire() {
+      // Whether the app actually painted, or we simply stopped waiting. The
+      // beacon reports the same event either way, so without this an app_ready
+      // at 15s is indistinguishable from an app that loaded in 15s — a failure
+      // wearing a success's clothes, and one that drags every load average with
+      // it. Two of 25 lost sessions on 10 Aug were this.
+      function fire(timedOut) {
         if (fired) return;
         fired = true;
         try { if (observer) observer.disconnect(); } catch (e) {}
-        cb();
+        cb(!!timedOut);
       }
       var sel = "flt-glass-pane, flutter-view, flt-scene-host";
       if (document.querySelector(sel)) return fire();
-      window.addEventListener("flutter-first-frame", fire);
+      // Wrapped, not passed directly: addEventListener hands the listener an
+      // Event object, which as fire's first argument would read as timedOut
+      // and mark every successful paint a timeout.
+      window.addEventListener("flutter-first-frame", function () { fire(false); });
       try {
         observer = new MutationObserver(function () {
           if (document.querySelector(sel)) fire();
         });
         observer.observe(document.documentElement, { childList: true, subtree: true });
       } catch (e) {}
-      setTimeout(fire, MYTHOS_READY_CAP_MS);
+      setTimeout(function () { fire(true); }, MYTHOS_READY_CAP_MS);
     }
 
     document.addEventListener("DOMContentLoaded", function () {
@@ -243,11 +251,19 @@
       // connection never gets dropped onto a blank page, which was the
       // original reason a dwell was introduced. It just no longer holds
       // anyone back once the app is actually there.
-      mythosOnFlutterReady(function () {
+      mythosOnFlutterReady(function (timedOut) {
         // How long the visitor actually waited for a usable app — the number
         // that separates "left during load" from "saw the app and left".
+        //
+        // failureReason marks the ones where Flutter never painted and the cap
+        // fired instead, so those can be excluded from load averages rather
+        // than silently inflating them.
         try {
-          if (window.mythosVisitBeacon) window.mythosVisitBeacon("app_ready");
+          if (window.mythosVisitBeacon) {
+            window.mythosVisitBeacon(
+              "app_ready", undefined, undefined,
+              timedOut ? "splash_cap_timeout" : undefined);
+          }
         } catch (e) {}
         mythosDismissSplash();
       });
