@@ -979,6 +979,100 @@ export default {
             }
         }
 
+        // Receipts for what the client actually drew on screen. See migration
+        // 0011 for what the table is for, and docs/mobile-delivery-logging.md
+        // for what a mobile client would have to add.
+        //
+        // Signed like /api/chat, with one difference that matters: the
+        // signature covers the timestamp of the *flush*, not of the bubbles
+        // inside it. A receipt that sat in the queue through an outage is hours
+        // old by the time it lands, and the freshness check below would reject
+        // exactly the evidence this endpoint exists to collect. The bubble's own
+        // clock lives in the body (intended_at / rendered_at / seen_at) where
+        // nothing expires it.
+        if (request.method === "POST" && url.pathname === "/api/delivery") {
+            const signature = request.headers.get("x-signature");
+            const timestamp = request.headers.get("x-timestamp");
+            const requireSignature = env.REQUIRE_SIGNATURE !== "false";
+
+            if (requireSignature && (!signature || !timestamp)) {
+                return jsonResponse({ error: "Missing signature or timestamp" }, {
+                    status: 401,
+                    headers: corsHeaders(request),
+                });
+            }
+
+            // Read the body before anything else can return: same trap
+            // /api/visit documents — the request stream does not outlive the
+            // response.
+            const rawBody = await request.text();
+
+            if (requireSignature) {
+                const reqTime = parseInt(timestamp, 10);
+                if (!Number.isFinite(reqTime) || Math.abs(Date.now() - reqTime) > 5 * 60 * 1000) {
+                    return jsonResponse({ error: "Request expired" }, {
+                        status: 401,
+                        headers: corsHeaders(request),
+                    });
+                }
+                const verified = await verifySignature(env.APP_SECRET, rawBody, timestamp, signature);
+                if (!verified) {
+                    return jsonResponse({ error: "Invalid signature" }, {
+                        status: 401,
+                        headers: corsHeaders(request),
+                    });
+                }
+            }
+
+            let payload;
+            try {
+                payload = JSON.parse(rawBody);
+            } catch (_) {
+                return jsonResponse({ error: "Invalid JSON" }, {
+                    status: 400,
+                    headers: corsHeaders(request),
+                });
+            }
+
+            const rows = Array.isArray(payload && payload.receipts) ? payload.receipts : null;
+            if (!rows) {
+                return jsonResponse({ error: "Missing receipts" }, {
+                    status: 400,
+                    headers: corsHeaders(request),
+                });
+            }
+            if (rows.length > DELIVERY_BATCH_MAX) {
+                return jsonResponse(
+                    { error: `Too many receipts (max ${DELIVERY_BATCH_MAX})` },
+                    { status: 413, headers: corsHeaders(request) },
+                );
+            }
+
+            // 503 rather than a partial ack when the write fails: the client
+            // keeps the whole batch and tries again. Losing a receipt is worse
+            // than sending it twice, and the insert is idempotent per bubble.
+            try {
+                const result = await recordMessageDelivery(rows, request, env);
+                if (result.error === "no_database") {
+                    return jsonResponse({ error: "Delivery logging is not configured" }, {
+                        status: 503,
+                        headers: corsHeaders(request),
+                    });
+                }
+                return jsonResponse({ acked: result.acked }, { headers: corsHeaders(request) });
+            } catch (e) {
+                console.error(JSON.stringify({
+                    event: "delivery_log_failed",
+                    count: rows.length,
+                    error: e && e.message ? e.message : String(e),
+                }));
+                return jsonResponse({ error: "Could not record delivery" }, {
+                    status: 503,
+                    headers: corsHeaders(request),
+                });
+            }
+        }
+
         if (request.method !== "POST" || url.pathname !== "/api/chat") {
             return new Response("Method not allowed", {
                 status: 405,
@@ -1217,7 +1311,22 @@ export default {
                 clientTimestamp: timestamp,
             });
 
-            return new Response(JSON.stringify(responseData), {
+            // The id of the conversation_logs row just written, so a delivery
+            // receipt can name the exact reply it was cut from rather than being
+            // matched back by a fuzzy (user, time, text) guess — the client
+            // splits one reply into several bubbles and strips characters out of
+            // the text before drawing it, so there is no reliable way to
+            // reconstruct the pairing afterwards.
+            //
+            // Added to the outgoing copy only. responseData was handed to
+            // persistConversationLog above, and response_json is meant to be a
+            // faithful record of what the provider returned, not of what we sent
+            // on. A sibling key is safe for the client, which reads `choices`.
+            const outgoing = responseData && typeof responseData === "object" && !Array.isArray(responseData)
+                ? { ...responseData, log_id: requestId }
+                : responseData;
+
+            return new Response(JSON.stringify(outgoing), {
                 status: responseStatus,
                 headers: jsonHeaders(request)
             });
@@ -1839,6 +1948,133 @@ async function writeConversationLogRow(env, entry) {
         stringOrNull(entry.visitId),
         numberOrNull(entry.latencyMs)
     ).run();
+}
+
+/// The origins a delivery receipt may claim. Anything else is dropped rather
+/// than coerced — the opposite of ALLOWED_EVENTS in recordSiteVisit, and
+/// deliberately so: an unknown funnel event inflating the arrival count is
+/// mildly wrong, but an unknown origin folded into a known one would corrupt
+/// the only comparison this table exists to make ("was an ai_reply lost, or was
+/// it a welcome_script bubble nobody waited for"). A new origin must be added
+/// here in the same change that starts sending it.
+const DELIVERY_ORIGINS = [
+    "ai_reply", "welcome_script", "idle_nudge", "portrait",
+    "local_fallback", "system_banner", "user",
+];
+
+/// How many receipts one flush may carry. A queue that has been offline for an
+/// hour can hold hundreds, and the client splits them into batches of this size
+/// so a single oversized request cannot be the reason the backlog never lands.
+const DELIVERY_BATCH_MAX = 200;
+
+/**
+ * Writes what the client says it put on screen, and returns the ids that
+ * actually landed.
+ *
+ * Awaited by its caller rather than handed to ctx.waitUntil, which is the
+ * opposite of how /api/visit records a beacon. The client deletes a receipt
+ * from its local queue only when this call names it in `acked`, so acking a
+ * write that then failed would discard the row permanently — and the rows most
+ * likely to fail to land are the ones from a struggling connection, which are
+ * precisely the evidence being collected. A slower response is worth an honest
+ * one.
+ *
+ * Idempotent per bubble: a receipt arrives more than once whenever an ack is
+ * lost, and each of the three timestamps is written once and then left alone
+ * (see the COALESCE below), so a retry completes a partial row without ever
+ * moving a time that was already recorded.
+ */
+async function recordMessageDelivery(rows, request, env) {
+    if (!env.CHAT_LOGS_DB) return { acked: [], error: "no_database" };
+    if (isSyntheticTest(request)) return { acked: rows.map((r) => r.bubbleId) };
+
+    const cf = request.cf || {};
+    const country = typeof cf.country === "string" ? cf.country : null;
+    const colo = typeof cf.colo === "string" ? cf.colo : null;
+
+    const statements = [];
+    const acked = [];
+
+    for (const row of rows) {
+        const bubbleId = String(row.bubbleId || "").slice(0, 80);
+        const turnId = String(row.turnId || "").slice(0, 80);
+        if (!bubbleId || !turnId) continue;
+
+        // Acked before the guards below, not after: a receipt this worker
+        // refuses to store is still one the client must stop retrying, or its
+        // queue grows without limit against a row that can never land. Only a
+        // receipt with no id at all goes unacked, because there is nothing to
+        // name in the reply.
+        acked.push(bubbleId);
+
+        // Same guard, and the same reason, as writeConversationLogRow: an
+        // unrecognised user id is a verification call rather than a person, and
+        // this table would be far easier to pollute than that one — it takes
+        // receipts by the hundred and does not cost an OpenAI call to write to.
+        if (!isRealUserId(row.userId)) continue;
+
+        if (!DELIVERY_ORIGINS.includes(row.origin)) continue;
+
+        const text = typeof row.text === "string" ? row.text.slice(0, 4000) : null;
+
+        statements.push(env.CHAT_LOGS_DB.prepare(`
+            INSERT INTO message_delivery (
+                bubble_id, turn_id, seq,
+                visit_id, user_id, chat_id, character_id,
+                conversation_log_id, origin, is_user,
+                text, text_sha256, text_len,
+                intended_at, rendered_at, seen_at,
+                failure_reason, queued_ms, flush_attempts,
+                app_version, locale, tz_offset_min, connection_type,
+                viewport_w, viewport_h,
+                country, colo
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bubble_id) DO UPDATE SET
+                intended_at = COALESCE(message_delivery.intended_at, excluded.intended_at),
+                rendered_at = COALESCE(message_delivery.rendered_at, excluded.rendered_at),
+                seen_at     = COALESCE(message_delivery.seen_at,     excluded.seen_at),
+                failure_reason = COALESCE(message_delivery.failure_reason, excluded.failure_reason),
+                -- Keep the worst case rather than the latest: the interesting
+                -- number is how long this row took to land at all, and a second
+                -- flush that succeeded instantly would otherwise erase the
+                -- outage that made the first one necessary.
+                queued_ms = MAX(COALESCE(message_delivery.queued_ms, 0), COALESCE(excluded.queued_ms, 0)),
+                flush_attempts = MAX(COALESCE(message_delivery.flush_attempts, 0), COALESCE(excluded.flush_attempts, 0))
+        `).bind(
+            bubbleId,
+            turnId,
+            numberOrNull(row.seq) ?? 0,
+            stringOrNull(row.visitId),
+            row.userId,
+            stringOrNull(row.chatId),
+            stringOrNull(row.characterId),
+            stringOrNull(row.conversationLogId),
+            row.origin,
+            row.isUser ? 1 : 0,
+            text,
+            stringOrNull(row.textSha256),
+            numberOrNull(row.textLen),
+            stringOrNull(row.intendedAt),
+            stringOrNull(row.renderedAt),
+            stringOrNull(row.seenAt),
+            stringOrNull(row.failureReason),
+            numberOrNull(row.queuedMs),
+            numberOrNull(row.flushAttempts),
+            stringOrNull(row.appVersion),
+            stringOrNull(row.locale),
+            numberOrNull(row.tzOffsetMin),
+            stringOrNull(row.connectionType),
+            numberOrNull(row.viewportW),
+            numberOrNull(row.viewportH),
+            country,
+            colo
+        ));
+    }
+
+    if (statements.length === 0) return { acked };
+
+    await env.CHAT_LOGS_DB.batch(statements);
+    return { acked };
 }
 
 function extractAssistantMessage(responseData) {

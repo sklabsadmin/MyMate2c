@@ -46,9 +46,9 @@ export function freshDb({ skip = [] } = {}) {
 }
 
 /// The subset of the D1 API worker.js actually uses: prepare().bind().all() /
-/// .first() / .run(). Deliberately not a full D1 emulation — an incomplete
-/// shim that throws on an unsupported call is better than a permissive one
-/// that silently diverges.
+/// .first() / .run(), plus batch(). Deliberately not a full D1 emulation — an
+/// incomplete shim that throws on an unsupported call is better than a
+/// permissive one that silently diverges.
 export function d1(db) {
     return {
         prepare(sql) {
@@ -68,6 +68,21 @@ export function d1(db) {
                 run() { return db.prepare(sql).run(...bound); },
             };
             return stmt;
+        },
+        /// All statements or none, which is what D1 guarantees and what
+        /// /api/delivery depends on: it acks a batch only if the batch landed,
+        /// so a half-applied write would have the client discard receipts that
+        /// were never stored.
+        batch(statements) {
+            db.exec('BEGIN');
+            try {
+                const results = statements.map((stmt) => stmt.run());
+                db.exec('COMMIT');
+                return results;
+            } catch (e) {
+                db.exec('ROLLBACK');
+                throw e;
+            }
         },
     };
 }
