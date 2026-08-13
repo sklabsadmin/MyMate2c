@@ -9,8 +9,11 @@ or checkable; where something is inferred it says so.
 
 | Branch | State |
 |---|---|
-| `main` | Analytics instrumentation + quick-reply attention cues. **Deployed** as 1.6.4+60. |
-| `feat/quick-reply-attention-cues` | Ahead of main by the survival-curve admin view. **Not deployed.** |
+| `main` | Everything below, **deployed as 1.6.5+61**: analytics instrumentation, quick-reply attention cues, the first-30-seconds survival curve, and a worker test suite. |
+| `feat/quick-reply-attention-cues` | Merged into main. Nothing outstanding. |
+
+Moves fast: `main` gained six commits in the hours after this file was first
+written. Check `git log origin/main` before trusting any of it.
 
 Production is `chat.deeplovepoems.com` and `chat.deeploveechoes.com` (worker
 `mythoslive`). `version.json` answers "is this live" without comparing asset
@@ -140,10 +143,11 @@ remote state from local state.**
 files sharing a number. Both applied; `d1_migrations` keys on filename so
 nothing breaks today, but whoever merges that branch should renumber.
 
-**`worker.js` has no automated tests.** It took +550/−88 across this work and
-was verified manually — against a fixture built from the real migrations, driven
-through the real endpoints under `wrangler dev`, with every admin page rendered
-in headless Chromium. None of that re-runs on the next change.
+**`worker.js` now HAS automated tests** — `backend/test/*.test.mjs` with a
+harness, run by `npm test`. This corrects what this file said a few hours ago.
+They arrived with the same commits that added the survival curve. Run them before
+and after any worker change; the manual fixture-and-headless-Chromium routine
+used for the original work no longer has to be re-invented each time.
 
 ---
 
@@ -154,8 +158,11 @@ in headless Chromium. None of that re-runs on the next change.
 - A cloud session cannot reach production — no `CLOUDFLARE_API_TOKEN`, and the
   egress proxy blocks browser CONNECT. **Run this locally.**
 - The `ADMIN_TOKEN` in `.env` is a local dev value, not the deployed secret, so
-  the admin pages cannot be read remotely with it. The survival curve built in
-  `2b86a25` has never been run against real data for exactly this reason.
+  the admin pages cannot be read remotely with it. `docs/local-dev-setup.md`
+  covers standing the local stack up; reading *production* admin pages still
+  needs the deployed secret. The survival curve had still never been pointed at
+  real data as of writing — doing that is arguably the single highest-value
+  first move, since it now ships in 1.6.5+61 and reads rows retroactively.
 
 Queries that produce what the analysis needs are in §7 below.
 
@@ -173,9 +180,10 @@ Queries that produce what the analysis needs are in §7 below.
    prompts with no hint telling them the prompts are tappable.
 6. **`exit_mode` distribution** — dismissed vs hidden vs never-reported.
 
-**Deploy the survival curve** (`feat/quick-reply-attention-cues`, not yet on
-main) once there is data worth pointing it at. It reads existing rows, so it
-works retroactively over everything logged to date.
+**The survival curve is already live** in 1.6.5+61 and reads existing rows, so
+it works retroactively over everything logged to date — including the nights
+before the instrumentation, at tick resolution. Point it at real data early; it
+answers questions 1 and 3 more directly than the raw queries in §7 do.
 
 **Do not start on the fix list until 1–3 are answered.** The obvious candidate —
 cutting two lines from turn 1 so the first question lands near 3s instead of
