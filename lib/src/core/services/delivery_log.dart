@@ -58,6 +58,7 @@ class _Receipt {
     this.renderedAt,
     this.seenAt,
     this.attempts = 0,
+    this.dirty = true,
   });
 
   final String bubbleId;
@@ -85,9 +86,23 @@ class _Receipt {
   String? seenAt;
   int attempts;
 
+  /// Whether this receipt is carrying anything the worker has not stored yet.
+  ///
+  /// False for a receipt that has been acknowledged and has learned nothing
+  /// since. Those are kept anyway — see [isComplete] — but must not be resent on
+  /// every flush, or each new bubble would drag the whole conversation's history
+  /// along with it.
+  bool dirty;
+
   /// True once there is nothing further to learn about this bubble: it was seen,
-  /// so no later event can change the record. Receipts that are complete are the
-  /// first thing discarded when the queue has to make room.
+  /// so no later event can change the record.
+  ///
+  /// This is what decides when a receipt may be forgotten, and the distinction
+  /// is load-bearing. A bubble's three moments arrive seconds apart — intent is
+  /// declared before pacing starts, and the bubble may not be drawn for another
+  /// ten seconds — so a receipt dropped as soon as the worker acknowledged its
+  /// intent would have nothing left to attach the render and the sighting to,
+  /// and both would be lost in silence. Only a sighting ends the story.
   bool get isComplete => seenAt != null;
 
   Map<String, dynamic> toJson() => {
@@ -109,6 +124,7 @@ class _Receipt {
     if (renderedAt != null) 'renderedAt': renderedAt,
     if (seenAt != null) 'seenAt': seenAt,
     'attempts': attempts,
+    'dirty': dirty,
   };
 
   static _Receipt? fromJson(Map<String, dynamic> json) {
@@ -136,6 +152,7 @@ class _Receipt {
       renderedAt: json['renderedAt'] as String?,
       seenAt: json['seenAt'] as String?,
       attempts: json['attempts'] is int ? json['attempts'] as int : 0,
+      dirty: json['dirty'] != false,
     );
   }
 }
@@ -332,12 +349,17 @@ class DeliveryLog {
   void _stamp(String bubbleId, void Function(_Receipt, String) apply) {
     try {
       final receipt = _pending[bubbleId];
-      // Absent means it has already been acknowledged and dropped from the
-      // queue. The worker keeps the first value it was given for each of the
-      // three timestamps, so a late stamp for a departed receipt is information
-      // that was already recorded, not information lost.
+      // Absent means the bubble was seen and its record closed, or the queue
+      // evicted it under pressure. Either way there is nothing here to complete.
+      //
+      // A receipt that has merely been acknowledged is still in this map — it is
+      // kept precisely so this lookup succeeds. Dropping acked receipts is what
+      // silently lost every render and sighting in the first preview run: intent
+      // for a whole reply is declared and flushed within 250ms, while the
+      // bubbles it describes are not drawn for another ten seconds.
       if (receipt == null) return;
       apply(receipt, DateTime.now().toIso8601String());
+      receipt.dirty = true;
       _afterChange();
     } catch (e) {
       if (kDebugMode) debugPrint('DeliveryLog._stamp failed: $e');
@@ -397,6 +419,7 @@ class DeliveryLog {
 
   /// Coalesces the several bubbles of one reply into a single request.
   void _scheduleFlush() {
+    if (!_hasDirty) return;
     if (_flushTimer?.isActive == true) return;
     _flushTimer = Timer(
       const Duration(milliseconds: AppConfig.deliveryFlushDebounceMs),
@@ -423,16 +446,21 @@ class DeliveryLog {
 
     try {
       final batch = _pending.values
+          .where((r) => r.dirty)
           .take(AppConfig.deliveryBatchMax)
           .toList(growable: false);
+      if (batch.isEmpty) return;
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final droppedAtSend = _dropped;
 
       final body = jsonEncode({
         'receipts': batch.map((r) {
+          // queuedAtMs, attempts and dirty are the queue's own bookkeeping —
+          // queuedMs and flushAttempts below are what the worker is told.
           final json = r.toJson()
             ..remove('queuedAtMs')
-            ..remove('attempts');
+            ..remove('attempts')
+            ..remove('dirty');
           return {
             ...json,
             'queuedMs': max(0, nowMs - r.queuedAtMs),
@@ -478,7 +506,17 @@ class DeliveryLog {
             : const <String>{};
 
         for (final id in acked) {
-          _pending.remove(id);
+          final receipt = _pending[id];
+          if (receipt == null) continue;
+          if (receipt.isComplete) {
+            // Seen: the record is closed and nothing further can arrive.
+            _pending.remove(id);
+          } else {
+            // Stored, but the bubble may still be drawn or come into view. Keep
+            // it so those stamps have somewhere to land, and stop resending it
+            // until one of them does.
+            receipt.dirty = false;
+          }
         }
 
         // Only now is the dropped count safely delivered. Clearing it before
@@ -499,7 +537,12 @@ class DeliveryLog {
 
         // More waiting behind this batch — keep going rather than waiting for
         // the next bubble to trigger a flush.
-        if (_pending.isNotEmpty) _scheduleRetry(immediate: true);
+        //
+        // Asks whether anything is still *unsent*, not whether the queue is
+        // non-empty: acknowledged receipts stay in it until their bubble is
+        // seen, so an emptiness check here would reschedule itself every 50ms
+        // forever.
+        if (_hasDirty) _scheduleRetry(immediate: true);
         return;
       }
 
@@ -513,7 +556,9 @@ class DeliveryLog {
     } catch (e) {
       // The case this table exists for: the request never arrived. Keep every
       // receipt and try again later.
-      for (final receipt in _pending.values.take(AppConfig.deliveryBatchMax)) {
+      for (final receipt in _pending.values
+          .where((r) => r.dirty)
+          .take(AppConfig.deliveryBatchMax)) {
         receipt.attempts++;
       }
       _persist();
@@ -524,16 +569,20 @@ class DeliveryLog {
     }
   }
 
+  /// Whether anything is waiting to be sent, as opposed to merely being
+  /// remembered so a later stamp has somewhere to land.
+  bool get _hasDirty => _pending.values.any((r) => r.dirty);
+
   void _scheduleRetry({bool immediate = false}) {
     _retryTimer?.cancel();
-    if (_pending.isEmpty) return;
+    if (!_hasDirty) return;
 
     if (immediate) {
       _retryTimer = Timer(const Duration(milliseconds: 50), () => flush());
       return;
     }
 
-    final attempts = _pending.values.fold<int>(
+    final attempts = _pending.values.where((r) => r.dirty).fold<int>(
       0,
       (worst, r) => r.attempts > worst ? r.attempts : worst,
     );

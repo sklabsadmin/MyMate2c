@@ -64,7 +64,17 @@ class _SeenDetectorState extends State<SeenDetector> {
   /// short enough that a bubble someone genuinely looked at is never missed.
   static const Duration _dwell = Duration(milliseconds: 300);
 
+  /// How many times a dwell may be re-armed after finding the bubble gone when
+  /// it elapsed.
+  ///
+  /// Bounded so a bubble scrolled far away stops costing timers, but generous
+  /// enough to cover the case this exists for: a new bubble arriving scrolls the
+  /// list, which is exactly when a dwell is most likely to elapse mid-motion.
+  /// Ten attempts is three seconds of chances.
+  static const int _maxDwellAttempts = 10;
+
   Timer? _dwellTimer;
+  int _dwellAttempts = 0;
   bool _reported = false;
 
   @override
@@ -88,6 +98,7 @@ class _SeenDetectorState extends State<SeenDetector> {
     // earn its sighting again.
     if (oldWidget.bubbleId != widget.bubbleId) {
       _reported = false;
+      _dwellAttempts = 0;
       _dwellTimer?.cancel();
       WidgetsBinding.instance.addPostFrameCallback((_) => _check());
     }
@@ -102,23 +113,35 @@ class _SeenDetectorState extends State<SeenDetector> {
 
   void _check() {
     if (_reported || !mounted) return;
-    final bubbleId = widget.bubbleId;
-    if (bubbleId == null) return;
-
-    if (!_isVisibleNow()) {
-      // Left the viewport before the dwell elapsed: not seen, and eligible to
-      // start again if it comes back.
-      _dwellTimer?.cancel();
-      _dwellTimer = null;
-      return;
-    }
-
+    if (widget.bubbleId == null) return;
+    if (!_isVisibleNow()) return;
     if (_dwellTimer?.isActive == true) return;
+    _armDwell();
+  }
+
+  /// Starts the dwell, and re-arms it if the bubble has moved by the time it
+  /// elapses.
+  ///
+  /// The retry is the whole point. A bubble is drawn, the list scrolls to keep
+  /// up, and the dwell elapses mid-scroll with the bubble momentarily outside
+  /// the band being measured — at which point giving up would be final, because
+  /// scrolling then stops and no further notification ever arrives to re-check
+  /// it. That lost a bubble that had been on screen the entire time, and it lost
+  /// the middle of a run rather than the end, which is exactly the shape that
+  /// would have been read as a delivery fault.
+  void _armDwell() {
     _dwellTimer = Timer(_dwell, () {
-      if (_reported || !mounted) return;
-      if (!_isVisibleNow()) return;
-      _reported = true;
-      widget.onSeen(bubbleId);
+      _dwellTimer = null;
+      final bubbleId = widget.bubbleId;
+      if (_reported || !mounted || bubbleId == null) return;
+
+      if (_isVisibleNow()) {
+        _reported = true;
+        widget.onSeen(bubbleId);
+        return;
+      }
+
+      if (_dwellAttempts++ < _maxDwellAttempts) _armDwell();
     });
   }
 
