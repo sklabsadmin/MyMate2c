@@ -253,6 +253,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String _currentVibe = "Gentle";
   OpenAIService? _aiService;
 
+  /// The in-flight [_loadHistory], which is the only thing that ever builds
+  /// [_aiService] — and does so behind two awaits on storage. Anything that
+  /// needs the service has to wait for this rather than read the field and
+  /// give up when it is still null, which is what [_handleSend] used to do.
+  Future<void>? _historyLoaded;
+
+  /// One-shot guard for [ChatScreen.initialMessage], so a rebuild of the route
+  /// cannot send the same opener a second time.
+  bool _openerSent = false;
+
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
@@ -320,7 +330,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Those are the valuable ones — a queue that survived a reload is usually a
     // queue that could not be delivered.
     DeliveryLog.instance.init();
-    _loadHistory();
+    // Held, not just started: the opener and any early send wait on this rather
+    // than reading _aiService and giving up while it is still null.
+    _historyLoaded = _loadHistory();
     _loadReplyCount();
     // Track active character
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -377,12 +389,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // An opener tapped on the profile card before entering the chat. Sent
       // through _handleSend so it behaves exactly like a typed message —
       // same reply gate, history and logging.
-      final opener = widget.initialMessage;
-      if (opener != null && opener.trim().isNotEmpty) {
-        _textController.text = opener;
-        _handleSend();
-      }
+      _sendInitialMessage();
     });
+  }
+
+  /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
+  /// "Ask Me About", or one carried on a /c/<id>?initialMessage= link.
+  ///
+  /// Waits on [_historyLoaded] rather than sending straight from the first
+  /// post-frame callback, which is what it used to do. _loadHistory is
+  /// asynchronous and is the only thing that builds [_aiService], so on a cold
+  /// load the send got there first: the user's bubble was drawn and saved, the
+  /// typing indicator came on, and _handleSend then hit a null service and
+  /// returned without ever calling the API — leaving the indicator spinning
+  /// under a message that was never answered. Every arrival from a campaign
+  /// link took that path, since nothing is cached on a first visit.
+  ///
+  /// It also raced the history read that was still in flight, which is the
+  /// other half of the report: the read could come back holding the bubble
+  /// that had just been saved and append it a second time (see the merge in
+  /// [_loadHistory], which now drops what is already on screen).
+  Future<void> _sendInitialMessage() async {
+    final opener = widget.initialMessage?.trim();
+    if (opener == null || opener.isEmpty) return;
+    if (_openerSent) return;
+    // Set before the await, so a rebuild that re-enters here while the load is
+    // still running cannot start a second send.
+    _openerSent = true;
+
+    await _historyLoaded;
+    if (!mounted) return;
+
+    // On the web the opener stays in the address bar, so a reload re-runs this
+    // against a conversation that already holds the question — and would ask
+    // it again on every refresh. The history has just been merged in above, so
+    // this can see it and stand down.
+    //
+    // Not narrowed to "asked and answered": re-sending would post a second
+    // identical bubble, which is the thing this screen should never do, and a
+    // question left unanswered is one tap of the quick-reply strip away from
+    // being asked again deliberately.
+    if (_messages.any((m) => m.isUser && m.text.trim() == opener)) return;
+
+    _textController.text = opener;
+    await _handleSend();
   }
 
   @override
@@ -592,7 +642,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         _messages.clear();
         _aiService = null;
       });
-      _loadHistory();
+      _openerSent = false;
+      _historyLoaded = _loadHistory();
+      _sendInitialMessage();
+      return;
+    }
+
+    // Same character, different opener: the chat branch keeps its state in the
+    // shell's indexed stack, so going to /c/<id>?initialMessage=... a second
+    // time — picking another question off the same profile card — updates this
+    // widget instead of building a new one, and initState never runs again.
+    // Guarded on the value having actually changed, so an ordinary rebuild
+    // carrying the same URL sends nothing.
+    if (oldWidget.initialMessage != widget.initialMessage) {
+      _openerSent = false;
+      _sendInitialMessage();
     }
   }
 
@@ -627,10 +691,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         final spoken = history.where((m) => m.isUser).length;
         final scriptPauses = _scriptPausesIn(history);
         setState(() {
-          _messages.addAll(history);
+          // In front of anything already on screen, and minus anything that is
+          // already there. A send can beat this read home — a starter prompt
+          // tapped in the first moments, or the opener before it was chained
+          // off this future — and _addMessage saves as it draws, so the history
+          // that comes back can hold that same bubble. Appending it blind is
+          // how one message came back as two identical ones.
+          final shown = _messages.map((m) => m.id).toSet();
+          _messages.insertAll(
+            0,
+            history.where((m) => !shown.contains(m.id)),
+          );
           // A conversation they have already spoken in doesn't need the
           // first-message scaffolding put back in front of it on every return.
-          _userHasSent = history.any((m) => m.isUser);
+          _userHasSent = _messages.any((m) => m.isUser);
           // Carries the frontier across the reload too, so a visitor who
           // interrupted the script and came back does not get the sets it
           // stopped them seeing simply because the counter started over.
@@ -2373,7 +2447,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
   }
 
-  void _handleSend() async {
+  Future<void> _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
@@ -2444,6 +2518,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Increment Score
     ref.read(userScoreProvider.notifier).increment();
 
+    try {
+      await _deliverReply(text);
+    } finally {
+      // The indicator is switched on above, before anything that can fail, so
+      // clearing it cannot be left to the happy path — every early return
+      // below used to be a way to strand it, and the null-service one did
+      // exactly that on every cold load. By here a completed reply has already
+      // turned it off and this is a no-op.
+      if (mounted && _isTyping) setState(() => _isTyping = false);
+    }
+  }
+
+  /// Everything after the user's own bubble is on screen: the canned portrait
+  /// reply, or the API call and the bubbles it comes back as.
+  ///
+  /// Split out of [_handleSend] so that one `finally` there covers every way
+  /// out of it, the indicator included.
+  Future<void> _deliverReply(String text) async {
     // A photo is a canned reply, not an AI one — the portrait used to be sent
     // automatically at the start of every chat, which gave it away before the
     // visitor had any reason to want it. Now it is a payoff for asking. Still
@@ -2462,15 +2554,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     // Call Gemini API
-    if (_aiService == null) return;
-    final responseText = await _aiService!.sendMessage(text);
+    //
+    // The service is built by _loadHistory, behind two awaits on storage, so a
+    // send can arrive before it exists — which is every send made from a cold
+    // load, the profile card's opener and /c/<id>?initialMessage= included.
+    // This used to be a bare `if (_aiService == null) return;`: the user's
+    // message was drawn and saved, no POST /api/chat was ever made, and the
+    // typing indicator sat there for as long as the tab was open. Wait for the
+    // load already in flight instead of giving up on it.
+    if (_aiService == null) await _historyLoaded;
+    if (!mounted) return;
+    final ai = _aiService;
+    // Only reachable if the load failed outright; the caller's finally clears
+    // the indicator.
+    if (ai == null) return;
+
+    final responseText = await ai.sendMessage(text);
 
     if (!mounted) return;
 
     // Count this toward the free allowance only if a real reply came back
     // (not a rate-limit/"trouble thinking" fallback), and only while the
     // gate still applies (signed out).
-    if (_aiService!.lastSendSucceeded) {
+    if (ai.lastSendSucceeded) {
       final next = await ref
           .read(storageServiceProvider)
           .incrementReplyCount(_characterKey);
@@ -2480,7 +2586,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // 'network' reason means the request never reached the worker, so this
       // event is the ONLY record that the send happened at all — without it a
       // failed send looks identical to never having typed.
-      final reason = _aiService!.lastFailureReason;
+      final reason = ai.lastFailureReason;
       logFunnelEvent(
         'send_failed',
         detail: widget.characterId,
