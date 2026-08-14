@@ -80,6 +80,21 @@
     // without it ships an empty secret and breaks chat for everyone, which is
     // exactly why this flag was previously turned off.
     "REQUIRE_SIGNATURE": "true",
+    // The off switch for delivery logging (/api/delivery and the receipts it
+    // stores in message_delivery). ON here, so the feature is live as soon as
+    // the worker ships.
+    //
+    // Set to the string "false" and redeploy to turn it off without reverting
+    // code across 18 files. Only that exact string disables it, so a missing or
+    // misspelt var cannot quietly stop the logging.
+    //
+    // Off does not refuse the receipts, it acks and drops them. The client is
+    // built with this feature in it and keeps queueing whatever the worker
+    // says, so refusing would leave every visitor retrying on a backoff against
+    // something switched off, filling a queue that eventually drops its oldest
+    // entries. Acking discards on purpose; the endpoint's 503 still means a
+    // write that failed and must be retried.
+    "DELIVERY_LOGGING": "true",
     // Fallback landing origin after an Instagram/Google auth round trip, used
     // only when the caller did not supply returnTo — which the app always does,
     // so this rarely fires. Not load-bearing for chat or logging.

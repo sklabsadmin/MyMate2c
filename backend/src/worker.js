@@ -2202,6 +2202,23 @@ const DELIVERY_BATCH_MAX = 200;
  * moving a time that was already recorded.
  */
 async function recordMessageDelivery(rows, request, env) {
+    // The off switch, and deliberately the first thing here — turning delivery
+    // logging off has to work whether or not a database is bound.
+    //
+    // Acks everything and stores nothing, the same shape as a synthetic test
+    // below. The client is already built and keeps queueing receipts whatever
+    // this flag says, so refusing them would leave every visitor retrying on a
+    // backoff — and growing a queue toward its cap, dropping the oldest — for a
+    // feature that is switched off. Acking discards the batch on purpose, which
+    // is not the case the handler's 503 guards: that one is a write that failed
+    // and must be tried again.
+    //
+    // Only the exact string "false" disables it, so a var that is missing or
+    // misspelled cannot quietly switch off the logging — same rule as
+    // REQUIRE_SIGNATURE.
+    if (env.DELIVERY_LOGGING === "false") {
+        return { acked: rows.map((r) => r.bubbleId) };
+    }
     if (!env.CHAT_LOGS_DB) return { acked: [], error: "no_database" };
     if (isSyntheticTest(request)) return { acked: rows.map((r) => r.bubbleId) };
 

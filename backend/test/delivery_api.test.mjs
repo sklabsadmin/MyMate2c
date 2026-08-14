@@ -376,3 +376,40 @@ test('unseen bubbles are findable per turn', async () => {
 
     assert.deepEqual(unseen.map((r) => r.seq), [1, 2]);
 });
+
+test('DELIVERY_LOGGING=false acks the batch and stores nothing', async () => {
+    const { env, db } = envWith();
+    env.DELIVERY_LOGGING = 'false';
+
+    const res = await flush(env, [
+        receipt({ bubbleId: 'b0', seq: 0 }),
+        receipt({ bubbleId: 'b1', seq: 1 }),
+    ]);
+
+    // Acked, not refused. The client is already built with this feature in it
+    // and keeps queueing whatever the worker says, so a refusal would leave
+    // every visitor retrying on a backoff against something switched off —
+    // filling a queue that eventually drops its oldest entries. The ack is how
+    // the flag stops costing anything on the device.
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json.acked, ['b0', 'b1']);
+
+    const stored = db.prepare('SELECT COUNT(*) AS n FROM message_delivery').get();
+    assert.equal(stored.n, 0);
+});
+
+test('delivery logging stays on unless the var is exactly "false"', async () => {
+    // A missing var is the state every environment is in until someone sets
+    // one, and a misspelt value is the likeliest way to reach for the switch
+    // and miss. Neither may silently stop the logging.
+    for (const value of [undefined, 'true', 'FALSE', 'no', '0', '']) {
+        const { env, db } = envWith();
+        if (value !== undefined) env.DELIVERY_LOGGING = value;
+
+        const res = await flush(env, [receipt()]);
+
+        assert.equal(res.status, 200, `value ${JSON.stringify(value)} should log`);
+        const stored = db.prepare('SELECT COUNT(*) AS n FROM message_delivery').get();
+        assert.equal(stored.n, 1, `value ${JSON.stringify(value)} should have stored the receipt`);
+    }
+});
