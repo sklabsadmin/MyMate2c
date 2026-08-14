@@ -69,11 +69,11 @@ Verified live against a local `wrangler dev --local` with the Odysseus opening:
 
 **Not verified, in priority order:**
 
-1. **The `ai_reply` path has never run.** Everything tested live was
-   `welcome_script` and `idle_nudge`. So `origin: ai_reply`, the `log_id` join,
-   `local_fallback`, and — most importantly — **the fidelity check** are
-   untested against real data. `fidelity.checkable` was `0` in every run.
-   This is the actual product; the rest is scaffolding around it.
+1. ~~The `ai_reply` path has never run.~~ **Verified live 2026-08-14**: real
+   taps in the local preview produced four `ai_reply` rows, rendered and seen,
+   each joined to its `conversation_logs` row — and the fidelity check came
+   back `checkable: 4, verified: 4, unexplained: 0`. `local_fallback` remains
+   unexercised (the local worker had a real key, so nothing fell back).
 2. ~~The offline/tombstone path, live.~~ **Verified live 2026-08-14** (Windows,
    local preview): `/api/delivery` blocked client-side mid-welcome-script, ten
    receipts stranded dirty, tab abandoned mid-script — and the next launch
@@ -82,11 +82,23 @@ Verified live against a local `wrangler dev --local` with the Odysseus opening:
    regional-failure signature) to 26 (the true abandonment count). The same
    run confirmed the hidden-tab case end to end: 50 rendered, 0 seen, all 50
    in `rendered_unseen`, the whole opening one row in `cut_short`.
-3. **`seen`, after the last two fixes.** Nine unit tests cover it, but the final
-   live run reported `seen=0` because the browser pane was hidden — which is
-   correct behaviour, not a regression. Needs one run with the pane visible.
+3. ~~`seen`, after the last two fixes.~~ **Verified live 2026-08-14**, twice:
+   two hands-off visible runs each scored 47/49 welcome bubbles seen, with
+   declared = rendered exactly. The misses are different bubbles each run —
+   a small stochastic dwell miss (~4%) on fast-paced early lines, bounded by
+   the dwell-retry cap. A hidden pane correctly scores 0.
 4. `queue_dropped` / the queue cap, live. The unit tests pin down what the
    client sends; the cap itself has still never been reached by a real session.
+
+**Known issue, unreproduced:** in one interactive session (taps plus possible
+in-app navigation mid-script), bubbles seq 16–22 were visibly on screen but
+never received render stamps — intent landed, `rendered_at` NULL. Two clean
+hands-off runs could not reproduce it (declared = rendered both times), and a
+scripted repro was not possible because synthetic clicks do not reach the
+Flutter canvas. Until it is pinned down, treat a cluster of `never_rendered`
+rows *within an interactive session* with suspicion — it may be this, wearing
+the delivery-failure signature. Hands-off and aggregate comparisons
+(welcome_script vs ai_reply) are unaffected.
 
 ## Bugs already found and fixed — do not re-introduce
 
