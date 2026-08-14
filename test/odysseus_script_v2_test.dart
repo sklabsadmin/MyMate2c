@@ -31,8 +31,9 @@ const String _historyKey = 'chat_history_$_scenario';
 /// tests need to identify a turn boundary. Deliberately a restatement rather
 /// than a read of the private constant: if someone edits the script, these
 /// tests should fail and be updated on purpose, not silently follow along.
-const String _firstLine = 'Well now...';
-const String _p01Question = 'What have you heard?';
+const String _firstLine = "I wasn't expecting company.";
+const String _p01Question =
+    'You may already have an opinion of me. What have you heard?';
 const String _p02FirstLine = 'No verdict yet? Fair enough.';
 const String _p02Question = 'Would you rather hear about a monster, a '
     'beautiful island... or one of my truly terrible decisions?';
@@ -187,17 +188,19 @@ void main() {
     );
 
     final lines = await _delivered();
-    expect(lines.length, 51, reason: 'v2 is 12 turns / 51 bubbles');
+    // 49, not 51: turn 1 lost two bubbles so its question lands ahead of the
+// median visitor's departure rather than just behind it.
+    expect(lines.length, 49, reason: 'v2 is 12 turns / 49 bubbles');
     expect(lines.first, _firstLine);
     expect(lines.last, _p12Question);
     // Every turn ends on a question to the visitor — the whole point of v2.
-    expect(lines[4], _p01Question);
+    expect(lines[2], _p01Question);
     expect(lines.indexOf(_p02Question), greaterThan(lines.indexOf(_p01Question)));
 
     await _teardown(tester);
   });
 
-  testWidgets('reaches its first question inside the 5-8s the script requires',
+  testWidgets('asks its first question before the median visitor leaves',
       (tester) async {
     await _mountChat(tester);
     final arrivals = await _play(
@@ -211,15 +214,29 @@ void main() {
     expect(firstBubble, isNotNull);
     expect(question, isNotNull);
 
-    // The document's headline production finding: v1 waited too long to invite
-    // participation. This is the regression guard on that, and it is why
-    // Odysseus is in _briskScriptCharacters — at the shared _readablePacing
-    // this same script does not ask until 10.0s.
+    // This used to assert 5000-8000ms, from the v2 document's "first question
+    // within 5-8 seconds". The upper bound survives. The lower bound does not,
+    // and it is worth saying why rather than quietly widening the range.
+    //
+    // The 5s floor was written to stop the opening feeling rushed, before any
+    // production data existed. The data since: across 74 chat opens, the median
+    // visitor left the chat screen at 5.5s and 51% were gone before the question
+    // arrived at 6.3s. A floor of 5s therefore guaranteed that roughly half the
+    // audience was never asked anything — the exact failure the 5-8s rule was
+    // written to prevent. Landing earlier is not rushing, it is arriving.
+    //
+    // The upper bound is kept as the original regression guard, and is why
+    // Odysseus is in _briskScriptCharacters: at the shared _readablePacing this
+    // script does not ask until 10.0s.
     expect(
       question!,
-      inInclusiveRange(5000, 8000),
-      reason: 'first question landed at ${question}ms, outside the 5-8s rule',
+      lessThanOrEqualTo(8000),
+      reason: 'first question landed at ${question}ms, later than the 8s rule',
     );
+    // A floor still exists, far below the old one: the question must not land
+    // before the character has introduced himself at all, or it reads as a
+    // non-sequitur from a stranger.
+    expect(question, greaterThan(firstBubble!));
 
     await _teardown(tester);
   });

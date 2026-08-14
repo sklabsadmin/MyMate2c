@@ -394,8 +394,19 @@ export default {
             // needed 60 ticks, which a 2s tick can never reach, so that column
             // read 0 for everyone while genuinely-engaged visits were counted
             // as leaving in under 15 seconds.
+            // Cut at the moments the product is aiming for, not at whatever the
+            // cadence happens to end on. The goal is a reply inside 30s and an
+            // experience that keeps running to 90s with no input, so 15/35/90
+            // are the boundaries worth being able to see either side of.
+            //
+            // Re-cut when the cadence went to 119s: the old top bucket was
+            // "15s to the cap", which meant 15-28s and was informative, and
+            // would have silently become 15-119s — a 104-second band in one
+            // column, rendering perfectly and saying nothing.
             const b5s = screenPingTicksAt(5);
             const b15s = screenPingTicksAt(15);
+            const b35s = screenPingTicksAt(35);
+            const b90s = screenPingTicksAt(90);
             const bFull = SCREEN_PING_MAX_TICKS;
             //
             // The arrivals are collapsed to one row per visit_id before any
@@ -412,8 +423,13 @@ export default {
                        SUM(CASE WHEN a.ticks IS NULL OR a.ticks = 0 THEN 1 ELSE 0 END) AS left_instantly,
                        SUM(CASE WHEN a.ticks BETWEEN 1 AND ${b5s - 1} THEN 1 ELSE 0 END) AS left_under_5s,
                        SUM(CASE WHEN a.ticks BETWEEN ${b5s} AND ${b15s - 1} THEN 1 ELSE 0 END) AS left_5s_to_15s,
-                       SUM(CASE WHEN a.ticks BETWEEN ${b15s} AND ${bFull - 1} THEN 1 ELSE 0 END) AS left_15s_to_30s,
-                       SUM(CASE WHEN a.ticks >= ${bFull} THEN 1 ELSE 0 END) AS stayed_full_30s
+                       SUM(CASE WHEN a.ticks BETWEEN ${b15s} AND ${b35s - 1} THEN 1 ELSE 0 END) AS left_15s_to_35s,
+                       SUM(CASE WHEN a.ticks BETWEEN ${b35s} AND ${b90s - 1} THEN 1 ELSE 0 END) AS left_35s_to_90s,
+                       -- 90s onward, not just the final tick: 90s is the target the
+                       -- experience is built to reach, so reaching it is the thing
+                       -- worth counting. Splitting 90-to-cap off again would put two
+                       -- near-identical columns beside each other.
+                       SUM(CASE WHEN a.ticks >= ${b90s} THEN 1 ELSE 0 END) AS stayed_90s_plus
                 FROM (
                     SELECT v.visit_id,
                            MIN(v.source) AS source,
@@ -610,6 +626,17 @@ export default {
                            AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
+                       -- The elapsed time the last tick actually reported, rather
+                       -- than a tick COUNT converted through screenPingSeconds.
+                       -- Every in-app event already carries durationMs since
+                       -- arrival (mythosVisitBeacon stamps it), so the rows have
+                       -- carried the truth all along and the read path was
+                       -- reconstructing it from the cadence constants instead.
+                       -- That reconstruction is only right while the cadence never
+                       -- changes: retune the phases and every historical count
+                       -- silently means something new. This column does not care.
+                       (SELECT MAX(g.duration_ms) FROM site_visits g
+                         WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS last_tick_ms,
                        (SELECT t.detail FROM site_visits t
                          WHERE t.visit_id = a.visit_id AND t.event = 'character_tap'
                          ORDER BY t.created_at LIMIT 1) AS character_id,
@@ -2453,23 +2480,35 @@ async function checkRateLimit(kv, userId) {
 /// tick was 0.5s then and is 2s now, so a visit logged under the old rate looks
 /// four times longer than it was. Only compare dwell data within one era.
 const SCREEN_PING_PHASE1_INTERVAL_SECONDS = 0.5;
-const SCREEN_PING_PHASE1_SECONDS = 10;
-const SCREEN_PING_PHASE2_INTERVAL_SECONDS = 3;
-const SCREEN_PING_MAX_SECONDS = 30;
+const SCREEN_PING_PHASE1_SECONDS = 15;
+const SCREEN_PING_PHASE2_INTERVAL_SECONDS = 1;
+const SCREEN_PING_PHASE2_SECONDS = 35;
+const SCREEN_PING_PHASE3_INTERVAL_SECONDS = 3;
+const SCREEN_PING_MAX_SECONDS = 120;
 
 const SCREEN_PING_PHASE1_TICKS =
     SCREEN_PING_PHASE1_SECONDS / SCREEN_PING_PHASE1_INTERVAL_SECONDS;
-const SCREEN_PING_MAX_TICKS = SCREEN_PING_PHASE1_TICKS + Math.floor(
-    (SCREEN_PING_MAX_SECONDS - SCREEN_PING_PHASE1_SECONDS) /
+const SCREEN_PING_PHASE2_TICKS = SCREEN_PING_PHASE1_TICKS + Math.floor(
+    (SCREEN_PING_PHASE2_SECONDS - SCREEN_PING_PHASE1_SECONDS) /
     SCREEN_PING_PHASE2_INTERVAL_SECONDS);
+// 78 ticks, and the last one lands at 119s rather than 120: 3s steps from 35
+// reach 119 and the next would overshoot. Named here rather than discovered
+// later, because the previous scheme said 30 and silently meant 28.
+const SCREEN_PING_MAX_TICKS = SCREEN_PING_PHASE2_TICKS + Math.floor(
+    (SCREEN_PING_MAX_SECONDS - SCREEN_PING_PHASE2_SECONDS) /
+    SCREEN_PING_PHASE3_INTERVAL_SECONDS);
 
 /// Seconds on the chat screen that a given tick count represents.
 function screenPingSeconds(ticks) {
     if (ticks <= SCREEN_PING_PHASE1_TICKS) {
         return ticks * SCREEN_PING_PHASE1_INTERVAL_SECONDS;
     }
-    return SCREEN_PING_PHASE1_SECONDS +
-        (ticks - SCREEN_PING_PHASE1_TICKS) * SCREEN_PING_PHASE2_INTERVAL_SECONDS;
+    if (ticks <= SCREEN_PING_PHASE2_TICKS) {
+        return SCREEN_PING_PHASE1_SECONDS +
+            (ticks - SCREEN_PING_PHASE1_TICKS) * SCREEN_PING_PHASE2_INTERVAL_SECONDS;
+    }
+    return SCREEN_PING_PHASE2_SECONDS +
+        (ticks - SCREEN_PING_PHASE2_TICKS) * SCREEN_PING_PHASE3_INTERVAL_SECONDS;
 }
 
 /// The first tick whose elapsed time reaches `seconds` — the inverse of the
@@ -2898,7 +2937,12 @@ const SESSION_CSV_COLUMNS = [
     ["exit_mode", (r) => r.exit_mode],
     ["reported_leave", (r) => (r.reported_leave ? 1 : 0)],
     ["hide_count", (r) => r.hide_count],
-    ["ticks", (r) => (r.opened_character ? r.ticks || 0 : null)],
+    ["last_tick_ms", (r) => r.last_tick_ms],
+    // Not gated on opened_character. A visit with ticks but no character_tap
+    // is the signature of a lost event — the screen mounted, the ping timer it
+    // starts ran, and the tap row never arrived — and blanking the ticks hid
+    // exactly the evidence for it in the view you would check.
+    ["ticks", (r) => r.ticks || 0],
     ["opened_character", (r) => (r.opened_character ? 1 : 0)],
     ["tapped_starter", (r) => (r.tapped_starter ? 1 : 0)],
     ["messages", (r) => r.messages || 0],
@@ -5450,6 +5494,11 @@ async function render(out) {
           '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Seen</th>' +
           '<th title="how the visit ended, and how often it was backgrounded first">Exit</th>' +
           '<th data-type="num">Ticks</th>' +
+          // The elapsed time the last tick actually reported, beside the count
+          // that used to stand in for it. They agree while the cadence is the one
+          // the count was recorded under, and only this column stays right when
+          // it is not — which is every row logged before the cadence last moved.
+          '<th data-type="num" title="Elapsed time the last tick reported, straight from the row">Last tick at</th>' +
           '<th data-type="num">Messages</th><th data-type="num">Tapped</th>' +
           '<th data-type="num">Typed</th>' +
           '<th data-type="num" title="the longest the visitor waited for a reply in this session">Slowest reply</th>' +
@@ -5490,7 +5539,8 @@ async function render(out) {
          '</td><td class="num"' + sv(r.dwell_ms) + '>' + dur(r.dwell_ms) +
          '</td><td class="num"' + sv(r.visible_ms) + '>' + dur(r.visible_ms) +
          '</td><td title="' + exit[1] + '"' + sv(r.exit_mode || '') + '>' + exit[0] + hides +
-         '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' + ticks +
+         '</td><td class="num"' + sv(r.ticks || 0) + '>' + ticks +
+         '</td><td class="num"' + sv(r.last_tick_ms) + '>' + dur(r.last_tick_ms) +
          '</td><td class="num"' + sv(r.messages || 0) + '>' + (r.messages || 0) +
          '</td><td class="num"' + sv(r.tapped || 0) + '>' + tapped +
          '</td><td class="num"' + sv(r.typed || 0) + '>' + (r.typed || 0) +
@@ -5507,9 +5557,9 @@ async function render(out) {
          '" data-c="' + esc(r.character_id || '') + '">' +
          (r.messages ? 'chat + trail' : 'trail') + '</a>' +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="16"></td></tr>';
+         '" style="display:none"><td colspan="17"></td></tr>';
   }
-  if (!rows.length) h += '<tr><td colspan="16" class="muted">No sessions in this range.</td></tr>';
+  if (!rows.length) h += '<tr><td colspan="17" class="muted">No sessions in this range.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);
@@ -6011,12 +6061,17 @@ const PING = ${JSON.stringify({
         phase1Interval: SCREEN_PING_PHASE1_INTERVAL_SECONDS,
         phase1Seconds: SCREEN_PING_PHASE1_SECONDS,
         phase2Interval: SCREEN_PING_PHASE2_INTERVAL_SECONDS,
+        phase2Ticks: SCREEN_PING_PHASE2_TICKS,
+        phase2Seconds: SCREEN_PING_PHASE2_SECONDS,
+        phase3Interval: SCREEN_PING_PHASE3_INTERVAL_SECONDS,
         maxTicks: SCREEN_PING_MAX_TICKS,
     })};
 function screenPingSeconds(ticks) {
-  return ticks <= PING.phase1Ticks
-    ? ticks * PING.phase1Interval
-    : PING.phase1Seconds + (ticks - PING.phase1Ticks) * PING.phase2Interval;
+  if (ticks <= PING.phase1Ticks) return ticks * PING.phase1Interval;
+  if (ticks <= PING.phase2Ticks) {
+    return PING.phase1Seconds + (ticks - PING.phase1Ticks) * PING.phase2Interval;
+  }
+  return PING.phase2Seconds + (ticks - PING.phase2Ticks) * PING.phase3Interval;
 }
 // Anything thrown in here used to leave "Loading…" on screen with the real
 // error only in the console, which is indistinguishable from a slow request.
@@ -6063,24 +6118,25 @@ async function render(out) {
     h += '<h2>How long before giving up</h2><p class="muted" style="margin:0 0 8px">' +
          'Visits that opened a character and never typed, tapped a starter, or sent ' +
          'anything. Left instantly means gone before the first half-second tick &mdash; ' +
-         'the screen never had a chance. Stayed the full 30s means they were still ' +
+         'the screen never had a chance. The last column is everyone still ' +
          'reading when we stopped counting.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
-         // Last column is labelled from the real cap rather than a written-in
-         // "30s": the slow phase's final tick lands at 28s, not 30, so a fixed
-         // label would overstate by two seconds and quietly rot again the next
-         // time the cadence moves.
+         // Every boundary is interpolated from the constants rather than
+         // written in. A fixed "30s" here was already wrong by two seconds
+         // before the cadence moved, and would have been wrong by ninety after.
          '<th data-type="num" data-sorted="desc">Never engaged</th>' +
          '<th data-type="num">Left instantly</th><th data-type="num">&lt;5s</th>' +
          '<th data-type="num">5&ndash;15s</th>' +
-         '<th data-type="num">15&ndash;' + screenPingSeconds(PING.maxTicks) + 's</th>' +
-         '<th data-type="num">Stayed ' + screenPingSeconds(PING.maxTicks) + 's+</th></tr>';
+         '<th data-type="num">15&ndash;35s</th>' +
+         '<th data-type="num">35&ndash;90s</th>' +
+         '<th data-type="num">Reached 90s</th></tr>';
     for (const r of buckets) {
       h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.never_engaged) + '>' + r.never_engaged +
            '</td><td class="num"' + sv(r.left_instantly || 0) + '>' + (r.left_instantly || 0) +
            '</td><td class="num"' + sv(r.left_under_5s || 0) + '>' + (r.left_under_5s || 0) +
            '</td><td class="num"' + sv(r.left_5s_to_15s || 0) + '>' + (r.left_5s_to_15s || 0) +
-           '</td><td class="num"' + sv(r.left_15s_to_30s || 0) + '>' + (r.left_15s_to_30s || 0) +
-           '</td><td class="num"' + sv(r.stayed_full_30s || 0) + '>' + (r.stayed_full_30s || 0) + '</td></tr>';
+           '</td><td class="num"' + sv(r.left_15s_to_35s || 0) + '>' + (r.left_15s_to_35s || 0) +
+           '</td><td class="num"' + sv(r.left_35s_to_90s || 0) + '>' + (r.left_35s_to_90s || 0) +
+           '</td><td class="num"' + sv(r.stayed_90s_plus || 0) + '>' + (r.stayed_90s_plus || 0) + '</td></tr>';
     }
     h += '</table></div>';
   }
