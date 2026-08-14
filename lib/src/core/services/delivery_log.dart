@@ -45,7 +45,7 @@ class _Receipt {
     required this.seq,
     required this.origin,
     required this.isUser,
-    required this.queuedAtMs,
+    required this.dirtyAtMs,
     this.visitId,
     this.chatId,
     this.characterId,
@@ -68,10 +68,19 @@ class _Receipt {
   final String origin;
   final bool isUser;
 
-  /// When this receipt first entered the queue, by the device clock. Only ever
-  /// used as a difference against "now" to produce queued_ms, so a device with
-  /// a wrong clock still reports a correct duration.
-  final int queuedAtMs;
+  /// When the oldest thing the worker has not stored yet appeared, by the
+  /// device clock. Only ever used as a difference against "now" to produce
+  /// queued_ms, so a device with a wrong clock still reports a correct
+  /// duration.
+  ///
+  /// Reset whenever a clean receipt turns dirty again, and that reset is the
+  /// point. Measured from intent instead, a receipt acknowledged instantly and
+  /// then seen two minutes later reported queued_ms of two minutes — dwell
+  /// time wearing an outage's clothes, and one ordinary hidden-tab session put
+  /// 46 rows into the report's over-a-minute bucket without the network ever
+  /// failing. From here, the number only ever measures how long *undelivered*
+  /// information waited, which is the delay the queue page exists to show.
+  int dirtyAtMs;
 
   final String? visitId;
   final String? chatId;
@@ -134,7 +143,7 @@ class _Receipt {
     'seq': seq,
     'origin': origin,
     'isUser': isUser,
-    'queuedAtMs': queuedAtMs,
+    'dirtyAtMs': dirtyAtMs,
     if (visitId != null) 'visitId': visitId,
     if (chatId != null) 'chatId': chatId,
     if (characterId != null) 'characterId': characterId,
@@ -160,9 +169,14 @@ class _Receipt {
       seq: json['seq'] is int ? json['seq'] as int : 0,
       origin: json['origin'] is String ? json['origin'] as String : 'ai_reply',
       isUser: json['isUser'] == true,
-      queuedAtMs: json['queuedAtMs'] is int
-          ? json['queuedAtMs'] as int
-          : DateTime.now().millisecondsSinceEpoch,
+      // The old key, from before the rename, is an acceptable stand-in: a
+      // queue written by that version measured from intent, which for a row
+      // still undelivered is the same moment.
+      dirtyAtMs: json['dirtyAtMs'] is int
+          ? json['dirtyAtMs'] as int
+          : json['queuedAtMs'] is int
+              ? json['queuedAtMs'] as int
+              : DateTime.now().millisecondsSinceEpoch,
       visitId: json['visitId'] as String?,
       chatId: json['chatId'] as String?,
       characterId: json['characterId'] as String?,
@@ -404,7 +418,7 @@ class DeliveryLog {
         seq: seq,
         origin: origin.wireName,
         isUser: isUser,
-        queuedAtMs: now.millisecondsSinceEpoch,
+        dirtyAtMs: now.millisecondsSinceEpoch,
         visitId: currentVisitId(),
         chatId: chatId,
         characterId: characterId,
@@ -443,7 +457,15 @@ class DeliveryLog {
       // for a whole reply is declared and flushed within 250ms, while the
       // bubbles it describes are not drawn for another ten seconds.
       if (receipt == null) return;
-      apply(receipt, DateTime.now().toIso8601String());
+      final now = DateTime.now();
+      apply(receipt, now.toIso8601String());
+      if (!receipt.dirty) {
+        // Clean until this stamp: the clock measuring undelivered information
+        // starts again now. Left running from intent, the seconds this bubble
+        // sat acknowledged and waiting to be seen would be reported as queue
+        // delay — see dirtyAtMs.
+        receipt.dirtyAtMs = now.millisecondsSinceEpoch;
+      }
       receipt.dirty = true;
       _afterChange();
     } catch (e) {
@@ -532,6 +554,14 @@ class DeliveryLog {
   void _scheduleFlush() {
     if (_stopped) return;
     if (!_hasDirty) return;
+    // A pending retry means the last flush failed and the backoff is the
+    // authority on when to try again. Without this check every new bubble's
+    // render stamp scheduled its own 250ms flush, which turned "a handful of
+    // requests during an outage" into one failed request per bubble for as
+    // long as the script kept pacing — observed live at 21 attempts in two
+    // minutes. The new receipt loses nothing by waiting: the retry sends
+    // everything dirty, including it.
+    if (_retryTimer?.isActive == true) return;
     if (_flushTimer?.isActive == true) return;
     _flushTimer = Timer(
       const Duration(milliseconds: AppConfig.deliveryFlushDebounceMs),
@@ -590,15 +620,15 @@ class DeliveryLog {
       final receipts = <Map<String, dynamic>>[];
       for (var i = 0; i < batch.length; i++) {
         final r = batch[i];
-        // queuedAtMs, attempts and dirty are the queue's own bookkeeping —
+        // dirtyAtMs, attempts and dirty are the queue's own bookkeeping —
         // queuedMs and flushAttempts below are what the worker is told.
         final json = r.toJson()
-          ..remove('queuedAtMs')
+          ..remove('dirtyAtMs')
           ..remove('attempts')
           ..remove('dirty');
         receipts.add({
           ...json,
-          'queuedMs': max(0, nowMs - r.queuedAtMs),
+          'queuedMs': max(0, nowMs - r.dirtyAtMs),
           'flushAttempts': r.attempts + 1,
           // Carried by one receipt in the batch, not all of them. The count is
           // a property of the queue rather than of any bubble, and the admin
@@ -759,4 +789,19 @@ class DeliveryLog {
   /// of a network.
   @visibleForTesting
   Dio get debugDio => _dio;
+
+  /// Whether a debounced flush, or a backoff retry, is currently waiting to
+  /// fire. The pair exists to test their precedence: while a retry is pending,
+  /// new activity must defer to it rather than schedule its own flush.
+  @visibleForTesting
+  bool get debugFlushScheduled => _flushTimer?.isActive == true;
+
+  @visibleForTesting
+  bool get debugRetryScheduled => _retryTimer?.isActive == true;
+
+  /// When the named receipt's undelivered-information clock started, or null
+  /// for a receipt the queue no longer holds. Lets a test observe the reset on
+  /// the clean-to-dirty transition without a controllable clock.
+  @visibleForTesting
+  int? debugDirtyAtMs(String bubbleId) => _pending[bubbleId]?.dirtyAtMs;
 }

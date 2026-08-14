@@ -376,6 +376,40 @@ void main() {
       expect(log.unsentCount, 2);
     });
 
+    test('new activity defers to a pending backoff instead of flushing', () async {
+      // Observed live: during an outage, every new bubble's render stamp
+      // scheduled its own 250ms flush, so the retry backoff never governed —
+      // 21 attempts in two minutes against a design intent of "a handful".
+      // The failed flush's backoff must own the schedule; a new receipt loses
+      // nothing by waiting, because the retry sends everything dirty.
+      adapter.status = 503;
+      final log = await boot();
+      final turn = log.beginTurn();
+      record(log, turn, 0, 'first, which fails');
+      await log.flush();
+      expect(log.debugRetryScheduled, isTrue, reason: 'backoff is pending');
+
+      record(log, turn, 1, 'second, arriving mid-backoff');
+
+      expect(log.debugFlushScheduled, isFalse,
+          reason: 'the backoff owns the schedule, not the debounce');
+      expect(log.debugRetryScheduled, isTrue);
+
+      // And the deferred receipt rides along when the retry does fire.
+      adapter.status = 200;
+      await log.flush();
+      expect(adapter.lastReceipts, hasLength(2));
+    });
+
+    test('a fresh receipt with no failure behind it still debounces', () async {
+      // The other half of the rule above: deferral is only for backoff. In the
+      // happy path the 250ms debounce must still coalesce a reply's bubbles.
+      final log = await boot();
+      record(log, log.beginTurn(), 0, 'no outage anywhere');
+      expect(log.debugFlushScheduled, isTrue);
+      expect(log.debugRetryScheduled, isFalse);
+    });
+
     test('a receipt the worker declined to name stays queued', () async {
       final log = await boot();
       final turn = log.beginTurn();
@@ -421,6 +455,70 @@ void main() {
 
       expect(again, first);
       expect(log.pendingCount, 1);
+    });
+  });
+
+  group('what queued_ms measures', () {
+    test('a stamp on a clean receipt restarts the clock', () async {
+      // Observed live: measured from intent, a receipt acknowledged instantly
+      // and seen two minutes later reported queued_ms of two minutes — dwell
+      // time wearing an outage's clothes. One hidden-tab session put 46 rows
+      // in the report's over-a-minute bucket without the network ever failing.
+      // The clock must measure undelivered information, so it restarts when a
+      // clean receipt turns dirty again.
+      final log = await boot();
+      final id = record(log, log.beginTurn(), 0, 'acked, then dwelled on');
+      final atIntent = log.debugDirtyAtMs(id)!;
+
+      await log.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      log.markSeen(id);
+
+      final atSeen = log.debugDirtyAtMs(id)!;
+      expect(atSeen - atIntent, greaterThanOrEqualTo(40),
+          reason: 'the dwell before the sighting is not queue delay');
+    });
+
+    test('a stamp on a still-dirty receipt keeps the older clock', () async {
+      // The reset is only for clean receipts. While one is still undelivered,
+      // the oldest waiting information sets the age — a render arriving during
+      // an outage must not make the outage look shorter.
+      adapter.status = 503;
+      final log = await boot();
+      final id = record(log, log.beginTurn(), 0, 'never delivered');
+      final atIntent = log.debugDirtyAtMs(id)!;
+
+      await log.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      log.markRendered(id);
+
+      expect(log.debugDirtyAtMs(id), atIntent);
+    });
+
+    test('a receipt that waited on disk reports the whole wait', () async {
+      // Fixture written with the legacy key, which doubles as the fallback
+      // test: a queue persisted before the rename measured from intent, and
+      // for a row still undelivered that is the same moment.
+      SharedPreferences.setMockInitialValues({
+        'delivery_receipt_queue_v1': jsonEncode([
+          {
+            'bubbleId': 'turn_old1_1_0',
+            'turnId': 'turn_old1_1',
+            'seq': 0,
+            'origin': 'welcome_script',
+            'isUser': false,
+            'queuedAtMs': 1000,
+            'intendedAt': '2026-08-13T00:00:00.000',
+            'dirty': true,
+          },
+        ]),
+      });
+      final log = await boot();
+      await log.flush();
+
+      final sent = adapter.receiptAt(0);
+      expect(sent['queuedMs'], greaterThan(1000 * 1000 * 1000),
+          reason: 'epoch 1000ms to now is decades — the wait survived intact');
     });
   });
 

@@ -27,7 +27,7 @@ network one.
 
 | | |
 |---|---|
-| Flutter tests | 36 pass |
+| Flutter tests | 41 pass |
 | Backend tests | 48 pass |
 | Analyzer errors | 0 |
 | Deployed | no |
@@ -74,13 +74,14 @@ Verified live against a local `wrangler dev --local` with the Odysseus opening:
    `local_fallback`, and — most importantly — **the fidelity check** are
    untested against real data. `fidelity.checkable` was `0` in every run.
    This is the actual product; the rest is scaffolding around it.
-2. **The offline/tombstone path, live.** Failed flush → queue survives → backoff
-   retry → `queued_ms` records the outage. `test/delivery_log_test.dart` now
-   covers the queue's half of this against a fake adapter that refuses, that
-   never connects, and that acks only some of a batch — but nothing has yet
-   watched a real row land after a real outage, and `queued_ms` in particular
-   has only ever been observed at ~240ms. Testable by pointing the client at a
-   dead port.
+2. ~~The offline/tombstone path, live.~~ **Verified live 2026-08-14** (Windows,
+   local preview): `/api/delivery` blocked client-side mid-welcome-script, ten
+   receipts stranded dirty, tab abandoned mid-script — and the next launch
+   recovered them. They landed under the *original* visit id, with
+   `queued_ms` 117s, and corrected `never_rendered` from 46 (the false
+   regional-failure signature) to 26 (the true abandonment count). The same
+   run confirmed the hidden-tab case end to end: 50 rendered, 0 seen, all 50
+   in `rendered_unseen`, the whole opening one row in `cut_short`.
 3. **`seen`, after the last two fixes.** Nine unit tests cover it, but the final
    live run reported `seen=0` because the browser pane was hidden — which is
    correct behaviour, not a regression. Needs one run with the pane visible.
@@ -91,9 +92,9 @@ Verified live against a local `wrangler dev --local` with the Odysseus opening:
 
 1–5 were silent, and every one of them produced *the same signature as the
 regional fault this feature exists to detect*: rows with intent recorded and
-nothing after. 6 and 7 are worse in a different way — they corrupt rows that
-did arrive, so they do not look like absence at all. That is why this cannot be
-trusted without the calibration above.
+nothing after. 6–9 are worse in a different way — they corrupt rows and
+numbers that did arrive, so they do not look like absence at all. That is why
+this cannot be trusted without the calibration above.
 
 1. **Acked receipts were deleted from the queue.** Intent for a whole reply is
    flushed within 250ms; the bubbles are not drawn for another ten seconds, so
@@ -134,13 +135,26 @@ trusted without the calibration above.
    and the worker's `ON CONFLICT` does not overwrite `user_id` or `text` — so
    one visitor's bubbles would be folded into the other's row rather than
    rejected. A per-run random tag now sits in the turn id.
+8. **The retry backoff was defeated while bubbles were still rendering.** Every
+   render stamp scheduled its own 250ms-debounce flush regardless of a pending
+   backoff, so during an outage the request rate was the bubble pacing rate —
+   observed live at 21 attempts in two minutes against a design intent of "a
+   handful". New activity now defers to a pending retry; the retry carries it.
+9. **`queued_ms` conflated queue delay with dwell time.** It was computed from
+   intent on every flush, and the worker keeps the MAX — so a hidden-tab
+   session that was never offline reported `worst_ms` of 123s and put 46 rows
+   in the report's over-a-minute bucket, purely because renders were stamped
+   late. The clock (`dirtyAtMs`) now restarts when a clean receipt turns dirty
+   again, so it only ever measures how long undelivered information waited.
+   Both 8 and 9 were found by the live offline run, not by review, and both
+   poisoned the exact panel (`queue`) meant to indicate outages.
 
 `test/seen_detector_test.dart` pins down 2–4, plus the cases that must *not*
 report: below the fold, flicked past, hidden tab, and a message restored from
 history (which has no receipt and must never be reported as freshly read).
-`test/delivery_log_test.dart` pins down 1 and 5–7. Each of those four was
-confirmed by backing the fix out and watching the test fail — 6 in particular
-reports `[7, 7, 7]` where the report should see `[7]`.
+`test/delivery_log_test.dart` pins down 1 and 5–9. Each was confirmed by
+backing the fix out and watching the test fail — 6 in particular reports
+`[7, 7, 7]` where the report should see `[7]`.
 
 ## How to run it
 
