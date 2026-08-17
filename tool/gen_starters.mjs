@@ -69,14 +69,38 @@ if (!photoPrompt.length) {
 // number is how far into the scripted conversation a visitor got — the
 // difference between tapping the first thing offered and working five turns
 // in. Flattening throws that away.
+// A set may be written inline, or be a reference to a named const holding it.
+// Hercules needs the second form: his document specifies replies at nine of
+// his thirty-three turns and each is held until the next, so writing the list
+// out inline would mean ninety-nine string literals, most of them duplicates.
+// Resolved here rather than inlined there, because the alternative is a Dart
+// file whose duplication exists only to satisfy this parser.
+const constList = (name) => {
+    const decl = widget.indexOf(`List<String> ${name} = [`);
+    if (decl < 0) return [];
+    const block = widget.slice(decl, widget.indexOf('\n  ];', decl));
+    return strings(block.slice(block.indexOf('[')));
+};
+
 const quickReplySets = {};
 for (const m of widget.matchAll(/characterId == '([a-z_]+)'\)\s*return (_\w+);/g)) {
     const decl = widget.indexOf(`${m[2]} = [`);
     if (decl < 0) continue;
-    const block = widget.slice(decl, widget.indexOf('\n  ];', decl));
-    quickReplySets[m[1]] = [...block.matchAll(/\[([^[\]]*)\]/g)]
-        .map((set) => strings(set[1]))
-        .filter((set) => set.length);
+    const raw = widget.slice(decl, widget.indexOf('\n  ];', decl));
+    // Past the opening bracket so the list's own name is not read as a set,
+    // and without comment lines, whose identifiers would be resolved as if
+    // they were entries.
+    const block = raw
+        .slice(raw.indexOf('[') + 1)
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n');
+    const sets = [];
+    for (const entry of block.matchAll(/\[([^[\]]*)\]|(_\w+)/g)) {
+        const set = entry[1] !== undefined ? strings(entry[1]) : constList(entry[2]);
+        if (set.length) sets.push(set);
+    }
+    quickReplySets[m[1]] = sets;
 }
 const quickReplies = Object.fromEntries(
     Object.entries(quickReplySets).map(([id, sets]) => [id, [...new Set(sets.flat())]]));

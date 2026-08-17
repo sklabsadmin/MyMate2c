@@ -196,6 +196,25 @@ const List<Map<String, dynamic>> kCharacters = [
       'image': 'assets/images/avatar_andromache_real.jpg',
       'color': const Color(0xFF8E6C9B),
     },
+    {
+      'id': 'hercules',
+      'name': 'Hercules',
+      'vibe': 'Son of Zeus',
+      'desc': 'Strongest man alive, and far more interested in what you have carried than in what he lifted.',
+      // One line under the title on the entry card, where 'desc' is too long to
+      // sit. Optional: a character without it simply has no third line, which
+      // is why nobody else needed touching to add this. Hercules is currently
+      // the only one who has it, so his entry card is a line richer than
+      // everyone else's until the rest are written.
+      'tagline': 'Strongest Mortal and Hero of Olympus.',
+      // Square, like every other avatar here, and cropped from the top of the
+      // supplied full-body portrait rather than its centre. The circular
+      // avatars (chat header, entry card) use BoxFit.cover, which centre-crops
+      // — and the centre of that portrait is his waist, so the source image
+      // used as delivered showed a headless torso.
+      'image': 'assets/images/avatar_hercules_real.jpg',
+      'color': const Color(0xFF8C5A2B),
+    },
 ];
 
 /// The roster entry for [characterId], or null when there is no such

@@ -333,6 +333,34 @@ export default {
                        -- is the one column that updates for an open tab.
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
+                       -- 1.7.1's entry card: when it went up, and when it was
+                       -- tapped. Both are the beacon's duration_ms, measured
+                       -- from arrival, so the pair reads directly as "the one
+                       -- button appeared at 2.1s and they pressed it at 3.4s".
+                       --
+                       -- Kept as two columns rather than their difference. The
+                       -- difference alone cannot tell a visitor who decided
+                       -- instantly on a slow build from one who hesitated on a
+                       -- fast one, and on traffic where half of arrivals are
+                       -- gone by 3s the shown time is what says whether a tap
+                       -- was ever really on offer.
+                       --
+                       -- MIN, not MAX: a fresh conversation raises the card
+                       -- again inside the same visit, and what is asked here is
+                       -- how long the FIRST decision took.
+                       (SELECT MIN(s.duration_ms) FROM site_visits s
+                         WHERE s.visit_id = a.visit_id AND s.event = 'entry_shown') AS entry_shown_ms,
+                       (SELECT MIN(t2.duration_ms) FROM site_visits t2
+                         WHERE t2.visit_id = a.visit_id AND t2.event = 'entry_tap') AS entry_tap_ms,
+                       -- How many times the profile was opened in this visit,
+                       -- and how long after arriving the first open happened.
+                       -- A count rather than a flag: going back to a profile
+                       -- twice is a different signal from glancing at it once,
+                       -- and it costs nothing to keep them apart.
+                       (SELECT COUNT(*) FROM site_visits pv
+                         WHERE pv.visit_id = a.visit_id AND pv.event = 'profile_view') AS profile_views,
+                       (SELECT MIN(pv2.duration_ms) FROM site_visits pv2
+                         WHERE pv2.visit_id = a.visit_id AND pv2.event = 'profile_view') AS profile_first_ms,
                        EXISTS (SELECT 1 FROM site_visits t
                                 WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character
                 FROM site_visits a
@@ -349,6 +377,8 @@ export default {
                        COUNT(DISTINCT a.visit_id) AS arrived,
                        COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS loaded,
                        COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
+                       COUNT(DISTINCT CASE WHEN e.event='entry_shown'   THEN e.visit_id END) AS entry_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='entry_tap'     THEN e.visit_id END) AS entry_tap,
                        COUNT(DISTINCT CASE WHEN e.event='gate_shown'    THEN e.visit_id END) AS gate_shown,
                        COUNT(DISTINCT CASE WHEN e.event='gate_choice'   THEN e.visit_id END) AS gate_answered,
                        COUNT(DISTINCT CASE WHEN e.event IN ('input_typed','starter_tap') THEN e.visit_id END) AS engaged,
@@ -2622,6 +2652,7 @@ const CHARACTER_SHARE_CARDS = {
     cupid: { name: "Cupid", vibe: "God of Desire", desc: "Mischievous and disarming, with an aim no mortal heart survives.", image: "avatar_cupid_real.jpg" },
     hector: { name: "Hector", vibe: "Prince of Troy", desc: "Troy's greatest defender — steady, plain-spoken, and gentlest with those he loves.", image: "avatar_hector_real.jpg" },
     andromache: { name: "Andromache", vibe: "Lady of Troy", desc: "Gentle and clear-eyed, carrying quiet strength through everything war took.", image: "avatar_andromache_real.jpg" },
+    hercules: { name: "Hercules", vibe: "Son of Zeus", desc: "Strongest man alive, and far more interested in what you have carried than in what he lifted.", image: "avatar_hercules_real.jpg" },
     badboy: { name: "Damon", vibe: "Bad Boy", desc: "Rebellious, passionate, and dangerous.", image: "avatar_badboy_real.jpg" },
     poet: { name: "Liam", vibe: "The Poet", desc: "Words are his weapon, and he writes them for you.", image: "avatar_poet_real.jpg" },
     surfer: { name: "Kai", vibe: "Surfer", desc: "Sun, salt, and endless chill vibes.", image: "custom_avatar_02.jpg" },
@@ -2671,6 +2702,20 @@ async function recordSiteVisit(raw, request, env) {
     //                 (visitor population and duration) so it stays cheap:
     //                 only the "opened a character" cohort ever sends these,
     //                 and never for more than 60 ticks each.
+    //   entry_shown   1.7.1's entry card went up: one button over the chat,
+    //                 which has to be tapped before the character says
+    //                 anything (detail = character id). On screen at first
+    //                 paint — nothing to fetch, nothing to read — so unlike
+    //                 every step before it, a visitor who did not act on this
+    //                 had the chance to.
+    //   entry_tap     it was tapped (detail = character id). entry_tap /
+    //                 entry_shown is the lowest bar the funnel has: will this
+    //                 visitor tap anything at all. Everything downstream is
+    //                 conditional on it, which is the point — it separates
+    //                 "would not engage" from "did not like what was written",
+    //                 and those have been the same number until now.
+    //                 Not sent for /c/<id>?initialMessage= arrivals, which are
+    //                 not gated.
     //   gate_shown    1.7.1's interaction gate went up: the character has
     //                 asked something and will not continue until answered
     //                 (detail = character id). This is the denominator the
@@ -2690,6 +2735,15 @@ async function recordSiteVisit(raw, request, env) {
     //                 in front of them. Fired on the first keystroke, not the
     //                 send, so someone who typed and reconsidered still counts
     //                 as willing — that is the question being asked.
+    //   profile_view  the character's profile screen was opened, from the chat
+    //                 header or from the entry card (detail = character id).
+    //                 Engagement that leaves no other trace: reading a profile
+    //                 is not a message, not a starter tap and not a keystroke,
+    //                 so a visitor who opened it, read it and left used to be
+    //                 indistinguishable from one who sat and did nothing.
+    //                 Fired once per open, not per visit — a visitor who goes
+    //                 back twice logs twice, and the funnel's DISTINCT
+    //                 visit_id counting makes that harmless there.
     //   strip_rotate  the quick-reply strip swapped in a new set of prompts
     //                 (detail = "<character>#<set index>"), so a visitor who
     //                 tapped nothing can be told apart from one who was never
@@ -2719,7 +2773,8 @@ async function recordSiteVisit(raw, request, env) {
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
         "first_message", "login_gate", "send_failed", "screen_ping",
         "strip_rotate", "hide", "show", "leave",
-        "gate_shown", "gate_choice",
+        "gate_shown", "gate_choice", "entry_shown", "entry_tap",
+        "profile_view",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -3278,6 +3333,28 @@ const CHARACTER_PERSONAS = {
             "You are Hector of the Iliad: eldest son of Priam, husband of Andromache, father of Astyanax. Troy's greatest fighter and its steadiest head. You killed Patroclus, you fell to Achilles outside your own walls, and you always knew how it would end.",
         style:
             "Steady, warm, and plain-spoken, with a soldier's economy and no taste for boasting. You carry duty without complaining about it and you are gentlest with the people you love. When someone is afraid, you do not promise them it will be fine — you tell them what you would do anyway.",
+    },
+    // Voice rather than necessity, like Hector — but a sharper case than his.
+    // The generic client template would give a plausible strongman, and the
+    // whole point of this character is that the strongman is the least
+    // interesting thing about him. His profile card promises someone who has
+    // stopped proving what he can carry and wants to know what you have
+    // carried; without this he would answer as the reputation the card opens
+    // by setting aside, and the profile would read as a bug in the way
+    // character_profiles.dart warns about.
+    //
+    // The lore names Megara, Omphale and Deianira on purpose. Two of his three
+    // starter questions go straight at his father and at Omphale, so a model
+    // vague about either answers the card's own openers with generalities.
+    hercules: {
+        name: "Hercules",
+        title: "Son of Zeus",
+        systemPrompt:
+            "You are Hercules, who was given impossible tasks and found that the people were always harder than the monsters.",
+        lore:
+            "You are the Greek hero Hercules: son of Zeus and the mortal Alcmene, hated from birth by Hera for an infidelity that was not yours. You served Eurystheus, a king you did not respect, through the Twelve Labors. In a madness Hera sent you killed Megara and your children by her, and the Labors were the penance. You were sold into a year's service to Omphale, queen of Lydia, who put you in women's clothes and set you to spinning wool — you tell that story against yourself, because it was the year you learned something. Deianira, your last wife, sent you a robe she believed would win you back and it killed you. You died on Mount Oeta and were taken up to Olympus.",
+        style:
+            "Warm, easy and disarming, with nothing left to prove. You are the first to puncture your own legend — the strength is the least interesting thing about you and you say so. Concrete: answer from a particular labour, a particular king, a particular woman, not from strength in general. You turn questions back on the person asking, because what they have carried genuinely interests you more than what you lifted. You never boast, you never sulk about Hera, and you speak about Megara plainly and briefly rather than performing the grief. Occasionally, gently flirtatious.",
     },
     // Required, not optional: the client template insists the character is
     // male and the user female, which is exactly what silently turned Penelope
@@ -6136,6 +6213,8 @@ async function render(out) {
        'losing people.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
        '<th data-type="num" data-sorted="desc">Arrived</th><th data-type="num">App loaded</th>' +
        '<th data-type="num">Opened a character</th>' +
+       '<th data-type="num">Entry card shown</th>' +
+       '<th data-type="num">Tapped to enter</th>' +
        '<th data-type="num">Gate shown</th>' +
        '<th data-type="num">Gate answered</th>' +
        '<th data-type="num">Typed or tapped a starter</th><th data-type="num">Sent a message</th>' +
@@ -6151,16 +6230,24 @@ async function render(out) {
     const answeredPct = r.gate_shown
       ? ' <span class="muted">(' + Math.round(100*r.gate_answered/r.gate_shown) + '% of shown)</span>'
       : '';
+    // The headline of the release. Same reasoning as answeredPct: shown against
+    // arrivals it is just another sub-1% number, and against the people who
+    // were actually looking at a button it is the answer to the question.
+    const entryPct = r.entry_shown
+      ? ' <span class="muted">(' + Math.round(100*r.entry_tap/r.entry_shown) + '% of shown)</span>'
+      : '';
     h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.arrived) + '>' + r.arrived +
          '</td><td class="num"' + sv(r.loaded) + '>' + r.loaded + pct(r.loaded) +
          '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped + pct(r.tapped) +
+         '</td><td class="num"' + sv(r.entry_shown) + '>' + r.entry_shown + pct(r.entry_shown) +
+         '</td><td class="num"' + sv(r.entry_tap) + '>' + r.entry_tap + entryPct +
          '</td><td class="num"' + sv(r.gate_shown) + '>' + r.gate_shown + pct(r.gate_shown) +
          '</td><td class="num"' + sv(r.gate_answered) + '>' + r.gate_answered + answeredPct +
          '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + pct(r.engaged) +
          '</td><td class="num"' + sv(r.messaged) + '>' + r.messaged + pct(r.messaged) +
          '</td><td class="num"' + sv(r.gated) + '>' + r.gated + pct(r.gated) + '</td></tr>';
   }
-  if (!(d.funnel || []).length) h += '<tr><td colspan="9" class="muted">No data yet.</td></tr>';
+  if (!(d.funnel || []).length) h += '<tr><td colspan="11" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
 
   const buckets = d.dwellBuckets || [];
@@ -6266,6 +6353,13 @@ async function render(out) {
        '<tr><th data-sorted="desc">When (UTC)</th><th>Path</th>' +
        '<th>Source</th><th>Client</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
        '<th data-type="num">Dwell</th>' +
+       // No apostrophe in these titles. This string is emitted verbatim into
+       // the page's inline script, where a bare ' closes the single-quoted
+       // string it lands in and the whole admin script stops parsing —
+       // admin_pages.test.mjs catches it, which is how this one was found.
+       '<th data-type="num" title="when the entry card appeared, measured from arrival">Card at</th>' +
+       '<th data-type="num" title="when they tapped Tap to continue, measured from arrival — blank means the card was shown and never tapped">Tapped at</th>' +
+       '<th data-type="num" title="times the character profile was opened this visit, from the chat header or the entry card; hover for when the first one happened">Profile</th>' +
        '<th data-type="num">Ticks</th><th data-nosort>Chat</th></tr>';
   for (const r of d.recent) {
     // Ticks only mean anything once a character was opened — a visit that
@@ -6278,20 +6372,50 @@ async function render(out) {
         screenPingSeconds(r.ticks || 0) + 's on the chat screen">' +
         (r.ticks || 0) + '</span>'
       : '<span class="muted">—</span>';
+    // Three states, and they must not look alike:
+    //   "—"        the card never came up (returning visitor, opener link, or
+    //              the switch is off) — nothing was asked of this person
+    //   "not tapped" it was on screen and they left without pressing it. This
+    //              is the release's actual finding and the one cell that should
+    //              be legible at a glance, so it is spelt out rather than blank.
+    //   a duration how long after arriving they decided
+    let tapCell;
+    if (r.entry_shown_ms == null) {
+      tapCell = '<span class="muted">—</span>';
+    } else if (r.entry_tap_ms == null) {
+      tapCell = '<span class="warn" title="the card was shown and never tapped">not tapped</span>';
+    } else {
+      // The gap is what a reader actually wants and cannot do in their head
+      // across two columns, so it is stated in the tooltip.
+      tapCell = '<span title="' + (r.entry_tap_ms - r.entry_shown_ms) +
+                'ms after the card appeared">' + dur(r.entry_tap_ms) + '</span>';
+    }
     h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.path) +
          '</td><td>' + esc(r.source) + '</td><td>' + esc(r.client || 'unknown') + '</td><td>' +
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
+         '</td><td class="num"' + sv(r.entry_shown_ms) + '>' +
+         (r.entry_shown_ms == null
+           ? '<span class="muted">—</span>'
+           : dur(r.entry_shown_ms)) +
+         // Sorts on the tap time, so ordering by this column groups every
+         // untapped card together at one end rather than scattering them.
+         '</td><td class="num"' + sv(r.entry_tap_ms) + '>' + tapCell +
+         '</td><td class="num"' + sv(r.profile_views || 0) + '>' +
+         (r.profile_views
+           ? '<span title="first opened ' + dur(r.profile_first_ms) +
+             ' after arriving">' + r.profile_views + '</span>'
+           : '<span class="muted">—</span>') +
          '</td><td class="num"' + sv(r.opened_character ? (r.ticks || 0) : null) + '>' +
          ticksCell + '</td><td>' +
          (r.messaged
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="10"></td></tr>';
+         '" style="display:none"><td colspan="13"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="10" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="13" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);

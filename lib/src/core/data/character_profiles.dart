@@ -253,6 +253,37 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
     verse: "You can't make the set come in.\n"
         'You can be ready when it does.',
   ),
+  'hercules': CharacterProfile(
+    age: '42',
+    // Four, not the three the class doc recommends — Odysseus already carries
+    // four, and these are the four the character was written around.
+    tags: ['Strength', 'Passion', 'Courage', 'Second Chances'],
+    about: 'Everyone knows the strong part.\n'
+        'Son of Zeus. Twelve Labors. Impossible tasks. A reputation for '
+        'solving problems with my hands when words might have worked just as '
+        'well.\n'
+        "I've had a little time to think since then. 😉\n"
+        'The truth is, the monsters were never the most difficult part of my '
+        'life.\n'
+        'People were.\n'
+        'I grew up with a god for a father who was rarely there, and a '
+        'goddess who hated me for something I had no control over.\n'
+        "I've loved remarkable women, disappointed some of them, been humbled "
+        "by a queen, served kings I didn't respect, lost people I thought I'd "
+        'have forever, and learned—usually the hard way—that being strong '
+        "doesn't mean you always know what to do.\n"
+        "These days, I'm less interested in proving how much I can carry.\n"
+        "I'm more interested in what other people have carried.\n"
+        'And you?\n'
+        "I have a feeling there's more to your story than you're telling me.",
+    asks: [
+      'What was it really like having Zeus as your father?',
+      "What's the story with you and Queen Omphale?",
+      "Did you ever meet a woman you couldn't charm?",
+    ],
+    verse: 'Everyone remembers how strong I was.\n'
+        'Very few ask what made me strong.',
+  ),
 };
 
 CharacterProfile? profileForCharacter(String? characterId) {

@@ -30,6 +30,26 @@ class AppConfig {
   /// shows the holding page again, which is the point of it.
   static String? gatedDestination;
 
+  /// The 1.7.1 entry gate: a card over the chat naming the character, with one
+  /// button, that has to be tapped before the conversation begins.
+  ///
+  /// The bluntest possible form of the question this release exists to ask.
+  /// [requireInteractionToContinue] measures whether a visitor will engage with
+  /// what the character said, which confounds willingness with whether the
+  /// opening was any good; this measures whether they will tap anything at all.
+  /// One unambiguous target, on screen at first paint, with nothing to read
+  /// first — if this does not get a tap, no amount of writing was going to.
+  ///
+  /// It also holds the opening back until it is tapped, which is the part that
+  /// matters for the receipts: nothing is declared to the delivery log until
+  /// someone is actually watching, so "intended but never drawn" stops counting
+  /// lines said into an empty room.
+  ///
+  /// Separate switch from the story freeze on purpose. They are two different
+  /// claims and this codebase changes one variable at a time at this traffic
+  /// level; either can run without the other.
+  static bool requireTapToEnter = true;
+
   /// The 1.7.1 interaction gate. The character speaks its opening turn and
   /// then stops, saying nothing further until the visitor answers — no timeout
   /// resumes it and the idle nudge is suppressed under it.
@@ -47,9 +67,27 @@ class AppConfig {
   /// campaign link lands on, which is the whole of the paid traffic, so the way
   /// back needs to be one constant rather than an unpick across the release.
   ///
-  /// Not `const`: the script-ordering tests turn it off to exercise turns the
-  /// gate otherwise makes unreachable.
-  static bool requireInteractionToContinue = true;
+  /// OFF, deliberately, while [requireTapToEnter] is on.
+  ///
+  /// The two gates ask the same question and only one of them needs to. The
+  /// goal is a pulse — any deliberate act at all from a population where 3,457
+  /// of 3,506 visitors who reached a chat screen in the 30 days to 2026-08-17
+  /// did nothing whatsoever. One unmissable ask is how you take a pulse;
+  /// stacking a second gate behind the first spends the same scarce attention
+  /// twice and makes a null result harder to read, not easier.
+  ///
+  /// So the entry card takes the reading, and once it is answered the
+  /// experience is the one that was already written: the opening plays through
+  /// as its authors intended. That also makes the scripts whole again —
+  /// Hercules has 33 turns and Calypso 37, and with this on, everything past
+  /// the first question was unreachable.
+  ///
+  /// Turn it back on to freeze the story on an unanswered question, which is
+  /// the sharper instrument if the entry card turns out to get taps from people
+  /// who then sit through the opening without engaging.
+  ///
+  /// Not `const`: the gate tests turn it on to exercise the freeze.
+  static bool requireInteractionToContinue = false;
 
   /// Which built-in characters (by id) to show on the dashboard, and in
   /// what order. Hides the rest without deleting their definitions. Does
@@ -68,8 +106,9 @@ class AppConfig {
   static const List<String> greekCharacterIds = [
     'odysseus',
     'penelope',
-    'andromache',
+    'hercules',
     'zeus',
+    'andromache',
     'hector',
     'calypso',
     'cupid',

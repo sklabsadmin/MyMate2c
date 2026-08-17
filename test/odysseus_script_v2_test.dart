@@ -40,6 +40,11 @@ const String _p02Question = 'Would you rather hear about a monster, a '
     'beautiful island... or one of my truly terrible decisions?';
 const String _p12Question = 'Where should we begin?';
 
+/// The entry card's button, and the title it is built from — restated here
+/// rather than read from the widget for the same reason as the script lines.
+const String _enterButton = 'Tap to Talk';
+const String _characterTitle = 'King of Ithaca';
+
 /// Quick replies for the first two pauses, and one of the cold-safe sets the
 /// strip falls back to once the script is interrupted.
 const List<String> _set01 = [
@@ -64,9 +69,18 @@ const List<String> _coldSafeSets = [
 /// the default surface the strip is legitimately reduced and every assertion
 /// about a full set fails for a reason that has nothing to do with the script.
 /// The strip's own thresholds are exercised deliberately further down.
+/// [enterChat] taps through 1.7.1's entry card, which otherwise holds the
+/// opening back and would leave every test below looking at an empty chat.
+/// Tests of the card itself pass false and drive it themselves.
+///
+/// Timings measured after this are still the ones that matter: the script now
+/// starts at the tap, so "how long until he asks something" is counted from
+/// when the visitor actually began the conversation rather than from a page
+/// load they may have spent staring at a button.
 Future<void> _mountChat(
   WidgetTester tester, {
   Size logicalSize = const Size(390, 844),
+  bool enterChat = true,
 }) async {
   tester.view.physicalSize = logicalSize * 3.0;
   tester.view.devicePixelRatio = 3.0;
@@ -84,6 +98,14 @@ Future<void> _mountChat(
   // far enough for the first bubble, whose typing beat is 315ms.
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 1));
+
+  if (enterChat && AppConfig.requireTapToEnter) {
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'the entry card should be up on a fresh conversation');
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+  }
 }
 
 /// Every character line delivered so far, in order.
@@ -174,19 +196,18 @@ void main() {
     dotenv.loadFromString(
       envString: 'WORKER_URL=http://localhost\nAPP_SECRET=test',
     );
-    // A static, so a test that turns it off would otherwise leak into whatever
-    // runs next — and the failure would land in an unrelated test.
-    AppConfig.requireInteractionToContinue = true;
+    // The shipped defaults, restored per test so one that flips a switch
+    // cannot leak into the next. The story freeze ships OFF — the entry card
+    // takes the pulse on its own — so the tests for it opt in explicitly
+    // rather than the suite quietly testing a configuration nobody runs.
+    AppConfig.requireTapToEnter = true;
+    AppConfig.requireInteractionToContinue = false;
   });
+
+  _entryGateTests();
 
   testWidgets('plays all twelve turns, in order, into an empty chat',
       (tester) async {
-    // Gate off. This test is about the script's content and ordering, which
-    // 1.7.1's gate makes unreachable in normal use: he now stops after turn 1
-    // and waits to be answered, so turns 2-12 are never spoken on their own.
-    // The turns still have to be right for when a visitor does answer, and this
-    // is the only thing checking that they are.
-    AppConfig.requireInteractionToContinue = false;
     await _mountChat(tester);
     // Stops at the closing line rather than running on: once the script ends
     // the idle timer starts posting nudges, which are not script bubbles and
@@ -267,11 +288,6 @@ void main() {
 
   testWidgets('advances the strip to the next set at each pause',
       (tester) async {
-    // Gate off, for the same reason as the twelve-turn test: reaching pause 2
-    // means turn 2 has to be spoken, and under the gate it is not spoken until
-    // pause 1 has been answered. The strip's stepping is still the behaviour a
-    // conversation gets once it is under way.
-    AppConfig.requireInteractionToContinue = false;
     await _mountChat(tester);
     await _play(
       tester,
@@ -338,7 +354,9 @@ void main() {
       ],
     });
 
-    await _mountChat(tester);
+    // No entry card to tap through: this chat has history, so the visitor has
+    // already been here and is not asked to come in again.
+    await _mountChat(tester, enterChat: false);
     await _play(tester, limit: const Duration(seconds: 30));
 
     final lines = await _delivered();
@@ -468,6 +486,8 @@ void main() {
   // the character says; these test what happens when nobody answers.
 
   testWidgets('stops after the opening turn and stays stopped', (tester) async {
+    // The story freeze, which ships off — this test is what it does when on.
+    AppConfig.requireInteractionToContinue = true;
     await _mountChat(tester);
     // Three minutes of virtual silence — an order of magnitude past the
     // longest thing that could resume it. The old script ran ~200s end to end
@@ -488,6 +508,8 @@ void main() {
 
   testWidgets('does not fill its own silence with an idle nudge',
       (tester) async {
+    // The story freeze, which ships off — this test is what it does when on.
+    AppConfig.requireInteractionToContinue = true;
     await _mountChat(tester);
     await _play(tester, limit: const Duration(seconds: 60));
 
@@ -506,6 +528,8 @@ void main() {
   });
 
   testWidgets('answering it lets the conversation move again', (tester) async {
+    // The story freeze, which ships off — this test is what it does when on.
+    AppConfig.requireInteractionToContinue = true;
     await _mountChat(tester);
     await _play(
       tester,
@@ -529,8 +553,10 @@ void main() {
     await _teardown(tester);
   });
 
-  testWidgets('is not raised for a link that carries its own question',
-      (tester) async {
+  testWidgets('the story freeze is not raised for a link that carries its own '
+      'question', (tester) async {
+    // The story freeze, which ships off — this test is what it does when on.
+    AppConfig.requireInteractionToContinue = true;
     // /c/odysseus?initialMessage=… sends the visitor's question for them, so
     // there is nothing left to gate. Left ungated deliberately: gating here
     // would stand between someone and the answer they followed a link for, and
@@ -564,6 +590,318 @@ void main() {
     final lines = await _delivered();
     expect(lines.any(_idlePrompts.contains), isTrue,
         reason: 'an opener arrival is not gated, so the 14s nudge still fires');
+
+    await _teardown(tester);
+  });
+}
+
+/// The 1.7.1 entry gate — the card over the chat with one button on it.
+
+void _entryGateTests() {
+  testWidgets('holds the whole conversation behind one button', (tester) async {
+    await _mountChat(tester, enterChat: false);
+
+    expect(find.text(_enterButton), findsOneWidget);
+    expect(find.text(_characterTitle), findsWidgets,
+        reason: 'the card has to say who is being tapped through to');
+
+    // Two minutes of virtual time with the card up. Nothing behind it may run.
+    await _play(tester, limit: const Duration(seconds: 120));
+
+    expect(await _delivered(), isEmpty,
+        reason: 'not one line may be said to a screen nobody has entered');
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'and the card is still there — nothing dismisses it but a tap');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('covers the chat rather than tinting it', (tester) async {
+    // Caught by looking at it, not by a test: the card shipped with a 0.25
+    // middle gradient stop under a comment claiming it was opaque, and the
+    // quick-reply strip, a starter row and the message box all read through
+    // it. A one-button screen with four other tappable-looking things showing
+    // through is not the thing being measured.
+    //
+    // Asserted on the gradient itself, because the obvious test does not work:
+    // find.textContaining('Choose') still matches with the card up. The strip
+    // is in the tree either way — occlusion is a paint concern and the element
+    // tree knows nothing about it. So this reads the colours the card is
+    // actually filled with and requires every one of them to be opaque.
+    await _mountChat(tester, enterChat: false);
+    expect(find.text(_enterButton), findsOneWidget);
+
+    final surface = tester.widget<Container>(
+      find.byKey(const ValueKey('entry_gate_surface')),
+    );
+    final gradient = (surface.decoration as BoxDecoration).gradient!;
+    for (final c in gradient.colors) {
+      expect(c.a, 1.0,
+          reason: 'every stop of the card must be opaque — at 0.25 the strip, '
+              'a starter row and the message box all read through it');
+    }
+
+    // And nothing behind it is reachable by a pointer, which is the other half
+    // of "covers": a card you can tap through is not a gate.
+    expect(find.byIcon(Icons.touch_app_outlined).hitTestable(), findsNothing,
+        reason: 'the strip must not be tappable through the card');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('declares nothing to the delivery log until it is tapped',
+      (tester) async {
+    // The receipts claim, and the one most able to regress without anyone
+    // noticing. _playOpeningScript declares every bubble of the opening up
+    // front — that is what makes "intended but never drawn" measurable — so a
+    // script started behind the card would file 49 intents for a visitor who
+    // never arrived, quietly restoring the 9%-drawn number this release exists
+    // to fix.
+    await _mountChat(tester, enterChat: false);
+    await _play(tester, limit: const Duration(seconds: 30));
+
+    final prefs = await SharedPreferences.getInstance();
+    // A single JSON string under this key, not a list — DeliveryLog._queueKey,
+    // written with setString. 'welcome_script' is DeliveryOrigin.welcomeScript's
+    // wire name.
+    final queued = prefs.getString('delivery_receipt_queue_v1') ?? '';
+    expect(queued, isNot(contains('welcome_script')),
+        reason: 'no bubble may be declared before someone is watching');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('tapping it starts the opening', (tester) async {
+    await _mountChat(tester, enterChat: false);
+    expect(await _delivered(), isEmpty);
+
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+
+    expect(find.text(_enterButton), findsNothing,
+        reason: 'the card goes when it is answered');
+    expect(await _delivered(), contains(_p01Question));
+
+    await _teardown(tester);
+  });
+
+  testWidgets('comes back when the conversation is started fresh',
+      (tester) async {
+    await _mountChat(tester);
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    expect(find.text(_enterButton), findsNothing);
+
+    // "Fresh conversation" from the header's overflow menu. Explicit pumps, not
+    // pumpAndSettle: the strip's attention pass never stops, so nothing on this
+    // screen ever settles and pumpAndSettle times out.
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Fresh conversation').last);
+    await tester.pump();
+    // Past the storage clear and the reply-count read the reset awaits.
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'a fresh conversation goes back to before the tap');
+    // And it means it: nothing replays behind the card.
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isEmpty,
+        reason: 'the opening must not replay into a screen nobody has entered');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a question picked from the profile goes straight into the chat',
+      (tester) async {
+    // The only test that passes characterImage. The profile is unreachable
+    // without one (_openProfile returns early), which is also why the card's
+    // portrait and its "tap for the full profile" hint appear in no other test
+    // here — they are not rendered when it is null.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: _scenario,
+            characterId: 'odysseus',
+            characterImage: 'assets/images/avatar_odysseus_real.jpg',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.text(_enterButton), findsOneWidget);
+
+    // Into the profile by the name, which the hint says is tappable.
+    await tester.tap(find.text('Odysseus').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    const ask = "How do you love someone you can't reach?";
+    expect(find.text(ask), findsOneWidget,
+        reason: 'the profile should be open, showing its Ask Me About list');
+
+    // "Ask Me About" sits below the About text, off-screen on a phone — the
+    // finder matches a built widget, not a visible one, so tapping without
+    // this hits empty space at y=1071 on an 844-tall screen.
+    await tester.ensureVisible(find.text(ask));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    await tester.tap(find.text(ask));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // Back in the chat, with the question sent — not back at the card. Being
+    // returned to "Tap to Talk" after committing to a question is the bug this
+    // guards: it reads as the app having lost the choice.
+    expect(find.text(_enterButton), findsNothing,
+        reason: 'the card must not stand between them and the answer');
+
+    final prefs = await SharedPreferences.getInstance();
+    final stored = (prefs.getStringList(_historyKey) ?? const [])
+        .map((s) => jsonDecode(s) as Map<String, dynamic>)
+        .toList();
+    expect(stored.where((m) => m['isUser'] == true && m['text'] == ask),
+        isNotEmpty,
+        reason: 'their question should have been sent');
+    // And the scripted opening is not playing underneath it: the character
+    // must not introduce himself to someone who has already asked him
+    // something specific.
+    expect(stored.where((m) => m['text'] == _firstLine), isEmpty,
+        reason: 'the opening is skipped when they arrive already talking');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('holds on the first turn that asks something, not the first turn',
+      (tester) async {
+    // The story freeze, which ships off — this test is what it does when on.
+    AppConfig.requireInteractionToContinue = true;
+    // Hercules opens "Well, hello there." and does not ask anything until his
+    // fourth turn. Holding on turn 1 would freeze the screen on a greeting —
+    // a gate is an unanswered question, and there was no question.
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: 'Hercules (Son of Zeus)',
+            characterId: 'hercules',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    // Two virtual minutes: far past his whole 90-second script.
+    var elapsed = 0;
+    while (elapsed < 120000) {
+      await tester.pump(const Duration(milliseconds: 50));
+      elapsed += 50;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final said = (prefs.getStringList('chat_history_Hercules (Son of Zeus)') ??
+            const [])
+        .map((s) => jsonDecode(s) as Map<String, dynamic>)
+        .where((m) => m['isUser'] != true && m['isSystem'] != true)
+        .map((m) => m['text'] as String)
+        .toList();
+
+    expect(said.first, 'Well, hello there.');
+    expect(said.last, 'What usually makes a man interesting to you?',
+        reason: 'he must stop on the question, not before it and not after');
+    expect(said, isNot(contains('Hmm.')),
+        reason: 'turn 5 is past the gate and must never arrive unanswered');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('does not come up for a returning conversation', (tester) async {
+    // Someone who has already spoken here has demonstrably entered. Asking
+    // again would gate a conversation they are in the middle of, and would put
+    // a second entry_shown against a visitor into the release's denominator.
+    SharedPreferences.setMockInitialValues({
+      _historyKey: [
+        jsonEncode({
+          'id': 'seed_1',
+          'text': 'Tell me about Ithaca.',
+          'isUser': true,
+          'timestamp': DateTime.now().toIso8601String(),
+        }),
+      ],
+    });
+    await _mountChat(tester, enterChat: false);
+
+    expect(find.text(_enterButton), findsNothing);
+
+    await _teardown(tester);
+  });
+
+  testWidgets('is not raised for a link that carries its own question',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: _scenario,
+            characterId: 'odysseus',
+            initialMessage: 'What happened when you reached Ithaca?',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.text(_enterButton), findsNothing,
+        reason: 'an opener link must not be gated behind a tap');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('off switch restores the ungated open', (tester) async {
+    AppConfig.requireTapToEnter = false;
+    await _mountChat(tester, enterChat: false);
+
+    expect(find.text(_enterButton), findsNothing);
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+    expect(await _delivered(), contains(_p01Question),
+        reason: 'with the switch off the opening plays on arrival, as in 1.7.0');
 
     await _teardown(tester);
   });

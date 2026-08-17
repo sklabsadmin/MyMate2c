@@ -154,6 +154,35 @@ export const CHARACTER_STARTERS = {
         "What's the biggest wave you've taken?",
         "How are you always this calm?",
         "Is it bad that I can't sit still?"
+    ],
+    "hercules": [
+        "What was it really like having Zeus as your father?",
+        "What's the story with you and Queen Omphale?",
+        "Did you ever meet a woman you couldn't charm?",
+        "He makes me laugh.",
+        "He's confident, but kind.",
+        "He actually listens.",
+        "The charm, obviously.",
+        "Getting into trouble.",
+        "I'm still deciding about you.",
+        "More times than I'd like.",
+        "Yes, and I hate it.",
+        "What did Hera do to you?",
+        "Making me laugh.",
+        "Kindness.",
+        "The way they make me feel.",
+        "I think I could manage you.",
+        "Depends how well you behave.",
+        "I'm more interested in Omphale.",
+        "Not to worry so much.",
+        "To trust myself.",
+        "That's a long story.",
+        "Starting over.",
+        "Losing something important.",
+        "I surprised myself.",
+        "Alright. Ask me something.",
+        "Tell me about Omphale first.",
+        "I have a story for you."
     ]
 };
 
@@ -215,6 +244,11 @@ export const CHARACTER_ASKS = {
         "What's the biggest wave you've taken?",
         "How are you always this calm?",
         "Is it bad that I can't sit still?"
+    ],
+    "hercules": [
+        "What was it really like having Zeus as your father?",
+        "What's the story with you and Queen Omphale?",
+        "Did you ever meet a woman you couldn't charm?"
     ]
 };
 
@@ -381,6 +415,173 @@ export const CHARACTER_QUICK_REPLY_SETS = {
             "What should I ask you that nobody ever does?",
             "What are you curious about in my life?",
             "Where would you take me if we set sail tomorrow?"
+        ]
+    ],
+    "hercules": [
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "He makes me laugh.",
+            "He's confident, but kind.",
+            "He actually listens."
+        ],
+        [
+            "The charm, obviously.",
+            "Getting into trouble.",
+            "I'm still deciding about you."
+        ],
+        [
+            "The charm, obviously.",
+            "Getting into trouble.",
+            "I'm still deciding about you."
+        ],
+        [
+            "The charm, obviously.",
+            "Getting into trouble.",
+            "I'm still deciding about you."
+        ],
+        [
+            "The charm, obviously.",
+            "Getting into trouble.",
+            "I'm still deciding about you."
+        ],
+        [
+            "More times than I'd like.",
+            "Yes, and I hate it.",
+            "What did Hera do to you?"
+        ],
+        [
+            "More times than I'd like.",
+            "Yes, and I hate it.",
+            "What did Hera do to you?"
+        ],
+        [
+            "More times than I'd like.",
+            "Yes, and I hate it.",
+            "What did Hera do to you?"
+        ],
+        [
+            "More times than I'd like.",
+            "Yes, and I hate it.",
+            "What did Hera do to you?"
+        ],
+        [
+            "Making me laugh.",
+            "Kindness.",
+            "The way they make me feel."
+        ],
+        [
+            "Making me laugh.",
+            "Kindness.",
+            "The way they make me feel."
+        ],
+        [
+            "Making me laugh.",
+            "Kindness.",
+            "The way they make me feel."
+        ],
+        [
+            "Making me laugh.",
+            "Kindness.",
+            "The way they make me feel."
+        ],
+        [
+            "I think I could manage you.",
+            "Depends how well you behave.",
+            "I'm more interested in Omphale."
+        ],
+        [
+            "I think I could manage you.",
+            "Depends how well you behave.",
+            "I'm more interested in Omphale."
+        ],
+        [
+            "I think I could manage you.",
+            "Depends how well you behave.",
+            "I'm more interested in Omphale."
+        ],
+        [
+            "I think I could manage you.",
+            "Depends how well you behave.",
+            "I'm more interested in Omphale."
+        ],
+        [
+            "I think I could manage you.",
+            "Depends how well you behave.",
+            "I'm more interested in Omphale."
+        ],
+        [
+            "Not to worry so much.",
+            "To trust myself.",
+            "That's a long story."
+        ],
+        [
+            "Not to worry so much.",
+            "To trust myself.",
+            "That's a long story."
+        ],
+        [
+            "Not to worry so much.",
+            "To trust myself.",
+            "That's a long story."
+        ],
+        [
+            "Not to worry so much.",
+            "To trust myself.",
+            "That's a long story."
+        ],
+        [
+            "Not to worry so much.",
+            "To trust myself.",
+            "That's a long story."
+        ],
+        [
+            "Starting over.",
+            "Losing something important.",
+            "I surprised myself."
+        ],
+        [
+            "Starting over.",
+            "Losing something important.",
+            "I surprised myself."
+        ],
+        [
+            "Starting over.",
+            "Losing something important.",
+            "I surprised myself."
+        ],
+        [
+            "Alright. Ask me something.",
+            "Tell me about Omphale first.",
+            "I have a story for you."
         ]
     ]
 };

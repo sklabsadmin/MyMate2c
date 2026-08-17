@@ -18,6 +18,7 @@ import '../../../core/services/delivery_log.dart';
 import '../../../core/presentation/seen_detector.dart';
 import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
+import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
@@ -149,6 +150,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// event with `durationMs` from arrival (web/index.html), which already
   /// counts the paint this is trying to account for.
   bool _gateShownLogged = false;
+
+  /// The entry gate: a card over the chat with one button, which has to be
+  /// tapped before the character says anything at all.
+  ///
+  /// Where the story freeze asks "will you answer him", this asks the shorter
+  /// question underneath it — "will you tap anything" — and asks it of a
+  /// visitor who has not had to read a word first. The two nest: entry_tap is
+  /// the low bar, gate_choice the high one, and the gap between them is how
+  /// much of the drop-off is the writing rather than the willingness.
+  ///
+  /// While it is up the opening does not play. That is deliberate and is half
+  /// the point: 14,067 scripted lines were declared to the delivery log in the
+  /// 30 days to 2026-08-17 and 1,301 were ever drawn, because the character
+  /// talks to whoever is not there. Nothing is declared now until someone has
+  /// said they are watching.
+  bool _entryGateActive = false;
+
+  /// The character's title — the parenthetical half of the scenario string, so
+  /// "Odysseus (King of Ithaca)" gives "King of Ithaca".
+  ///
+  /// Null for a scenario written without one, in which case the entry card
+  /// shows the name alone rather than an empty line.
+  String? get _characterTitle {
+    final scenario = widget.scenario;
+    if (scenario == null) return null;
+    final open = scenario.indexOf(' (');
+    final close = scenario.lastIndexOf(')');
+    if (open < 0 || close <= open + 2) return null;
+    return scenario.substring(open + 2, close);
+  }
 
   /// Whether the message box currently holds anything, tracked so the send
   /// button can look disabled when there is nothing to send and light up when
@@ -685,6 +716,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// arithmetic as much as the experience: 8 of the 56 first messages in the 30
   /// days to 2026-08-17 were auto-sent like this, and counting them would
   /// credit the gate with taps that no hand made.
+  /// Puts the entry card up, or reports that it was skipped.
+  ///
+  /// Returns true if the caller must hold the opening back. The welcome
+  /// sequence is the caller's to start precisely because of this: a script that
+  /// began here would be declaring bubbles to the delivery log behind a card
+  /// nobody has moved yet.
+  bool _raiseEntryGate() {
+    if (!AppConfig.requireTapToEnter) return false;
+    if (_userHasSent) return false;
+    // Same exclusion as the story freeze: an opener link carries the visitor's
+    // question and sends it for them, so a card demanding a tap first would
+    // stand between them and the answer they followed the link for.
+    if ((widget.initialMessage ?? '').trim().isNotEmpty) return false;
+    setState(() => _entryGateActive = true);
+    // The denominator for the low bar. Its duration_ms is time from arrival, so
+    // this row also says how quickly the one tappable thing on the screen got
+    // there — the number that decides whether a rate means anything on traffic
+    // half of which is gone by 3s.
+    logFunnelEvent(
+      'entry_shown',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
+    return true;
+  }
+
+  /// The visitor came in. Starts everything the card was holding.
+  ///
+  /// [source] is how they entered — 'button' for the card's own button,
+  /// 'profile' for someone who opened the profile and picked a question from
+  /// it. Both are entries and both belong in the numerator; which route they
+  /// took is worth knowing separately, because one of them means the profile
+  /// did the persuading.
+  ///
+  /// [startOpening] is false when the visitor arrives already having said
+  /// something. Playing the scripted opening underneath their own question
+  /// would have the character introduce himself after being asked something
+  /// specific, and would declare a turn's worth of bubbles to the delivery log
+  /// that the send is about to abandon anyway.
+  void _enterChat({String source = 'button', bool startOpening = true}) {
+    if (!_entryGateActive) return;
+    setState(() => _entryGateActive = false);
+    logFunnelEvent(
+      'entry_tap',
+      detail: '${widget.characterId}#$source',
+      appUserId: _appUserId,
+    );
+    if (!startOpening) return;
+    // Only now does the character have an audience, so only now is anything
+    // declared to the delivery log or spoken.
+    _raiseGate();
+    _triggerWelcomeSequence();
+  }
+
   void _raiseGate() {
     if (!AppConfig.requireInteractionToContinue) return;
     if (_gateActive || _userHasSent) return;
@@ -828,16 +913,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
       // Welcome Sequence (Only if history is TRULY empty)
       if (history.isEmpty) {
-        // Before the sequence, not after it: the prompts are static content
-        // and there is no reason to withhold them behind a paced greeting.
-        // Calypso's first turn alone lands its last bubble ~2.6s in ("Hello."
-        // clamps to 900ms, "I'm genuinely glad you came." earns 1700ms), on top
-        // of a ~2s median paint for QR traffic — and half that cohort is gone by
-        // 3s. Raising the gate here is what puts something tappable on screen
-        // inside the window where anyone is still watching. The story still
-        // waits; only the offer is early.
-        _raiseGate();
-        _triggerWelcomeSequence();
+        // The entry card comes first and holds everything else back until it
+        // is tapped; _enterChat starts the two lines below itself.
+        if (!_raiseEntryGate()) {
+          // Before the sequence, not after it: the prompts are static content
+          // and there is no reason to withhold them behind a paced greeting.
+          // Calypso's first turn alone lands its last bubble ~2.6s in ("Hello."
+          // clamps to 900ms, "I'm genuinely glad you came." earns 1700ms), on
+          // top of a ~2s median paint for QR traffic — and half that cohort is
+          // gone by 3s. Raising the gate here is what puts something tappable
+          // on screen inside the window where anyone is still watching. The
+          // story still waits; only the offer is early.
+          _raiseGate();
+          _triggerWelcomeSequence();
+        }
       }
     } catch (e) {
       // Corrupt history or error -> Reset and start fresh
@@ -848,8 +937,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           scenario: widget.scenario,
           characterId: widget.characterId,
         );
-        _raiseGate();
-        _triggerWelcomeSequence();
+        if (!_raiseEntryGate()) {
+          _raiseGate();
+          _triggerWelcomeSequence();
+        }
       }
     }
   }
@@ -1263,6 +1354,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   ) {
     if (characterId == 'calypso') return _calypsoOpeningScript;
     if (characterId == 'odysseus') return _odysseusOpeningScript;
+    if (characterId == 'hercules') return _herculesOpeningScript;
     return null;
   }
 
@@ -1855,6 +1947,398 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     ],
   ];
 
+  /// Hercules's scripted opening — "Hercules - 90+ Second Chat Start v1".
+  ///
+  /// Thirty-three turns, the longest script here. Its own brief is that the
+  /// mythology is about gods, family, women, reputation and life experience
+  /// rather than monsters, and that the strength is the least interesting thing
+  /// about him — which is why the Labors do not arrive until turn 29.
+  ///
+  /// IMPORTANT, and the reason most of this is currently unreachable: with
+  /// AppConfig.requireInteractionToContinue on, the script stops at its first
+  /// question (turn 4) and never resumes — answering it abandons the rest and
+  /// hands the conversation to the model. Turns 5-33 only ever play with that
+  /// switch off. They are written in full so the script is intact and correct
+  /// for that case, and so the decision about which design wins is a config
+  /// change rather than a rewrite.
+  static const List<({List<String> lines, int pauseMs})>
+      _herculesOpeningScript = [
+    // 1
+    (pauseMs: 500, lines: ['Well, hello there.']),
+    // 2
+    (
+      pauseMs: 1500,
+      lines: ["I'm Hercules.", 'Yes... that Hercules.'],
+    ),
+    // 3
+    (
+      pauseMs: 1000,
+      lines: [
+        'You probably know about the strength.',
+        'Everyone knows about the strength.',
+        "Personally, I think it's the least interesting thing about me.",
+      ],
+    ),
+    // 4 — first question, and where the interaction gate holds.
+    (
+      pauseMs: 4000,
+      lines: [
+        "I'm much more curious about you.",
+        'Tell me...',
+        'What usually makes a man interesting to you?',
+      ],
+    ),
+    // 5
+    (
+      pauseMs: 1500,
+      lines: [
+        'Hmm.',
+        "You're going to make me work for this conversation, aren't you?",
+        'I like that.',
+      ],
+    ),
+    // 6
+    (
+      pauseMs: 1500,
+      lines: [
+        'Alright.',
+        "I'll tell you something about myself first.",
+        'My father was Zeus.',
+      ],
+    ),
+    // 7
+    (
+      pauseMs: 1500,
+      lines: [
+        'That sounds impressive until you know my family.',
+        'Zeus was powerful. Charming. Impossible to ignore.',
+        'And absolutely terrible at keeping his personal life uncomplicated.',
+      ],
+    ),
+    // 8
+    (
+      pauseMs: 4000,
+      lines: [
+        'Unfortunately...',
+        'I may have inherited more than his strength.',
+        'Which quality do you think I inherited?',
+      ],
+    ),
+    // 9
+    (
+      pauseMs: 1500,
+      lines: [
+        '"Still deciding."',
+        "That's probably the sensible answer.",
+        'People have been deciding what they think of me for thousands of '
+            'years.',
+      ],
+    ),
+    // 10
+    (
+      pauseMs: 1500,
+      lines: [
+        "Of course, being Zeus's son came with one rather significant "
+            'complication.',
+        'Hera.',
+        "My father's wife.",
+        'And no... she was not pleased about me.',
+      ],
+    ),
+    // 11
+    (
+      pauseMs: 1500,
+      lines: [
+        'I spent much of my youth wondering how someone who barely knew me '
+            'could dislike me so completely.',
+        'Eventually I understood.',
+        "She wasn't really looking at me.",
+        'She was looking at what I represented.',
+      ],
+    ),
+    // 12
+    (
+      pauseMs: 4000,
+      lines: [
+        "People still do that, don't they?",
+        "They decide who you are before they've taken the trouble to know you.",
+        'Has that ever happened to you?',
+      ],
+    ),
+    // 13
+    (
+      pauseMs: 1500,
+      lines: [
+        "Perhaps that's why I've become careful about first impressions.",
+        'Although... not too careful.',
+        'I still enjoy a good first impression.',
+      ],
+    ),
+    // 14
+    (
+      pauseMs: 1500,
+      lines: [
+        'And before you ask - yes, there were women in my life.',
+        'Quite a few stories have survived about that.',
+        'Some accurate.',
+        'Some... enthusiastically improved by poets.',
+      ],
+    ),
+    // 15
+    (
+      pauseMs: 1500,
+      lines: [
+        "But the older I've become, the less interested I am in who was "
+            'beautiful.',
+        "Beauty gets someone's attention.",
+        "It doesn't necessarily keep it.",
+      ],
+    ),
+    // 16
+    (
+      pauseMs: 4000,
+      lines: [
+        'Humor can.',
+        'Kindness can.',
+        'Confidence certainly can.',
+        "And there's something very attractive about a woman who has lived "
+            'enough life to know who she is.',
+        'What makes someone unforgettable to you?',
+      ],
+    ),
+    // 17
+    (
+      pauseMs: 1500,
+      lines: [
+        'For me?',
+        'Someone who surprises me.',
+        'Queen Omphale certainly did.',
+        'Now there was a woman.',
+      ],
+    ),
+    // 18
+    (
+      pauseMs: 1500,
+      lines: [
+        'Imagine Hercules...',
+        'the strongest man in Greece...',
+        'taking orders from a queen.',
+        'People assume I must have hated it.',
+        "I didn't.",
+      ],
+    ),
+    // 19
+    (
+      pauseMs: 1500,
+      lines: [
+        'Omphale was confident. Clever. Completely unimpressed by my '
+            'reputation.',
+        'Do you have any idea how refreshing that was?',
+        'Everyone else saw Hercules.',
+        'She had absolutely no difficulty telling Hercules when he was being '
+            'an idiot.',
+        'Which, apparently, was reasonably often.',
+      ],
+    ),
+    // 20
+    (
+      pauseMs: 4000,
+      lines: ['Could you handle a man with a reputation like mine?'],
+    ),
+    // 21
+    (
+      pauseMs: 1500,
+      lines: ['Careful.', 'I might actually enjoy being kept in line.'],
+    ),
+    // 22
+    (
+      pauseMs: 1500,
+      lines: [
+        'But Omphale taught me something important.',
+        "Strength isn't always being the person in control.",
+        'Sometimes strength is being comfortable enough with yourself that you '
+            "don't need to be.",
+      ],
+    ),
+    // 23
+    (
+      pauseMs: 1500,
+      lines: [
+        'It took me an embarrassingly long time to learn that.',
+        "I've learned quite a few things embarrassingly late.",
+        "Perhaps that's the advantage of surviving your mistakes.",
+        'Eventually they become wisdom.',
+        'Or at least... good stories.',
+      ],
+    ),
+    // 24
+    (
+      pauseMs: 1500,
+      lines: [
+        "And I've told you enough about me.",
+        'I want to know something about you.',
+        'Not where you live.',
+        'Not what you do.',
+        'Something more interesting.',
+      ],
+    ),
+    // 25
+    (
+      pauseMs: 4000,
+      lines: [
+        "What's something life taught you that you wish you'd known twenty "
+            'years earlier?',
+      ],
+    ),
+    // 26
+    (
+      pauseMs: 1500,
+      lines: [
+        '"That\'s a long story."',
+        'Those are usually the ones worth hearing.',
+      ],
+    ),
+    // 27
+    (
+      pauseMs: 1500,
+      lines: [
+        'You know what people misunderstand about strength?',
+        "They think it's about what you can lift.",
+        'What you can defeat.',
+        'How much punishment you can take.',
+        "I've done enough of all three.",
+        "That's not strength.",
+      ],
+    ),
+    // 28
+    (
+      pauseMs: 1500,
+      lines: [
+        "Strength is what happens after life doesn't go according to plan.",
+        'After someone disappoints you.',
+        'After you disappoint yourself.',
+        'After something ends that you were certain would last.',
+        'And somehow... you begin again.',
+      ],
+    ),
+    // 29
+    (
+      pauseMs: 1500,
+      lines: [
+        'Everyone knows my Twelve Labors.',
+        "But everyone I've ever met has had labors of their own.",
+        'Most simply never had poets following them around to write about it.',
+      ],
+    ),
+    // 30
+    (
+      pauseMs: 4000,
+      lines: [
+        "So now I'm genuinely curious.",
+        "What's something you've come through that made you stronger than you "
+            'were before?',
+      ],
+    ),
+    // 31
+    (
+      pauseMs: 1500,
+      lines: [
+        "You don't have to answer immediately.",
+        "I'm enjoying your company either way.",
+      ],
+    ),
+    // 32
+    (
+      pauseMs: 1500,
+      lines: [
+        'Besides...',
+        "I've talked enough.",
+        'And between us?',
+        "I've heard all of my stories before.",
+      ],
+    ),
+    // 33
+    (
+      pauseMs: 4000,
+      lines: [
+        'Yours are new to me.',
+        "And that's much more interesting.",
+      ],
+    ),
+  ];
+
+  /// Hercules's quick replies, one entry per turn of his script because
+  /// [_setQuickReplyIndex] indexes this by turn number.
+  ///
+  /// His document specifies a set at nine of the thirty-three turns, so each is
+  /// named once below and repeated until the next one is specified — the strip
+  /// holds the last thing offered rather than emptying between questions.
+  /// [_setQuickReplyIndex] compares the resolved prompts, so a repeat does not
+  /// report itself as a new offer.
+  static const List<String> _hercSetOpening = [
+    'He makes me laugh.',
+    "He's confident, but kind.",
+    'He actually listens.',
+  ];
+  static const List<String> _hercSetInherited = [
+    'The charm, obviously.',
+    'Getting into trouble.',
+    "I'm still deciding about you.",
+  ];
+  static const List<String> _hercSetJudged = [
+    "More times than I'd like.",
+    'Yes, and I hate it.',
+    'What did Hera do to you?',
+  ];
+  static const List<String> _hercSetUnforgettable = [
+    'Making me laugh.',
+    'Kindness.',
+    'The way they make me feel.',
+  ];
+  static const List<String> _hercSetReputation = [
+    'I think I could manage you.',
+    'Depends how well you behave.',
+    "I'm more interested in Omphale.",
+  ];
+  static const List<String> _hercSetLesson = [
+    'Not to worry so much.',
+    'To trust myself.',
+    "That's a long story.",
+  ];
+  static const List<String> _hercSetStronger = [
+    'Starting over.',
+    'Losing something important.',
+    'I surprised myself.',
+  ];
+  static const List<String> _hercSetHandover = [
+    'Alright. Ask me something.',
+    'Tell me about Omphale first.',
+    'I have a story for you.',
+  ];
+
+  static const List<List<String>> _herculesQuickReplies = [
+    // 1-7: his opening set, respecified at turn 4 with the same three answers.
+    _hercSetOpening, _hercSetOpening, _hercSetOpening, _hercSetOpening,
+    _hercSetOpening, _hercSetOpening, _hercSetOpening,
+    // 8-11
+    _hercSetInherited, _hercSetInherited, _hercSetInherited, _hercSetInherited,
+    // 12-15
+    _hercSetJudged, _hercSetJudged, _hercSetJudged, _hercSetJudged,
+    // 16-19
+    _hercSetUnforgettable, _hercSetUnforgettable, _hercSetUnforgettable,
+    _hercSetUnforgettable,
+    // 20-24
+    _hercSetReputation, _hercSetReputation, _hercSetReputation,
+    _hercSetReputation, _hercSetReputation,
+    // 25-29
+    _hercSetLesson, _hercSetLesson, _hercSetLesson, _hercSetLesson,
+    _hercSetLesson,
+    // 30-32
+    _hercSetStronger, _hercSetStronger, _hercSetStronger,
+    // 33
+    _hercSetHandover,
+  ];
+
   /// The pause-point quick replies for [characterId], or null for a character
   /// that has none and therefore keeps the old fixed starter strip.
   ///
@@ -1868,6 +2352,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   static List<List<String>>? _quickRepliesFor(String? characterId) {
     if (characterId == 'calypso') return _calypsoQuickReplies;
     if (characterId == 'odysseus') return _odysseusQuickReplies;
+    if (characterId == 'hercules') return _herculesQuickReplies;
     return null;
   }
 
@@ -1929,6 +2414,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     if (next == _quickReplyIndex) return;
+    // The index moved but the offer did not. Hercules's script specifies a set
+    // at nine of its thirty-three turns and holds each one until the next, so
+    // most of his turns land here — and an unchanged strip is not a new offer,
+    // which is what the note below says this event is for. Without this, his
+    // funnel would carry two dozen strip_rotate rows per visit describing
+    // rotations that never happened.
+    //
+    // Ahead of the assignment, so _quickReplyIndex keeps pointing at the set
+    // actually on screen rather than at an equal one further along.
+    if (listEquals(sets[next], _quickReplies)) return;
     setState(() => _quickReplyIndex = next);
 
     // Funnel: the strip now offers a different set.
@@ -1962,6 +2457,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// [OpenAIService.recordAssistantTurn]. Only delivered lines: the point of
   /// stopping the script is that the rest was never said, and telling the model
   /// otherwise would have it answer a question the visitor never saw.
+  /// The turn the interaction gate holds on: the first one that ends by asking
+  /// something.
+  ///
+  /// Not simply turn 1. A gate is a question left unanswered, and holding on a
+  /// turn that asks nothing gives the visitor a dead screen and gives us a
+  /// refusal that was never actually solicited. Odysseus asks in his first turn
+  /// ("What have you heard?") so nothing changes for him; Calypso asks in her
+  /// second; Hercules opens with "Well, hello there." and does not ask until
+  /// his fourth.
+  ///
+  /// Derived from the script rather than configured per character, so it cannot
+  /// drift when a script is edited — the same reason [_setStandsAlone] tests
+  /// for a question mark instead of carrying a list.
+  ///
+  /// Falls back to the first turn for a script that never asks anything, which
+  /// keeps the gate closed rather than letting the whole script play.
+  static int _gateHoldTurn(List<({List<String> lines, int pauseMs})> script) {
+    for (var i = 0; i < script.length; i++) {
+      if (script[i].lines.last.trimRight().endsWith('?')) return i;
+    }
+    return 0;
+  }
+
   Future<void> _playOpeningScript(
     List<({List<String> lines, int pauseMs})> script,
     int run,
@@ -2070,7 +2588,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         }
         if (lastLine && lastSegment) return;
 
-        // The gate. One turn, then she stops and waits to be answered.
+        // The gate. The character asks something, then stops and waits to be
+        // answered.
         //
         // Returning here rather than setting _welcomeAbandoned: abandoned means
         // the visitor took the turn and the rest is dropped, which is what a tap
@@ -2080,8 +2599,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         //
         // The frontier and the strip were both moved by the block above, which
         // also flushed the turn — so the questions on offer are the ones
-        // written for this pause, and the model already has what she said.
-        if (lastLine && _gateActive) return;
+        // written for this pause, and the model already has what he said.
+        if (lastLine && _gateActive && s >= _gateHoldTurn(script)) return;
 
         // A segment boundary is a longer breath: she stopped and started
         // again rather than carrying on. How much longer is the script's own
@@ -2369,6 +2888,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final profile = profileForCharacter(widget.characterId);
     if (profile == null || widget.characterImage == null) return;
 
+    // Funnel: the profile was opened. Logged here rather than at either tap
+    // site, so the header and the entry card cannot drift apart — and after
+    // the early return above, so it counts screens actually shown rather than
+    // taps on a header that is inert for a character with no profile written.
+    //
+    // Worth its own event because it is engagement that leaves no other trace:
+    // reading a profile is not a message, not a starter tap and not a
+    // keystroke, so until now someone who opened it, read it and left was
+    // indistinguishable in the funnel from someone who stared at the chat and
+    // did nothing.
+    logFunnelEvent(
+      'profile_view',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
+
     // "Zeus (Olympian King)" → name and title, matching the card's layout.
     final raw = widget.scenario ?? '';
     final match = RegExp(r'^(.*?)\s*\((.*)\)$').firstMatch(raw);
@@ -2396,6 +2931,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     await _reloadIfHistoryCleared();
 
     if (question == null || !mounted) return;
+    // They read the profile and chose what to ask, which is a stronger entry
+    // than the button asks for. The card comes down rather than reappearing
+    // between them and the answer — being sent back to "Tap to Talk" after
+    // committing to a question would read as the app losing their choice.
+    //
+    // The opening is skipped deliberately: their question is the start of this
+    // conversation, and a scripted introduction arriving underneath it would
+    // have the character introduce himself to someone who has already asked
+    // him something specific.
+    if (_entryGateActive) {
+      _enterChat(source: 'profile', startOpening: false);
+    }
     _textController.text = question;
     _handleSend();
   }
@@ -2447,7 +2994,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
 
     await _loadReplyCount();
-    if (mounted) _triggerWelcomeSequence();
+    if (mounted) _restartFromEntry();
+  }
+
+  /// Puts a just-cleared conversation back to the state a first-time arrival
+  /// gets — which now begins before the tap, not after it.
+  ///
+  /// Shared by both clears, the header's "Fresh conversation" and the profile
+  /// screen's, because they are one event seen from two places and had already
+  /// drifted into two copies of the same reset.
+  ///
+  /// Replaying the opening straight into the chat would stage exactly what this
+  /// release exists to prevent: the character talking to a screen nobody has
+  /// entered, declaring bubbles to the delivery log as it goes.
+  ///
+  /// The repeat costs the funnel nothing. Its steps count DISTINCT visit_id, so
+  /// a second entry_shown inside one visit cannot inflate the denominator, and
+  /// _gateShownLogged still holds the story gate's event to one per screen.
+  void _restartFromEntry() {
+    if (!_raiseEntryGate()) {
+      _raiseGate();
+      _triggerWelcomeSequence();
+    }
   }
 
   /// The header's context menu: right-click on desktop and web, long-press on
@@ -2514,7 +3082,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
 
     await _loadReplyCount();
-    if (mounted) _triggerWelcomeSequence();
+    if (mounted) _restartFromEntry();
   }
 
   void _cancelIdleTimer() {
@@ -3213,7 +3781,253 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               _buildInputArea(theme),
             ],
           ),
+          // The entry gate, over everything in the body.
+          //
+          // Deliberately inside the body Stack rather than over the whole
+          // Scaffold, so the app bar stays live: the back arrow and the
+          // character's name have to keep working. Someone who decides not to
+          // come in must be able to leave in the ordinary way — a card they
+          // cannot escape would turn a measurement into a trap, and "left
+          // rather than tap" is a result we want recorded, not prevented.
+          if (_entryGateActive) _buildEntryGate(theme),
         ],
+      ),
+    );
+  }
+
+  /// The card that has to be tapped before the conversation starts.
+  ///
+  /// Everything here is static — no image to fetch, no history to wait on, no
+  /// paced beat — so it is on screen the moment Flutter paints. That is the
+  /// whole design constraint: for the QR traffic that is two thirds of arrivals
+  /// the app paints at a ~2s median and half are gone by 3s, so anything the
+  /// visitor has to wait for is not something they declined, it is something
+  /// they never saw.
+  Widget _buildEntryGate(ThemeData theme) {
+    final title = _characterTitle;
+    final tagline = characterById(widget.characterId)?['tagline'] as String?;
+    // Exactly the condition _openProfile bails on, so the hint is never shown
+    // for a tap that would do nothing.
+    final hasProfile = profileForCharacter(widget.characterId) != null &&
+        widget.characterImage != null;
+    return Positioned.fill(
+      // Opaque, and every stop of it. This gradient is copied from the chat
+      // background below, where a translucent middle stop is free because
+      // there is nothing behind it — over the chat it is not: at 0.25 the
+      // quick-reply strip, a starter row and the message box all read straight
+      // through the card, so the "one button" screen arrived with four other
+      // tappable-looking things on it and did not read as a new screen at all.
+      //
+      // alphaBlend rather than a hand-picked hex so the tone still follows
+      // theme.primaryColor, composited onto the black it would have been
+      // sitting on anyway.
+      child: Container(
+        key: _entryGateKey,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF2E003E),
+              Color.alphaBlend(
+                theme.primaryColor.withOpacity(0.25),
+                Colors.black,
+              ),
+              Colors.black,
+            ],
+          ),
+        ),
+        child: SafeArea(
+          // Identity at the top, button at the bottom, gap between — rather
+          // than one centred stack.
+          //
+          // Still inside a scroll view, and that is the part worth keeping:
+          // the button is pinned to the bottom of the CONTENT, not to the
+          // viewport, so on a short screen (an older phone, or a browser with
+          // a fat in-app toolbar) it goes on being reachable by scrolling
+          // instead of being pushed off the edge. minHeight is what makes it
+          // sit at the bottom when there is room to spare, and yield when
+          // there is not.
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              // The top inset clears the app bar, which this body extends
+              // behind (extendBodyBehindAppBar). Centred content never needed
+              // it; top-aligned content slides under the header without it.
+              padding: const EdgeInsets.fromLTRB(
+                32,
+                kToolbarHeight + 24,
+                32,
+                28,
+              ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight - (kToolbarHeight + 52),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                  // Portrait, name, title and tagline are one tap target, not
+                  // four. They read as a single block, so a visitor who tries
+                  // the name after the photo did nothing would conclude the
+                  // whole thing is inert — and the hint below promises both.
+                  //
+                  // Inert, with no hint shown, for a character who has no
+                  // profile written: _openProfile returns early in that case,
+                  // and advertising a tap that does nothing is worse than not
+                  // advertising it.
+                  GestureDetector(
+                    onTap: hasProfile ? _openProfile : null,
+                    behavior: HitTestBehavior.opaque,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.characterImage != null)
+                          Container(
+                            // 190, up from 132. It is the only image on the
+                            // first screen anyone sees, and at 132 it read as
+                            // an avatar next to the name rather than as the
+                            // portrait the screen is built around.
+                            width: 190,
+                            height: 190,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: theme.colorScheme.secondary
+                                    .withOpacity(0.6),
+                                width: 2,
+                              ),
+                              image: DecorationImage(
+                                image: AssetImage(widget.characterImage!),
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 24),
+                        Text(
+                          _characterDisplayName,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.outfit(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 30,
+                          ),
+                        ),
+                        if (title != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            title,
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.outfit(
+                              color: Colors.white.withOpacity(0.65),
+                              fontSize: 17,
+                            ),
+                          ),
+                        ],
+                        if (tagline != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            tagline,
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.outfit(
+                              color: Colors.white.withOpacity(0.55),
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                        if (hasProfile) ...[
+                          const SizedBox(height: 12),
+                          // The hint. Says which things are tappable and what
+                          // arrives if you tap them, because "tap to learn
+                          // more" on a screen that already has a big button
+                          // saying "Tap to continue" would just compete with
+                          // it. The icon carries most of the work at a glance.
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.touch_app_outlined,
+                                size: 15,
+                                color: theme.colorScheme.secondary
+                                    .withOpacity(0.75),
+                              ),
+                              const SizedBox(width: 6),
+                              // Flexible, not bare. A Row sizes its children
+                              // to their natural width, so this line overflowed
+                              // the 390px reference phone by 252px — clipped
+                              // text in release, overflow stripes in debug.
+                              // Letting it wrap costs a second line on a narrow
+                              // screen and nothing on a wide one.
+                              Flexible(
+                                child: Text(
+                                  'Tap the photo or name for the full profile',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.outfit(
+                                    color: theme.colorScheme.secondary
+                                        .withOpacity(0.75),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  // Three children, so spaceBetween puts one at the top, one
+                  // in the middle and one at the foot. The invitation used to
+                  // travel with the button as a caption under it, which left
+                  // it stranded at the very bottom of the screen, a long way
+                  // under the profile hint it reads on from.
+                  //
+                  // An invitation rather than a label for the button. The line
+                  // this replaced ("to speak with the King of Ithaca") only
+                  // restated the title printed two rows above it, so it spent
+                  // the last line on the screen saying nothing new. This one
+                  // gives a reason to press.
+                  //
+                  // Sized close to the title above it rather than as fine
+                  // print. It is the only sentence on the card doing any
+                  // persuading, and at 14px against a 30px name it read as a
+                  // caption for the button — the opacity goes up with it,
+                  // because bigger but still faint is half a change.
+                  //
+                  // The break after "talk to you," is deliberate and hard,
+                  // not left to the wrap: it splits the sentence at its own
+                  // comma, so the two halves read as two thoughts rather than
+                  // wherever the phone's width happens to cut them.
+                  //
+                  // No gendered word left in it. Shortening the second half
+                  // dropped the "how he can help" clause, so this line is now
+                  // identical for every character on the roster — which is
+                  // why the per-character pronoun helper this used to call is
+                  // gone from characters.dart rather than sitting there
+                  // uncalled.
+                  Text(
+                    '$_characterDisplayName would like to talk to you,\n'
+                    'and understand your journey',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.outfit(
+                      color: Colors.white.withOpacity(0.75),
+                      fontSize: 17,
+                      height: 1.4,
+                    ),
+                  ),
+                  // Alone at the foot. The only thing on the screen that does
+                  // anything, and nothing rides along under it.
+                  //
+                  // Not full width: stretched to the card's gutters it read as
+                  // a banner, a thing the layout happened to end on, and a
+                  // button that is obviously a button beats a bigger one that
+                  // is not. Sized to its text instead, and pulsing, so it is
+                  // the only moving thing on an otherwise still screen.
+                  _PulsingEnterButton(onPressed: () => _enterChat()),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -3441,6 +4255,131 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _handleSend();
   }
 }
+
+/// The entry card's button: sized to its own text, and beating.
+///
+/// A separate widget rather than an AnimationController on the chat screen's
+/// state, which owns enough already and would have to carry a ticker for the
+/// life of every conversation to drive something that exists for a few seconds
+/// at the start of one.
+///
+/// The amplitude is deliberately past what a "tasteful" pulse would be. This is
+/// the whole release: on traffic where half of arrivals leave within 3s of a
+/// ~2s paint, a button that waits politely to be noticed has already lost. It
+/// swells and drops far enough to be caught in peripheral vision, which is the
+/// only kind of attention a visitor mid-scroll has to give it.
+class _PulsingEnterButton extends StatefulWidget {
+  final VoidCallback onPressed;
+
+  const _PulsingEnterButton({required this.onPressed});
+
+  @override
+  State<_PulsingEnterButton> createState() => _PulsingEnterButtonState();
+}
+
+class _PulsingEnterButtonState extends State<_PulsingEnterButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  /// Bottom and top of the beat. ±10% either side of resting size is roughly
+  /// four times the amplitude of [_PulsingHighlight]'s glow, which is the point
+  /// — that one decorates something already being looked at, this one has to
+  /// interrupt.
+  static const double _minScale = 0.90;
+  static const double _maxScale = 1.10;
+
+  /// One beat per 900ms. Slower reads as breathing and stops registering as a
+  /// request; much faster reads as a rendering fault.
+  static const Duration _period = Duration(milliseconds: 900);
+
+  /// Label colour on the gold button. See the note at its use site — this is a
+  /// contrast fix, not a preference.
+  static const Color _labelColor = Color(0xFF2E003E);
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: _period)
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = theme.colorScheme.secondary;
+
+    final button = ElevatedButton(
+      onPressed: widget.onPressed,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: accent,
+        // The app's own deep purple, not white. White on the gold accent
+        // (#FFD700) is about 1.4:1 — below every legibility threshold there
+        // is, which is why the label washed out into the button instead of
+        // standing on it. This is 12.8:1 against the same gold, and it is a
+        // colour already in the palette rather than a new one: it is the
+        // background this card's gradient starts from.
+        foregroundColor: _labelColor,
+        // Horizontal padding rather than a width: the label decides how wide
+        // this is, so a longer one in another language cannot clip.
+        padding: const EdgeInsets.symmetric(horizontal: 44, vertical: 18),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(999),
+        ),
+      ),
+      child: Text(
+        'Tap to Talk',
+        style: GoogleFonts.outfit(
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+
+    // Honour the platform's reduce-motion setting. A button pulsing 10% on a
+    // two-second cycle is exactly what that setting exists for, and someone who
+    // has asked for stillness should still get a button — just a still one.
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) return button;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      child: button,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return Transform.scale(
+          scale: _minScale + (_maxScale - _minScale) * t,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              // The glow swells with the scale rather than on its own beat, so
+              // the two read as one gesture instead of two things happening.
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withOpacity(0.20 + 0.45 * t),
+                  blurRadius: 12 + 26 * t,
+                  spreadRadius: 1 + 3 * t,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Identifies the entry card's backing container so a test can assert it is
+/// actually opaque. It shipped once with a translucent middle stop under a
+/// comment claiming otherwise, and no test could have caught it: a widget test
+/// searches the tree, where the chat is still present whether or not anything
+/// is painted over it.
+const Key _entryGateKey = ValueKey('entry_gate_surface');
 
 /// The strip of one-tap openers shown above the message box until the visitor
 /// has sent their first message.
