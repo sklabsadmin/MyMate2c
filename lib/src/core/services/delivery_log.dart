@@ -60,6 +60,7 @@ class _Receipt {
     this.attempts = 0,
     this.dirty = true,
     this.closed = false,
+    this.rev = 0,
   });
 
   final String bubbleId;
@@ -103,6 +104,19 @@ class _Receipt {
   /// every flush, or each new bubble would drag the whole conversation's history
   /// along with it.
   bool dirty;
+
+  /// Bumped every time this receipt learns something, so a flush can tell
+  /// whether the thing it sent is still the thing it holds.
+  ///
+  /// An ack is a statement about the receipt *as it was posted*, and the answer
+  /// takes a round trip during which the app carries on drawing bubbles. Without
+  /// this, a render or a sighting stamped mid-flight was marked delivered by the
+  /// ack for a payload that predated it, and — never dirty again — was never
+  /// sent. See the ack handling in [DeliveryLog.flush].
+  ///
+  /// Not persisted: a receipt read back from disk is dirty by definition, and
+  /// nothing is in flight for it.
+  int rev;
 
   /// Whether the screen that could still stamp this receipt has gone away.
   ///
@@ -259,6 +273,11 @@ class DeliveryLog {
   Timer? _retryTimer;
   bool _flushing = false;
   int _turnCounter = 0;
+
+  /// Hands out [_Receipt.rev] values. Monotonic across the whole queue rather
+  /// than per receipt, so that re-recording a bubble — which replaces the object
+  /// outright — cannot land on the same number the replaced one was sent under.
+  int _revCounter = 0;
 
   /// Tells apart two devices that began a turn in the same millisecond.
   ///
@@ -428,6 +447,7 @@ class DeliveryLog {
         textLen: text.length,
         failureReason: failureReason,
         intendedAt: now.toIso8601String(),
+        rev: ++_revCounter,
       );
       _afterChange();
     } catch (e) {
@@ -436,16 +456,41 @@ class DeliveryLog {
     return bubbleId;
   }
 
-  /// The bubble reached the widget tree.
-  void markRendered(String bubbleId) =>
-      _stamp(bubbleId, (r, now) => r.renderedAt ??= now);
+  /// The bubble was handed to the widget tree.
+  ///
+  /// Stamped when the message joins the list, which is a frame before it is
+  /// actually laid out and painted — so this is "the app committed to drawing
+  /// it", not "the pixels existed". The difference only shows up for a bubble
+  /// added and torn down within the same frame, and closing it means moving the
+  /// stamp into a post-frame callback, which would shift every rendered_at in
+  /// the series. Left alone deliberately; see
+  /// docs/delivery-seq0-hole-2026-08-17.md.
+  void markRendered(String bubbleId) => _stamp(bubbleId, (r, now) {
+        if (r.renderedAt != null) return false;
+        r.renderedAt = now;
+        return true;
+      });
 
   /// The bubble was genuinely on screen — see SeenDetector for what that
   /// requires.
-  void markSeen(String bubbleId) =>
-      _stamp(bubbleId, (r, now) => r.seenAt ??= now);
+  void markSeen(String bubbleId) => _stamp(bubbleId, (r, now) {
+        if (r.seenAt != null) return false;
+        r.seenAt = now;
+        return true;
+      });
 
-  void _stamp(String bubbleId, void Function(_Receipt, String) apply) {
+  /// Applies a stamp, and does the queue's bookkeeping only if it taught the
+  /// receipt something.
+  ///
+  /// [apply] returns whether it changed anything, and a false answer stops here.
+  /// The alternative — dirtying and re-sending on every call regardless — makes
+  /// a repeated stamp an unbounded loop: each one bumps [_Receipt.rev], and a
+  /// rev that no longer matches what was posted is precisely what makes the ack
+  /// resend rather than settle. Nothing in the app stamps twice today (each
+  /// bubble is added once, and SeenDetector reports once), so this is a brake on
+  /// a slope rather than a bug being fixed — but the slope ends in a receipt
+  /// posting forever, and it costs one boolean not to have it.
+  void _stamp(String bubbleId, bool Function(_Receipt, String) apply) {
     try {
       final receipt = _pending[bubbleId];
       // Absent means the bubble was seen and its record closed, or the queue
@@ -458,7 +503,7 @@ class DeliveryLog {
       // bubbles it describes are not drawn for another ten seconds.
       if (receipt == null) return;
       final now = DateTime.now();
-      apply(receipt, now.toIso8601String());
+      if (!apply(receipt, now.toIso8601String())) return;
       if (!receipt.dirty) {
         // Clean until this stamp: the clock measuring undelivered information
         // starts again now. Left running from intent, the seconds this bubble
@@ -467,6 +512,9 @@ class DeliveryLog {
         receipt.dirtyAtMs = now.millisecondsSinceEpoch;
       }
       receipt.dirty = true;
+      // Marks this receipt as no longer being what any flush already on the wire
+      // is carrying.
+      receipt.rev = ++_revCounter;
       _afterChange();
     } catch (e) {
       if (kDebugMode) debugPrint('DeliveryLog._stamp failed: $e');
@@ -586,12 +634,24 @@ class DeliveryLog {
     _flushTimer?.cancel();
     _retryTimer?.cancel();
 
+    // Hoisted so the catch below can count the attempt against the receipts this
+    // flush actually sent. It used to re-derive the list from the queue instead,
+    // which is the same set only if nothing changed in between — and a request
+    // that throws is exactly the case where the app kept drawing bubbles
+    // throughout. Empty until assigned, so a throw before that counts nothing,
+    // which is correct: nothing had been sent.
+    var batch = const <_Receipt>[];
+
     try {
-      final batch = _pending.values
+      batch = _pending.values
           .where((r) => r.dirty)
           .take(AppConfig.deliveryBatchMax)
           .toList(growable: false);
       if (batch.isEmpty) return;
+      // What each receipt held at the moment it was serialised. The ack that
+      // comes back describes exactly this, and nothing later — see the
+      // comparison against it below.
+      final sentRev = {for (final r in batch) r.bubbleId: r.rev};
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final droppedAtSend = _dropped;
 
@@ -669,6 +729,19 @@ class DeliveryLog {
         for (final id in acked) {
           final receipt = _pending[id];
           if (receipt == null) continue;
+          // Stamped since this batch left, so the ack is for an older version of
+          // it and the difference has not been stored. Leave it dirty: the
+          // _hasDirty check below sends it again straight away.
+          //
+          // This is the seq 0 hole. A welcome script declares every line at
+          // once and flushes 250ms later, over the session's first connection;
+          // its first bubble is drawn 300-1400ms in, which is inside that round
+          // trip almost every time, and its sighting 300ms after that. Both
+          // stamps were being answered by an ack that predated them, marked
+          // delivered, and never sent — so the opening bubble of nearly every
+          // session recorded intent and nothing more. Live, that read as the
+          // first bubble rendering 11 times against the second's 182.
+          if (receipt.rev != sentRev[id]) continue;
           if (receipt.canDiscard) {
             // Seen, or belonging to a screen that has gone: either way the
             // record is finished and nothing further can arrive for it.
@@ -718,9 +791,7 @@ class DeliveryLog {
     } catch (e) {
       // The case this table exists for: the request never arrived. Keep every
       // receipt and try again later.
-      for (final receipt in _pending.values
-          .where((r) => r.dirty)
-          .take(AppConfig.deliveryBatchMax)) {
+      for (final receipt in batch) {
         receipt.attempts++;
       }
       _persist();

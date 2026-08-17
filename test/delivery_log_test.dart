@@ -8,6 +8,7 @@
 // recorded, nothing after. A test that only checks the happy path would have
 // passed against all three bugs pinned down below.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -36,6 +37,15 @@ class _FakeAdapter implements HttpClientAdapter {
   /// worker does for any receipt carrying an id.
   List<String>? ackOnly;
 
+  /// Completed the instant a post reaches the adapter, so a test can act while
+  /// the request is genuinely on the wire rather than guessing at microtasks.
+  Completer<void>? reached;
+
+  /// Held open to keep that post in flight until the test lets it answer. The
+  /// window it opens is the one a real flush has every time: the worker's
+  /// answer takes a round trip, and the app keeps drawing bubbles throughout it.
+  Completer<void>? gate;
+
   List<dynamic> get lastReceipts => posts.last['receipts'] as List<dynamic>;
 
   Map<String, dynamic> receiptAt(int index) =>
@@ -55,6 +65,14 @@ class _FakeAdapter implements HttpClientAdapter {
     headers.add(options.headers.map(
       (key, value) => MapEntry(key, [value.toString()]),
     ));
+
+    reached?.complete();
+    reached = null;
+    final held = gate;
+    if (held != null) {
+      gate = null;
+      await held.future;
+    }
 
     if (offline) {
       throw DioException.connectionError(
@@ -199,6 +217,139 @@ void main() {
       expect(adapter.lastReceipts, hasLength(1));
       expect(adapter.receiptAt(0)['bubbleId'], second);
       expect(adapter.receiptAt(0)['bubbleId'], isNot(first));
+    });
+
+    test('a render stamped while the flush is in flight still reaches the '
+        'worker', () async {
+      // The seq 0 hole. An ack says "these receipts, as they were when you sent
+      // them, are stored" — but the code applied it to the receipt as it stood
+      // when the answer came back, and a stamp landing in between was marked
+      // delivered without ever having been sent.
+      //
+      // The first bubble of a welcome script hits that window every time: the
+      // intent for the whole script flushes at 250ms, the first line is drawn
+      // 300-1400ms later, and the opening flush is the session's first request
+      // — DNS, TLS and a batch of dozens of inserts. Nothing after seq 0 is
+      // close enough to the flush to be caught by it, which is why the loss
+      // looked like the impossible claim that the first bubble is drawn less
+      // often than the second.
+      final log = await boot();
+      final id = record(log, log.beginTurn(), 0, 'Ten years I sailed to get home.');
+
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      adapter.reached = reached;
+      adapter.gate = gate;
+
+      final inFlight = log.flush();
+      await reached.future;
+      log.markRendered(id);
+      gate.complete();
+      await inFlight;
+
+      expect(adapter.receiptAt(0)['renderedAt'], isNull,
+          reason: 'the bubble was not drawn until after the post left');
+      expect(log.unsentCount, 1,
+          reason: 'so the render is still owed to the worker');
+
+      await log.flush();
+      expect(adapter.posts, hasLength(2));
+      expect(adapter.receiptAt(0)['bubbleId'], id);
+      expect(adapter.receiptAt(0)['renderedAt'], isNotNull);
+    });
+
+    test('a sighting stamped while the flush is in flight is not discarded',
+        () async {
+      // The same window, one step worse: a receipt acked as complete is deleted
+      // outright, so a sighting that arrived mid-flight took the whole record
+      // with it — and a first bubble is seen about 300ms after it is drawn,
+      // which is still inside the opening round trip.
+      final log = await boot();
+      final id = record(log, log.beginTurn(), 0, 'Sing in me, Muse.');
+
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      adapter.reached = reached;
+      adapter.gate = gate;
+
+      final inFlight = log.flush();
+      await reached.future;
+      log.markRendered(id);
+      log.markSeen(id);
+      gate.complete();
+      await inFlight;
+
+      expect(log.pendingCount, 1, reason: 'nothing it learned has been sent');
+
+      await log.flush();
+      expect(adapter.receiptAt(0)['renderedAt'], isNotNull);
+      expect(adapter.receiptAt(0)['seenAt'], isNotNull);
+      expect(log.pendingCount, 0, reason: 'now the story is both told and over');
+    });
+
+    test('a bubble drawn mid-flight is sent even though its own flush was '
+        'swallowed', () async {
+      // The half of the seq 0 fix that is reasoning rather than a rev check, and
+      // therefore the half worth pinning down. A stamp landing mid-flight asks
+      // for a flush, that request fires 250ms later while the first one is still
+      // out, and flush() drops it on the floor — `if (_flushing) return` with
+      // nothing rescheduled. What has to save it is the completing flush noticing
+      // the queue is dirty again and retrying on its own.
+      final log = await boot();
+      final turn = log.beginTurn();
+      final first = record(log, turn, 0, 'declared');
+      final second = record(log, turn, 1, 'also declared');
+
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      adapter.reached = reached;
+      adapter.gate = gate;
+
+      final inFlight = log.flush();
+      await reached.future;
+      log.markRendered(first);
+      // The dropped request: a flush asked for while one is already going.
+      await log.flush();
+      expect(adapter.posts, hasLength(1), reason: 'it did not get out');
+
+      gate.complete();
+      await inFlight;
+
+      // Nothing further is called here on purpose — no second markRendered, no
+      // manual flush. If the completing flush does not reschedule itself, the
+      // render sits in the queue forever and this fails.
+      expect(log.debugRetryScheduled, isTrue,
+          reason: 'the flush that finished has to pick the render back up');
+
+      await log.flush();
+      final sent = adapter.receiptAt(0);
+      expect(adapter.lastReceipts, hasLength(1));
+      expect(sent['bubbleId'], first);
+      expect(sent['renderedAt'], isNotNull);
+      expect(sent['bubbleId'], isNot(second));
+    });
+
+    test('stamping the same bubble twice does not keep resending it', () async {
+      // rev is what makes an ack resend rather than settle, and _stamp bumps it.
+      // Bumping on a stamp that changed nothing would mean a repeated call could
+      // never converge: every ack would find a newer rev than it was sent under
+      // and post again.
+      final log = await boot();
+      final id = record(log, log.beginTurn(), 0, 'drawn once');
+
+      log.markRendered(id);
+      await log.flush();
+      expect(adapter.posts, hasLength(1));
+      expect(log.unsentCount, 0);
+
+      log.markRendered(id);
+      log.markRendered(id);
+      expect(log.unsentCount, 0,
+          reason: 'it already knew; there is nothing new to send');
+      expect(log.debugFlushScheduled, isFalse);
+
+      await log.flush();
+      expect(adapter.posts, hasLength(1), reason: 'and no second post happened');
     });
   });
 
