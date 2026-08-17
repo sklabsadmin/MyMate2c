@@ -17,6 +17,7 @@
 
 import 'dart:convert';
 
+import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
 import 'package:ai_boyfriend_chat/src/features/chat/presentation/chat_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -173,10 +174,19 @@ void main() {
     dotenv.loadFromString(
       envString: 'WORKER_URL=http://localhost\nAPP_SECRET=test',
     );
+    // A static, so a test that turns it off would otherwise leak into whatever
+    // runs next — and the failure would land in an unrelated test.
+    AppConfig.requireInteractionToContinue = true;
   });
 
   testWidgets('plays all twelve turns, in order, into an empty chat',
       (tester) async {
+    // Gate off. This test is about the script's content and ordering, which
+    // 1.7.1's gate makes unreachable in normal use: he now stops after turn 1
+    // and waits to be answered, so turns 2-12 are never spoken on their own.
+    // The turns still have to be right for when a visitor does answer, and this
+    // is the only thing checking that they are.
+    AppConfig.requireInteractionToContinue = false;
     await _mountChat(tester);
     // Stops at the closing line rather than running on: once the script ends
     // the idle timer starts posting nudges, which are not script bubbles and
@@ -257,6 +267,11 @@ void main() {
 
   testWidgets('advances the strip to the next set at each pause',
       (tester) async {
+    // Gate off, for the same reason as the twelve-turn test: reaching pause 2
+    // means turn 2 has to be spoken, and under the gate it is not spoken until
+    // pause 1 has been answered. The strip's stepping is still the behaviour a
+    // conversation gets once it is under way.
+    AppConfig.requireInteractionToContinue = false;
     await _mountChat(tester);
     await _play(
       tester,
@@ -445,4 +460,125 @@ void main() {
 
     await _teardown(tester);
   });
+
+  // The 1.7.1 interaction gate.
+  //
+  // These are the tests for the release's actual claim: that a visitor who does
+  // nothing is served a story that does not move. Everything above tests what
+  // the character says; these test what happens when nobody answers.
+
+  testWidgets('stops after the opening turn and stays stopped', (tester) async {
+    await _mountChat(tester);
+    // Three minutes of virtual silence — an order of magnitude past the
+    // longest thing that could resume it. The old script ran ~200s end to end
+    // and the idle nudge fires at 14s.
+    await _play(tester, limit: const Duration(seconds: 180));
+
+    final lines = await _delivered();
+    expect(lines, contains(_p01Question),
+        reason: 'the opening turn still plays; the gate is not a mute button');
+    expect(lines, isNot(contains(_p02FirstLine)),
+        reason: 'turn 2 must not arrive on its own — that is the whole gate');
+    expect(lines.last, _p01Question,
+        reason: 'the question he asked has to be the last thing on screen, '
+            'or the visitor is not looking at an unanswered question');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('does not fill its own silence with an idle nudge',
+      (tester) async {
+    await _mountChat(tester);
+    await _play(tester, limit: const Duration(seconds: 60));
+
+    // The nudge fires at 14s of quiet and is the one thing that could speak
+    // without being answered. If it lands, a visitor who sat still has been
+    // recorded as declining an offer that was not actually withheld, and the
+    // release measures nothing.
+    final lines = await _delivered();
+    final scripted = lines.where((l) => l == _p01Question).length;
+    expect(lines.length, greaterThan(1));
+    expect(scripted, 1);
+    expect(lines.last, _p01Question,
+        reason: 'a nudge would have appended itself here');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('answering it lets the conversation move again', (tester) async {
+    await _mountChat(tester);
+    await _play(
+      tester,
+      limit: const Duration(seconds: 20),
+      stopWhen: (lines) => lines.contains(_p01Question),
+    );
+
+    final before = (await _delivered()).length;
+    await tester.tap(find.text(_set01.first));
+    // _StarterPrompts holds the chosen row for 260ms before sending.
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(seconds: 20));
+
+    // The tap sends into a worker that is not there, so what arrives is the
+    // failure bubble rather than a reply — which is exactly the point being
+    // asserted: the screen was frozen, and answering unfroze it. A real reply
+    // needs a backend and belongs in the production test plan.
+    expect((await _delivered()).length, greaterThan(before),
+        reason: 'the gate must release on an answer, not merely on a timeout');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('is not raised for a link that carries its own question',
+      (tester) async {
+    // /c/odysseus?initialMessage=… sends the visitor's question for them, so
+    // there is nothing left to gate. Left ungated deliberately: gating here
+    // would stand between someone and the answer they followed a link for, and
+    // would put taps nobody made into the release's numerator.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: _scenario,
+            characterId: 'odysseus',
+            initialMessage: 'What happened when you reached Ithaca?',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await _play(tester, limit: const Duration(seconds: 60));
+
+    // An idle nudge is the proof, and a sharper one than the script would be.
+    // The opener is sent on the visitor's behalf and that abandons the script
+    // exactly as a typed message does, so no later turn was ever going to
+    // arrive here — with the gate or without it. What only happens with the
+    // gate down is the character speaking into silence unprompted, which is
+    // what _startIdleTimer does at 14s and refuses to do under the gate.
+    final lines = await _delivered();
+    expect(lines.any(_idlePrompts.contains), isTrue,
+        reason: 'an opener arrival is not gated, so the 14s nudge still fires');
+
+    await _teardown(tester);
+  });
 }
+
+/// The idle nudges, restated here for the same reason as the script lines
+/// above: a test should fail and be looked at when this list is edited, not
+/// quietly follow it.
+const List<String> _idlePrompts = [
+  "So — what's on your mind?",
+  "Still there?",
+  "Take your time. I'm not going anywhere.",
+  "Anything you feel like talking about?",
+  "You've gone quiet. That's allowed.",
+  "What are you thinking?",
+  "No rush. Say something whenever you're ready.",
+  "Where did you get to?",
+];

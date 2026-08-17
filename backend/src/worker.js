@@ -349,6 +349,8 @@ export default {
                        COUNT(DISTINCT a.visit_id) AS arrived,
                        COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS loaded,
                        COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
+                       COUNT(DISTINCT CASE WHEN e.event='gate_shown'    THEN e.visit_id END) AS gate_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='gate_choice'   THEN e.visit_id END) AS gate_answered,
                        COUNT(DISTINCT CASE WHEN e.event IN ('input_typed','starter_tap') THEN e.visit_id END) AS engaged,
                        COUNT(DISTINCT CASE WHEN e.event='first_message' THEN e.visit_id END) AS messaged,
                        COUNT(DISTINCT CASE WHEN e.event='login_gate'    THEN e.visit_id END) AS gated
@@ -2669,6 +2671,25 @@ async function recordSiteVisit(raw, request, env) {
     //                 (visitor population and duration) so it stays cheap:
     //                 only the "opened a character" cohort ever sends these,
     //                 and never for more than 60 ticks each.
+    //   gate_shown    1.7.1's interaction gate went up: the character has
+    //                 asked something and will not continue until answered
+    //                 (detail = character id). This is the denominator the
+    //                 release is measured on — engagement per visitor who was
+    //                 demonstrably offered the choice, rather than per arrival.
+    //                 The distinction is not pedantic: half of QR arrivals are
+    //                 gone within 3s of a ~2s median paint, so a rate over
+    //                 arrivals is mostly a measure of how fast the bundle
+    //                 downloaded. Its duration_ms is time from arrival, which
+    //                 is what makes "was this ever on screen" answerable.
+    //                 Not sent for /c/<id>?initialMessage= arrivals: their
+    //                 question is sent for them, so there is no gate to show.
+    //   gate_choice   the gate was answered (detail = "<character>#tap" or
+    //                 "<character>#typed"). gate_choice / gate_shown is the
+    //                 release's headline number; the suffix says which of the
+    //                 two routes into a conversation people take when both are
+    //                 in front of them. Fired on the first keystroke, not the
+    //                 send, so someone who typed and reconsidered still counts
+    //                 as willing — that is the question being asked.
     //   strip_rotate  the quick-reply strip swapped in a new set of prompts
     //                 (detail = "<character>#<set index>"), so a visitor who
     //                 tapped nothing can be told apart from one who was never
@@ -2698,6 +2719,7 @@ async function recordSiteVisit(raw, request, env) {
         "arrive", "app_ready", "character_tap", "input_typed", "starter_tap",
         "first_message", "login_gate", "send_failed", "screen_ping",
         "strip_rotate", "hide", "show", "leave",
+        "gate_shown", "gate_choice",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -6114,20 +6136,31 @@ async function render(out) {
        'losing people.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
        '<th data-type="num" data-sorted="desc">Arrived</th><th data-type="num">App loaded</th>' +
        '<th data-type="num">Opened a character</th>' +
+       '<th data-type="num">Gate shown</th>' +
+       '<th data-type="num">Gate answered</th>' +
        '<th data-type="num">Typed or tapped a starter</th><th data-type="num">Sent a message</th>' +
        '<th data-type="num">Hit login gate</th></tr>';
   for (const r of d.funnel || []) {
     function pct(n) {
       return r.arrived ? ' <span class="muted">(' + Math.round(100*n/r.arrived) + '%)</span>' : '';
     }
+    // Answered is the one column NOT shown against arrivals. Its denominator is
+    // the people who were actually offered the choice, which is the whole point
+    // of logging gate_shown separately — against arrivals it would read as one
+    // more sub-1% number and say nothing about willingness.
+    const answeredPct = r.gate_shown
+      ? ' <span class="muted">(' + Math.round(100*r.gate_answered/r.gate_shown) + '% of shown)</span>'
+      : '';
     h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.arrived) + '>' + r.arrived +
          '</td><td class="num"' + sv(r.loaded) + '>' + r.loaded + pct(r.loaded) +
          '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped + pct(r.tapped) +
+         '</td><td class="num"' + sv(r.gate_shown) + '>' + r.gate_shown + pct(r.gate_shown) +
+         '</td><td class="num"' + sv(r.gate_answered) + '>' + r.gate_answered + answeredPct +
          '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + pct(r.engaged) +
          '</td><td class="num"' + sv(r.messaged) + '>' + r.messaged + pct(r.messaged) +
          '</td><td class="num"' + sv(r.gated) + '>' + r.gated + pct(r.gated) + '</td></tr>';
   }
-  if (!(d.funnel || []).length) h += '<tr><td colspan="7" class="muted">No data yet.</td></tr>';
+  if (!(d.funnel || []).length) h += '<tr><td colspan="9" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
 
   const buckets = d.dwellBuckets || [];

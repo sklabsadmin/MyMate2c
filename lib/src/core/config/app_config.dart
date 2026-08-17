@@ -30,6 +30,27 @@ class AppConfig {
   /// shows the holding page again, which is the point of it.
   static String? gatedDestination;
 
+  /// The 1.7.1 interaction gate. The character speaks its opening turn and
+  /// then stops, saying nothing further until the visitor answers — no timeout
+  /// resumes it and the idle nudge is suppressed under it.
+  ///
+  /// What it buys is a measurement we have never had. In the 30 days to
+  /// 2026-08-17, 3,490 visits reached a chat screen and 49 contained a
+  /// keystroke or a tap; the screen performed at all 3,490 identically, so
+  /// "was offered something and declined" and "never understood there was an
+  /// offer" were the same row in the table. A story that will not move without
+  /// an answer separates them: gate_choice / gate_shown is engagement measured
+  /// against people demonstrably asked.
+  ///
+  /// Set to FALSE to restore 1.7.0 behaviour — the opening plays itself out —
+  /// without reverting code. This freezes the first screen on the path every
+  /// campaign link lands on, which is the whole of the paid traffic, so the way
+  /// back needs to be one constant rather than an unpick across the release.
+  ///
+  /// Not `const`: the script-ordering tests turn it off to exercise turns the
+  /// gate otherwise makes unreachable.
+  static bool requireInteractionToContinue = true;
+
   /// Which built-in characters (by id) to show on the dashboard, and in
   /// what order. Hides the rest without deleting their definitions. Does
   /// not affect user-created custom characters, which are always shown

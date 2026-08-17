@@ -110,6 +110,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// beginner scaffolding.
   bool _userHasSent = false;
 
+  /// The 1.7.1 interaction gate: the character has spoken its opening turn and
+  /// will not say another word until the visitor answers.
+  ///
+  /// Why this exists at all. Over the 30 days to 2026-08-17 production saw
+  /// 5,181 arrivals, 3,490 of which reached this screen, and 49 in which a
+  /// human typed a character or tapped a prompt — 0.95%. The screen was
+  /// performing at people: 14,067 scripted lines were declared and 1,301 ever
+  /// drawn, because the opening keeps talking whether or not anyone is
+  /// listening, and a visitor who does nothing is served exactly the same
+  /// experience as one who engages. That makes the two indistinguishable in the
+  /// data, which is the actual problem this release is about — we cannot tell
+  /// "saw the offer and declined" from "never understood there was one".
+  ///
+  /// Freezing the story on an unanswered question separates them. Whoever
+  /// leaves now leaves having been asked something and not answered it, and
+  /// that is a measurement rather than an absence.
+  ///
+  /// Hard by design: nothing releases this but the visitor. No timeout resumes
+  /// the script, and [_startIdleTimer] refuses to run under it, so the
+  /// character does not fill the silence it just created.
+  bool _gateActive = false;
+
+  /// One-shot guard for the gate_shown funnel event.
+  ///
+  /// gate_shown is the denominator the whole release rests on. Reporting taps
+  /// against arrivals is what made `character_tap` useless — it fires in
+  /// initState, so for a /c/<id> link it records an arrival wearing the name of
+  /// a tap. A rate measured against people who were actually offered the choice
+  /// is the only version of this number that survives a 2s median paint on the
+  /// traffic that pays for itself.
+  /// A rate measured against people who were actually offered the choice is
+  /// the only version of this number that survives a 2s median paint on the
+  /// traffic that pays for itself: half of QR arrivals are gone by 3s, so a
+  /// gate that lands late is not declined, it is unseen.
+  ///
+  /// The delay itself needs nothing stored here — the beacon stamps every
+  /// event with `durationMs` from arrival (web/index.html), which already
+  /// counts the paint this is trying to account for.
+  bool _gateShownLogged = false;
+
   /// Whether the message box currently holds anything, tracked so the send
   /// button can look disabled when there is nothing to send and light up when
   /// there is. Mirrored into state because a TextEditingController does not
@@ -616,12 +656,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // set.
     if (_hasOpeningScript) _welcomeAbandoned = true;
 
+    // A keystroke answers the gate as surely as a tap does. Released on the
+    // first character rather than on the send, deliberately: the question being
+    // measured is whether people are willing to engage, and someone who typed
+    // three words and thought better of it has answered it. Holding the gate
+    // until _handleSend would count them with the visitors who did nothing.
+    _releaseGate('typed');
+
     if (_loggedTyping) return;
     _loggedTyping = true;
     _stopScreenPing();
     logFunnelEvent(
       'input_typed',
       detail: widget.characterId,
+      appUserId: _appUserId,
+    );
+  }
+
+  /// Raises the interaction gate on a conversation that is starting fresh.
+  ///
+  /// Called where the welcome sequence is triggered, so the two share one
+  /// condition — a truly empty history — rather than drifting apart.
+  ///
+  /// Skipped when [ChatScreen.initialMessage] is set. Those arrivals carry the
+  /// visitor's question in the URL and it is sent on their behalf, so there is
+  /// no choice left to offer and a gate would only stand between them and the
+  /// answer they followed a link for. Keeping them out matters for the
+  /// arithmetic as much as the experience: 8 of the 56 first messages in the 30
+  /// days to 2026-08-17 were auto-sent like this, and counting them would
+  /// credit the gate with taps that no hand made.
+  void _raiseGate() {
+    if (!AppConfig.requireInteractionToContinue) return;
+    if (_gateActive || _userHasSent) return;
+    if ((widget.initialMessage ?? '').trim().isNotEmpty) return;
+    setState(() => _gateActive = true);
+    if (_gateShownLogged) return;
+    _gateShownLogged = true;
+    // The denominator. Its duration_ms comes from the beacon and is measured
+    // from arrival, so "was this even on screen before they left" is answerable
+    // by joining this row against the visit's leave.
+    logFunnelEvent(
+      'gate_shown',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
+  }
+
+  /// Lowers the gate because the visitor answered it.
+  ///
+  /// [source] is 'tap' or 'typed' — which of the two routes into a conversation
+  /// people actually take, asked of the population that was demonstrably
+  /// offered both. input_typed and starter_tap already split this, but against
+  /// a denominator of everyone who ever loaded the screen; this one is against
+  /// people who were looking at an unanswered question.
+  void _releaseGate(String source) {
+    if (!_gateActive) return;
+    setState(() => _gateActive = false);
+    logFunnelEvent(
+      'gate_choice',
+      detail: '${widget.characterId}#$source',
       appUserId: _appUserId,
     );
   }
@@ -735,6 +828,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
       // Welcome Sequence (Only if history is TRULY empty)
       if (history.isEmpty) {
+        // Before the sequence, not after it: the prompts are static content
+        // and there is no reason to withhold them behind a paced greeting.
+        // Calypso's first turn alone lands its last bubble ~2.6s in ("Hello."
+        // clamps to 900ms, "I'm genuinely glad you came." earns 1700ms), on top
+        // of a ~2s median paint for QR traffic — and half that cohort is gone by
+        // 3s. Raising the gate here is what puts something tappable on screen
+        // inside the window where anyone is still watching. The story still
+        // waits; only the offer is early.
+        _raiseGate();
         _triggerWelcomeSequence();
       }
     } catch (e) {
@@ -746,6 +848,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           scenario: widget.scenario,
           characterId: widget.characterId,
         );
+        _raiseGate();
         _triggerWelcomeSequence();
       }
     }
@@ -1967,6 +2070,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         }
         if (lastLine && lastSegment) return;
 
+        // The gate. One turn, then she stops and waits to be answered.
+        //
+        // Returning here rather than setting _welcomeAbandoned: abandoned means
+        // the visitor took the turn and the rest is dropped, which is what a tap
+        // or a keystroke does further down. Nothing has been dropped yet — the
+        // script simply does not continue on its own, and if the visitor never
+        // answers, it never continues at all. That silence is the measurement.
+        //
+        // The frontier and the strip were both moved by the block above, which
+        // also flushed the turn — so the questions on offer are the ones
+        // written for this pause, and the model already has what she said.
+        if (lastLine && _gateActive) return;
+
         // A segment boundary is a longer breath: she stopped and started
         // again rather than carrying on. How much longer is the script's own
         // WAIT for that turn, added to the gap the last line already earned.
@@ -2410,6 +2526,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// after the opening line; cancelled as soon as the user sends anything.
   void _startIdleTimer() {
     _cancelIdleTimer();
+    // Not while the gate is up. A nudge is the character speaking unprompted,
+    // which is exactly what the gate exists to stop: if she fills her own
+    // silence after 14s then the story did move without an answer, and a
+    // visitor who sat through it has been counted as having declined something
+    // that was never actually withheld.
+    if (_gateActive) return;
     if (_idleNudges >= _maxIdleNudges) return;
     _idleTimer = Timer(_idleAfter, _sendIdlePrompt);
   }
@@ -3309,6 +3431,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // monologue arriving behind the gate.
     if (_hasOpeningScript) _welcomeAbandoned = true;
     _stopScreenPing();
+    _releaseGate('tap');
     logFunnelEvent(
       'starter_tap',
       detail: widget.characterId,
