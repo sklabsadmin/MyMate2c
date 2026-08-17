@@ -85,3 +85,6 @@ exports/
 # Throwaway harnesses that must sit next to worker.js so its relative imports
 # resolve. Written and deleted by test scripts; committed once by accident.
 backend/src/__*.mjs
+
+# Scratch output from a codex analysis run — not part of the app.
+.codex-analysis/
