@@ -1061,6 +1061,66 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('shows every part of the card as it actually ships',
+      (tester) async {
+    // The one test that asserts the card's parts by name, with an image — the
+    // rest of the suite mounts without one, so the portrait and the profile
+    // hint were rendered in no test that checked for them, and a regression
+    // hiding either would have kept everything green. Written alongside the
+    // extraction into _EntryGate, so it also proves the extraction moved
+    // nothing.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: 'Hercules (Son of Zeus)',
+            characterId: 'hercules',
+            characterImage: 'assets/images/avatar_hercules_real.jpg',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    // Identity block: portrait, name, title, tagline.
+    final portrait = find.byWidgetPredicate((w) =>
+        w is Container &&
+        w.decoration is BoxDecoration &&
+        (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+        (w.decoration as BoxDecoration).image != null &&
+        w.constraints?.maxWidth == 190);
+    expect(portrait, findsOneWidget, reason: 'the 190px circular portrait');
+    expect(find.text('Hercules'), findsWidgets);
+    expect(find.text('Son of Zeus'), findsWidgets);
+    expect(find.text('Strongest Mortal and Hero of Olympus.'), findsOneWidget,
+        reason: 'the tagline, which only Hercules currently has');
+
+    // The profile hint — shown only when there is a profile AND an image,
+    // which is why no other test ever rendered it.
+    expect(find.text('Tap the photo or name for the full profile'),
+        findsOneWidget);
+    expect(find.byIcon(Icons.touch_app_outlined), findsWidgets);
+
+    // The invitation, split at its comma, and the button.
+    expect(
+      find.text('Hercules would like to talk to you,\nand understand your journey'),
+      findsOneWidget,
+    );
+    expect(find.text(_enterButton), findsOneWidget);
+
+    // The reduce-motion branch of the button is deliberately not asserted
+    // here: MaterialApp's View rebuilds MediaQuery from the platform
+    // dispatcher, and driving that flag through the test harness turned out
+    // to need more investigation than a presence test should carry.
+
+    await _teardown(tester);
+  });
+
   testWidgets('does not come up for a returning conversation', (tester) async {
     // Someone who has already spoken here has demonstrably entered. Asking
     // again would gate a conversation they are in the middle of, and would put
