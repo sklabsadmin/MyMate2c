@@ -17,6 +17,7 @@
 //
 import 'dart:convert';
 
+import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
 import 'package:ai_boyfriend_chat/src/features/chat/presentation/chat_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -68,6 +69,23 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
+
+    // Answer the 1.7.1 entry gate before timing anything. Nothing plays until
+    // it is tapped, so a dump that skipped it recorded an empty script and the
+    // beat map failed outright on the missing first line — which is the right
+    // failure: the timings it used to print described a screen that performs at
+    // people unasked, and that screen no longer exists.
+    //
+    // Everything below is therefore measured from the tap, not from mount. That
+    // is the honest zero now: the visitor asked for this.
+    if (AppConfig.requireTapToEnter) {
+      final enter = find.text('Tap to Talk');
+      expect(enter, findsOneWidget,
+          reason: 'the entry card should be up on a fresh conversation');
+      await tester.tap(enter);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+    }
 
     // 100ms steps to 40s: finer than the 500ms tick cadence being mapped, and
     // past the 28s tick cap with room to spare.
