@@ -281,7 +281,10 @@ export default {
                     SELECT v.visit_id,
                            MIN(v.source) AS source,
                            MIN(${visitClientSql("v")}) AS client,
-                           ${visitDwellMsSql("v")} AS dwell_ms,
+                           -- Time on screen, not wall clock: see
+                           -- visitTimeOnScreenMsSql. "Left under 3s" and the
+                           -- average are the two numbers this page is read for.
+                           ${visitTimeOnScreenMsSql("v")} AS dwell_ms,
                            (SELECT MIN(r.duration_ms) FROM site_visits r
                              WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
                            EXISTS (SELECT 1 FROM site_visits r
@@ -317,7 +320,9 @@ export default {
                        MIN(a.utm_campaign) AS utm_campaign, MIN(a.country) AS country,
                        MIN(a.referer) AS referer,
                        MIN(${visitClientSql("a")}) AS client,
-                       ${visitDwellMsSql("a")} AS duration_ms,
+                       -- Same figure the buckets above are cut on, so a row's
+                       -- Dwell agrees with the bucket it was counted in.
+                       ${visitTimeOnScreenMsSql("a")} AS duration_ms,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
@@ -656,6 +661,14 @@ export default {
                        (SELECT a2.nav_type FROM site_visits a2
                          WHERE a2.visit_id = a.visit_id AND a2.event = 'arrive'
                            AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
+                       -- 1.7.1's entry card, for the CSV: same MIN-first-open
+                       -- shape as the visits table, see the note there.
+                       (SELECT MIN(s.duration_ms) FROM site_visits s
+                         WHERE s.visit_id = a.visit_id AND s.event = 'entry_shown') AS entry_shown_ms,
+                       (SELECT MIN(t2.duration_ms) FROM site_visits t2
+                         WHERE t2.visit_id = a.visit_id AND t2.event = 'entry_tap') AS entry_tap_ms,
+                       (SELECT COUNT(*) FROM site_visits pv
+                         WHERE pv.visit_id = a.visit_id AND pv.event = 'profile_view') AS profile_views,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
                        -- The elapsed time the last tick actually reported, rather
@@ -2995,6 +3008,22 @@ function visitVisibleMsSql(alias) {
     )`;
 }
 
+/// The dwell figure the buckets and averages are cut on: time on screen where
+/// the client reported it, wall clock where it did not.
+///
+/// The buckets used to read wall clock alone. That put a visit that was
+/// backgrounded for forty seconds and then closed into "stayed over 30s"
+/// alongside someone who actually read for forty seconds — the very confusion
+/// visible_ms was added to remove — and the 2026-08-18 handoff flagged the
+/// buckets as still reading the wrong column. 74% of the last 30 days' visits
+/// carry visible_ms; the fallback keeps the other 26% (older rows, and any
+/// killed before a hide checkpoint) in the histogram rather than dropping them,
+/// at the cost of those few reading a little long. That is the direction to be
+/// wrong in for a "how quickly did they leave" chart.
+function visitTimeOnScreenMsSql(alias) {
+    return `COALESCE(${visitVisibleMsSql(alias)}, ${visitDwellMsSql(alias)})`;
+}
+
 /// Rows the CSV export will carry at most.
 ///
 /// High enough that no real range hits it — 90 days of current traffic is
@@ -3038,6 +3067,11 @@ const SESSION_CSV_COLUMNS = [
     // exactly the evidence for it in the view you would check.
     ["ticks", (r) => r.ticks || 0],
     ["opened_character", (r) => (r.opened_character ? 1 : 0)],
+    // 1.7.1's entry card and profile views. The release's headline number is
+    // entry_tap over entry_shown; without these the CSV could not compute it.
+    ["entry_shown_ms", (r) => r.entry_shown_ms],
+    ["entry_tap_ms", (r) => r.entry_tap_ms],
+    ["profile_views", (r) => r.profile_views || 0],
     ["tapped_starter", (r) => (r.tapped_starter ? 1 : 0)],
     ["messages", (r) => r.messages || 0],
     ["tapped", (r) => r.tapped || 0],
@@ -5606,7 +5640,7 @@ async function render(out) {
   let h = '<div class="wrap"><table class="sortable"><tr><th data-sorted="desc">When (UTC)</th>' +
           '<th>Source</th><th>Path</th>' +
           '<th>Character</th><th>Country</th><th data-type="num">Load</th>' +
-          '<th data-type="num" title="wall clock from arrival to the last thing the browser reported">Dwell</th>' +
+          '<th data-type="num" title="time the page was actually on screen (falls back to wall clock for visits that never reported it)">Dwell</th>' +
           '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Seen</th>' +
           '<th title="how the visit ended, and how often it was backgrounded first">Exit</th>' +
           '<th data-type="num">Ticks</th>' +

@@ -177,19 +177,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// was built with, exactly as a reload does.
   bool _entryGateStartsOpening = true;
 
-  /// The character's title — the parenthetical half of the scenario string, so
-  /// "Odysseus (King of Ithaca)" gives "King of Ithaca".
+  /// The scenario string split once: "Odysseus (King of Ithaca)" → name
+  /// "Odysseus", title "King of Ithaca". Title is null for a scenario written
+  /// without one.
   ///
-  /// Null for a scenario written without one, in which case the entry card
-  /// shows the name alone rather than an empty line.
-  String? get _characterTitle {
+  /// The one parser for that format. There were three — this getter with
+  /// indexOf/lastIndexOf, _characterDisplayName with its own indexOf, and a
+  /// regex inside _openProfile — which agreed on every string in the roster
+  /// today and would disagree on the first title containing a parenthesis.
+  /// Name and title come from the same split so the entry card and the profile
+  /// screen cannot drift apart on what they call the character.
+  ({String name, String? title}) get _scenarioParts {
     final scenario = widget.scenario;
-    if (scenario == null) return null;
+    if (scenario == null || scenario.isEmpty) return (name: 'He', title: null);
     final open = scenario.indexOf(' (');
+    if (open <= 0) return (name: scenario, title: null);
     final close = scenario.lastIndexOf(')');
-    if (open < 0 || close <= open + 2) return null;
-    return scenario.substring(open + 2, close);
+    if (close <= open + 2) return (name: scenario, title: null);
+    return (
+      name: scenario.substring(0, open),
+      title: scenario.substring(open + 2, close),
+    );
   }
+
+  /// The parenthetical half of the scenario, or null. See [_scenarioParts].
+  String? get _characterTitle => _scenarioParts.title;
 
   /// Whether the message box currently holds anything, tracked so the send
   /// button can look disabled when there is nothing to send and light up when
@@ -393,12 +405,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   /// "Zeus (Olympian King)" -> "Zeus"; used in the typing indicator's
   /// rotating status phrases.
-  String get _characterDisplayName {
-    final scenario = widget.scenario;
-    if (scenario == null || scenario.isEmpty) return 'He';
-    final parenIndex = scenario.indexOf(' (');
-    return parenIndex > 0 ? scenario.substring(0, parenIndex) : scenario;
-  }
+  String get _characterDisplayName => _scenarioParts.name;
 
   @override
   void initState() {
@@ -3046,10 +3053,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
 
     // "Zeus (Olympian King)" → name and title, matching the card's layout.
-    final raw = widget.scenario ?? '';
-    final match = RegExp(r'^(.*?)\s*\((.*)\)$').firstMatch(raw);
-    final name = match?.group(1) ?? raw;
-    final title = match?.group(2) ?? '';
+    final parts = _scenarioParts;
+    final name = parts.name;
+    final title = parts.title ?? '';
 
     final question = await Navigator.of(context).push<String>(
       MaterialPageRoute(
@@ -3838,8 +3844,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               ),
             ),
           ),
-          // Content
-          Column(
+          // Content. Wrapped so that while the entry card is up the chat is
+          // out of the focus traversal as well as out of reach of a pointer:
+          // the card is opaque and swallows taps, but Tab on desktop web
+          // walked straight past it to the message field, and a keystroke
+          // there logged input_typed for a visit whose entry_shown stood
+          // untapped — "engaged but never entered", which the funnel cannot
+          // express. Same for a screen reader landing on controls the card is
+          // meant to be withholding.
+          ExcludeFocus(
+            excluding: _entryGateActive,
+            child: Column(
             children: [
               Expanded(
                 child: ListView.builder(
@@ -3924,6 +3939,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 ),
               _buildInputArea(theme),
             ],
+            ),
           ),
           // The entry gate, over everything in the body.
           //
@@ -4005,7 +4021,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               ),
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - (kToolbarHeight + 52),
+                  // Clamped: an in-app browser with the soft keyboard up can
+                  // hand this builder less than the padding it subtracts, and
+                  // a negative minHeight fails BoxConstraints' own assert.
+                  minHeight: max(0, constraints.maxHeight - (kToolbarHeight + 52)),
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -4718,6 +4737,17 @@ class _StarterPromptsState extends State<_StarterPrompts>
   /// still spends most of its life at rest. It also stops for good once
   /// [_StarterPrompts.teach] goes false.
   void _runEntrance() {
+    // Reduce-motion: land the rows and stop. The entry button already honours
+    // this setting (_PulsingEnterButton) and it was inconsistent for the very
+    // next thing on the same screen to stagger in, run a travelling glow and
+    // flash — the exact motion class the preference exists to suppress. The
+    // strip is fully usable at rest; only the teaching flourish is skipped.
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      _controller.value = 1;
+      _attention.value = 0;
+      _flash.value = 0;
+      return;
+    }
     _controller.forward(from: 0);
     _attention.value = 0;
     _flash.value = 0;
