@@ -93,6 +93,22 @@ confidently wrong answer:
 | Clients | Facebook 300 · Instagram 89 · browser 28 |
 | Entry rate by client | browser 3.8% · Instagram 1.5% · Facebook 0.4% |
 
+### Read this before quoting the entry rate
+
+These numbers were pulled at 10:33 UTC on 2026-08-18, minutes before `a9813f1`
+("Show the entry card to anyone who has never spoken") landed on main. That
+commit fixes a denominator fault: the card was gated on *empty history*, and a
+device that had auto-played the 1.7.0 monologue had lines in localStorage, so
+after updating to 1.7.1 it never saw a card despite the visitor never having
+engaged. The measured cohort was therefore skewed toward fresh devices and grew
+on bundle-churn time rather than arrival time — 45 Instagram visits reached a
+screen on the first night and only 5 were asked.
+
+In the 24h window above, 316 of the 327 who reached a screen did see the card,
+so the skew is much smaller there than on the first night — but it is not zero,
+and the fix ships as **+68**. Segment on bundle version before comparing any
+entry rate across the boundary, and treat 0.9% as a pre-fix reading.
+
 **Reading:** the card was genuinely on screen for 87% of people, so 99% are
 *declining* a visible one-tap ask, not missing it. Lowering the bar from "type
 something to a stranger" to "press one button" moved the rate from 0.95% to
