@@ -4291,23 +4291,31 @@ async function exportAllTables(env, params) {
     // greater than any bound sharing its date and slips through a window it
     // does not belong in. Normalising the separator is what makes the two
     // comparable — the same trap dayBounds documents.
+    //
+    // message_delivery has no created_at at all. Its trustworthy clock is
+    // server_received_at — the client-side timestamps in the row can be hours
+    // wrong (migration 0011 explains why) — so that column is both the window
+    // and the ordering. It is also the only table that records app_version,
+    // which makes it the one place a visit says which bundle it actually ran;
+    // an export without it cannot segment anything across a deploy.
     const TABLES = [
-        ["site_visits", "created_at"],
-        ["conversation_logs", "replace(created_at, 'T', ' ')"],
-        ["referral_visits", "created_at"],
-        ["deploy_log", "created_at"],
+        ["site_visits", "created_at", "created_at"],
+        ["conversation_logs", "replace(created_at, 'T', ' ')", "created_at"],
+        ["referral_visits", "created_at", "created_at"],
+        ["deploy_log", "created_at", "created_at"],
+        ["message_delivery", "server_received_at", "server_received_at"],
     ];
 
     const tables = {};
     let totalRows = 0;
     let truncated = false;
 
-    for (const [name, timeExpr] of TABLES) {
+    for (const [name, timeExpr, orderCol] of TABLES) {
         try {
             const { results } = await env.CHAT_LOGS_DB.prepare(`
                 SELECT * FROM ${name}
                 WHERE ${timeExpr} >= datetime('now', ?)
-                ORDER BY created_at DESC
+                ORDER BY ${orderCol} DESC
                 LIMIT ${EXPORT_ALL_TABLE_LIMIT + 1}
             `).bind(since).all();
             const rows = results || [];
