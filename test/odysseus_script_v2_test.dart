@@ -876,6 +876,122 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('switching character in place resets the card and the reply '
+      'count', (tester) async {
+    // The chat branch keeps this State alive in the shell's indexed stack, so
+    // opening a second character arrives through didUpdateWidget on the SAME
+    // State. Its "full reset" used to clear three fields and leave the rest
+    // describing the character just left. Two of the survivors are asserted
+    // here: the entry card (still up over the next character's restored chat)
+    // and the reply count (a login gate firing on a fresh character's first
+    // message).
+    //
+    // Hercules has history the visitor once spoke in and a spent free-reply
+    // allowance; Odysseus is fresh. Same element, scenario swapped.
+    const hercKey = 'chat_history_Hercules (Son of Zeus)';
+    SharedPreferences.setMockInitialValues({
+      hercKey: [
+        jsonEncode({
+          'id': 'u1',
+          'text': 'Tell me about Omphale.',
+          'isUser': true,
+          'timestamp': DateTime.now().toIso8601String(),
+        }),
+      ],
+      // The stored per-character count is keyed on the character; the bug was
+      // that the in-memory copy did not follow it across a switch.
+      'reply_count_v1_hercules': 20,
+    });
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    Widget build(String scenario, String id) => ProviderScope(
+          child: MaterialApp(
+            home: ChatScreen(scenario: scenario, characterId: id),
+          ),
+        );
+
+    // Start on Odysseus, fresh: card up.
+    await tester.pumpWidget(build(_scenario, 'odysseus'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.text(_enterButton), findsOneWidget);
+
+    // Switch to Hercules, who has been spoken to: no card, and it must not
+    // still be Odysseus's card sitting over his conversation.
+    await tester.pumpWidget(build('Hercules (Son of Zeus)', 'hercules'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(_enterButton), findsNothing,
+        reason: "the previous character's card must not survive the switch");
+
+    // And back to Odysseus, fresh again: the card is owed again, and nothing
+    // Hercules's history put on screen may leak into it.
+    await tester.pumpWidget(build(_scenario, 'odysseus'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'a fresh character after a spoken one gets its card back');
+    expect(find.text('Tell me about Omphale.'), findsNothing,
+        reason: "the last character's messages must be cleared");
+
+    await _teardown(tester);
+  });
+
+  testWidgets("Hercules's strip falls back to askable questions once he is "
+      'interrupted', (tester) async {
+    // Every set his document specifies is an answer to the line before it, so
+    // none stands alone — and once a visitor typed during his script the
+    // cold-safe fallback was empty and the strip froze on e.g. "The charm,
+    // obviously." for the rest of the conversation. His two question-form
+    // sets past the script are what it falls back to now.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: 'Hercules (Son of Zeus)',
+            characterId: 'hercules',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    // Into turn 2, then interrupt him by typing and sending. The strip holds
+    // its set through the send on purpose and moves when the reply lands
+    // (_setQuickReplyIndex(_quickReplyIndex + 1) after the bubbles), and that
+    // move is where the cold-safe filter runs — so the send has to complete.
+    // The worker is not there, so what lands is the failure bubble; it is a
+    // reply for this purpose.
+    await tester.pump(const Duration(seconds: 3));
+    await tester.enterText(find.byType(TextField), 'hello');
+    await tester.pump();
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.arrow_upward));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 12));
+
+    // The strip must now offer a set that can be asked cold, not the opening
+    // set's answers to a question about what makes a man interesting.
+    expect(find.text('He makes me laugh.'), findsNothing,
+        reason: 'the opening set is an answer to a line he no longer says');
+    expect(
+      find.text("What's the story with you and Queen Omphale?").evaluate().isNotEmpty ||
+          find.text('Which of the Twelve Labors was the hardest?').evaluate().isNotEmpty,
+      isTrue,
+      reason: 'a cold-safe question set should be on offer',
+    );
+
+    await _teardown(tester);
+  });
+
   testWidgets('does not come up for a returning conversation', (tester) async {
     // Someone who has already spoken here has demonstrably entered. Asking
     // again would gate a conversation they are in the middle of, and would put

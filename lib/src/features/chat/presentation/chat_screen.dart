@@ -436,42 +436,120 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // exactly the same.
       _loadAppUserId();
 
-      ref
-          .read(activeChatProvider.notifier)
-          .setActive(widget.scenario ?? 'Unknown', _currentVibe);
-
-      // Funnel: a character is open. Fired here rather than from the dashboard
-      // card tap, because a /c/<id> campaign link opens this screen directly
-      // (app.dart's '/c/:characterId' route) and never touches a card — so
-      // reporting it there made "opened a character" read 0% for exactly the
-      // traffic the campaign links bring in, no matter how well they converted.
-      //
-      // initState runs once per screen, so this needs no one-shot guard of its
-      // own, and the funnel counts distinct visits anyway.
-      logFunnelEvent(
-        'character_tap',
-        detail: widget.characterId,
-        appUserId: _appUserId,
-      );
-      // The strip's opening set. _quickReplyIndex starts at 0 without going
-      // through _setQuickReplyIndex, so the first thing a visitor is offered
-      // is the one offer that would otherwise never be recorded — and it is
-      // the offer nearly everyone sees, since most leave before the strip
-      // ever changes.
-      if (_quickRepliesFor(widget.characterId) != null) {
-        logFunnelEvent(
-          'strip_rotate',
-          detail: '${widget.characterId}#0',
-          appUserId: _appUserId,
-        );
-      }
-      _startScreenPing();
+      _openCharacter();
 
       // An opener tapped on the profile card before entering the chat. Sent
       // through _handleSend so it behaves exactly like a typed message —
       // same reply gate, history and logging.
       _sendInitialMessage();
     });
+  }
+
+  /// Everything that marks a character as opened, done once per character
+  /// rather than once per screen.
+  ///
+  /// This used to live inline in initState, on the reasoning that initState
+  /// runs once per screen so nothing needed a guard. True, and beside the
+  /// point: the chat branch keeps this State alive in the shell's indexed
+  /// stack, so opening a second character from the dashboard arrives through
+  /// didUpdateWidget on the SAME State — and initState never runs again. Every
+  /// per-character setup below was therefore skipped for the second character
+  /// in a session: no character_tap row (the per-character funnel undercounted
+  /// every switched-to character), activeChat left naming the previous one
+  /// (so the retention notification was titled with the wrong name), and the
+  /// screen ping never restarted.
+  ///
+  /// Called from both paths now, so they cannot drift apart again.
+  void _openCharacter() {
+    ref
+        .read(activeChatProvider.notifier)
+        .setActive(widget.scenario ?? 'Unknown', _currentVibe);
+
+    // Funnel: a character is open. Fired here rather than from the dashboard
+    // card tap, because a /c/<id> campaign link opens this screen directly
+    // (app.dart's '/c/:characterId' route) and never touches a card — so
+    // reporting it there made "opened a character" read 0% for exactly the
+    // traffic the campaign links bring in, no matter how well they converted.
+    logFunnelEvent(
+      'character_tap',
+      detail: widget.characterId,
+      appUserId: _appUserId,
+    );
+    // The strip's opening set. _quickReplyIndex starts at 0 without going
+    // through _setQuickReplyIndex, so the first thing a visitor is offered
+    // is the one offer that would otherwise never be recorded — and it is
+    // the offer nearly everyone sees, since most leave before the strip
+    // ever changes.
+    if (_quickRepliesFor(widget.characterId) != null) {
+      logFunnelEvent(
+        'strip_rotate',
+        detail: '${widget.characterId}#0',
+        appUserId: _appUserId,
+      );
+    }
+    _startScreenPing();
+  }
+
+  /// Puts every piece of per-conversation state back to what a freshly built
+  /// screen would have, ahead of loading another character into this one.
+  ///
+  /// The "Full Reset on Scenario Change" in didUpdateWidget cleared exactly
+  /// three things — the messages, the service and the opener guard — and left
+  /// everything else describing the character just left. Each survivor was a
+  /// bug of its own:
+  ///
+  ///   _entryGateActive        the card, still up, now over the NEW character's
+  ///                           restored conversation; tapping it replayed the
+  ///                           opening into that history and logged an
+  ///                           entry_tap with no entry_shown to pair it with
+  ///   _replyCount             20/20 with one character meant the login gate
+  ///                           fired on the FIRST message to the next, and a
+  ///                           login_gate row was logged for a character with
+  ///                           zero messages — the stored per-character count
+  ///                           was right, only the in-memory copy was stale
+  ///   _loggedTyping,          one-shot funnel guards, so the second character
+  ///   _sentFirstMessage,      in a session got no input_typed, no
+  ///   _gateShownLogged        first_message and no gate_shown row at all
+  ///   _idleNudges,            the nudge budget and the strip position carried
+  ///   _quickReplyIndex,       over, so a conversation could start already out
+  ///   _scriptPausesReached    of nudges or with the strip on turn nine
+  ///
+  /// The screen ping and idle timer are stopped here and restarted by
+  /// [_openCharacter] and the opening respectively, so a switch mid-nudge does
+  /// not deliver the old character's nudge into the new conversation.
+  ///
+  /// _userHasSent IS reset, and the test that switches from a spoken-to
+  /// character to a fresh one is why: _loadHistory only assigns it on the
+  /// non-empty branch, so a fresh character after a spoken one inherited
+  /// `true` and lost its card. _hasDraft follows the text controller, which
+  /// is shared across characters on purpose (a half-typed message survives a
+  /// switch).
+  void _resetForNewCharacter() {
+    _cancelIdleTimer();
+    _stopScreenPing();
+    _welcomeAbandoned = true; // stops any script parked mid-burst
+    _welcomeRun++;
+    setState(() {
+      _messages.clear();
+      _aiService = null;
+      _isTyping = false;
+      _userHasSent = false;
+      _entryGateActive = false;
+      _entryGateStartsOpening = true;
+      _gateActive = false;
+      _gateShownLogged = false;
+      _loggedTyping = false;
+      _sentFirstMessage = false;
+      _idleNudges = 0;
+      _quickReplyIndex = 0;
+      _scriptPausesReached = 0;
+      _replyCount = 0; // reloaded below from the new character's stored count
+    });
+    // The ping counts up to a cap and stops for good; carried over, the second
+    // character's dwell measurement would start where the first one ended and
+    // could hit the cap on its first tick.
+    _screenPingTicks = 0;
+    _openerSent = false;
   }
 
   /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
@@ -828,14 +906,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void didUpdateWidget(ChatScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.scenario != widget.scenario) {
-      // Full Reset on Scenario Change
-      setState(() {
-        _messages.clear();
-        _aiService = null;
-      });
-      _openerSent = false;
+      // Another character, same State: everything initState did per
+      // character has to happen again here, in the same order.
+      _resetForNewCharacter();
       _historyLoaded = _loadHistory();
-      _sendInitialMessage();
+      _loadReplyCount();
+      // Post-frame for the same reason initState defers it: _openCharacter
+      // writes to activeChatProvider, and Riverpod asserts against modifying
+      // a provider during a widget life-cycle — didUpdateWidget included. The
+      // assert is debug-only, so release builds never saw it, but it fails
+      // any widget test that switches character.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _openCharacter();
+        _sendInitialMessage();
+      });
       return;
     }
 
@@ -1998,7 +2083,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // 2
     (
       pauseMs: 1500,
-      lines: ["I'm Hercules.", 'Yes... that Hercules.'],
+      lines: ["I'm Hercules.", 'Yes... that Hercules. 😉'],
     ),
     // 3
     (
@@ -2024,7 +2109,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       lines: [
         'Hmm.',
         "You're going to make me work for this conversation, aren't you?",
-        'I like that.',
+        'I like that. 😉',
       ],
     ),
     // 6
@@ -2050,7 +2135,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       pauseMs: 4000,
       lines: [
         'Unfortunately...',
-        'I may have inherited more than his strength.',
+        'I may have inherited more than his strength. 😉',
         'Which quality do you think I inherited?',
       ],
     ),
@@ -2101,7 +2186,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       lines: [
         "Perhaps that's why I've become careful about first impressions.",
         'Although... not too careful.',
-        'I still enjoy a good first impression.',
+        'I still enjoy a good first impression. 😉',
       ],
     ),
     // 14
@@ -2154,7 +2239,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         'the strongest man in Greece...',
         'taking orders from a queen.',
         'People assume I must have hated it.',
-        "I didn't.",
+        "I didn't. 😉",
       ],
     ),
     // 19
@@ -2178,7 +2263,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // 21
     (
       pauseMs: 1500,
-      lines: ['Careful.', 'I might actually enjoy being kept in line.'],
+      lines: ['Careful.', 'I might actually enjoy being kept in line. 😉'],
     ),
     // 22
     (
@@ -2284,7 +2369,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         'Besides...',
         "I've talked enough.",
         'And between us?',
-        "I've heard all of my stories before.",
+        "I've heard all of my stories before. 😉",
       ],
     ),
     // 33
@@ -2311,7 +2396,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     'He actually listens.',
   ];
   static const List<String> _hercSetInherited = [
-    'The charm, obviously.',
+    'The charm, obviously. 😉',
     'Getting into trouble.',
     "I'm still deciding about you.",
   ];
@@ -2326,7 +2411,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     'The way they make me feel.',
   ];
   static const List<String> _hercSetReputation = [
-    'I think I could manage you.',
+    'I think I could manage you. 😉',
     'Depends how well you behave.',
     "I'm more interested in Omphale.",
   ];
@@ -2344,6 +2429,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     'Alright. Ask me something.',
     'Tell me about Omphale first.',
     'I have a story for you.',
+  ];
+
+  /// Past the script, and the only Hercules sets that survive an interruption.
+  ///
+  /// Every set his document specifies is an ANSWER to the line before it —
+  /// "The charm, obviously.", "Depends how well you behave." — so
+  /// [_setStandsAlone] rightly accepts none of them, and once a visitor typed
+  /// during his script the cold-safe fallback in [_setQuickReplyIndex] was
+  /// empty. The strip then froze for the rest of the conversation on answers
+  /// to a question he never asked, and the chosen-row latch never released
+  /// because the prompts never changed. Odysseus escaped only because his
+  /// sets 13-16 are questions; these are Hercules's equivalent. All questions,
+  /// all askable cold, and drawn from the two threads his own script opens —
+  /// his father, and Omphale.
+  static const List<String> _hercSetCold1 = [
+    "What's the story with you and Queen Omphale?",
+    'What was it really like having Zeus as your father?',
+    'What did Hera actually do to you?',
+  ];
+  static const List<String> _hercSetCold2 = [
+    'Which of the Twelve Labors was the hardest?',
+    'What do people get most wrong about you?',
+    'What do you wish you had learned sooner?',
   ];
 
   static const List<List<String>> _herculesQuickReplies = [
@@ -2367,6 +2475,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _hercSetStronger, _hercSetStronger, _hercSetStronger,
     // 33
     _hercSetHandover,
+    // 34-35: past the script. Question-form, so they are also what the strip
+    // falls back to once the visitor interrupts him.
+    _hercSetCold1, _hercSetCold2,
   ];
 
   /// The pause-point quick replies for [characterId], or null for a character

@@ -162,7 +162,7 @@ export const CHARACTER_STARTERS = {
         "He makes me laugh.",
         "He's confident, but kind.",
         "He actually listens.",
-        "The charm, obviously.",
+        "The charm, obviously. 😉",
         "Getting into trouble.",
         "I'm still deciding about you.",
         "More times than I'd like.",
@@ -171,7 +171,7 @@ export const CHARACTER_STARTERS = {
         "Making me laugh.",
         "Kindness.",
         "The way they make me feel.",
-        "I think I could manage you.",
+        "I think I could manage you. 😉",
         "Depends how well you behave.",
         "I'm more interested in Omphale.",
         "Not to worry so much.",
@@ -182,7 +182,11 @@ export const CHARACTER_STARTERS = {
         "I surprised myself.",
         "Alright. Ask me something.",
         "Tell me about Omphale first.",
-        "I have a story for you."
+        "I have a story for you.",
+        "What did Hera actually do to you?",
+        "Which of the Twelve Labors was the hardest?",
+        "What do people get most wrong about you?",
+        "What do you wish you had learned sooner?"
     ]
 };
 
@@ -454,22 +458,22 @@ export const CHARACTER_QUICK_REPLY_SETS = {
             "He actually listens."
         ],
         [
-            "The charm, obviously.",
+            "The charm, obviously. 😉",
             "Getting into trouble.",
             "I'm still deciding about you."
         ],
         [
-            "The charm, obviously.",
+            "The charm, obviously. 😉",
             "Getting into trouble.",
             "I'm still deciding about you."
         ],
         [
-            "The charm, obviously.",
+            "The charm, obviously. 😉",
             "Getting into trouble.",
             "I'm still deciding about you."
         ],
         [
-            "The charm, obviously.",
+            "The charm, obviously. 😉",
             "Getting into trouble.",
             "I'm still deciding about you."
         ],
@@ -514,27 +518,27 @@ export const CHARACTER_QUICK_REPLY_SETS = {
             "The way they make me feel."
         ],
         [
-            "I think I could manage you.",
+            "I think I could manage you. 😉",
             "Depends how well you behave.",
             "I'm more interested in Omphale."
         ],
         [
-            "I think I could manage you.",
+            "I think I could manage you. 😉",
             "Depends how well you behave.",
             "I'm more interested in Omphale."
         ],
         [
-            "I think I could manage you.",
+            "I think I could manage you. 😉",
             "Depends how well you behave.",
             "I'm more interested in Omphale."
         ],
         [
-            "I think I could manage you.",
+            "I think I could manage you. 😉",
             "Depends how well you behave.",
             "I'm more interested in Omphale."
         ],
         [
-            "I think I could manage you.",
+            "I think I could manage you. 😉",
             "Depends how well you behave.",
             "I'm more interested in Omphale."
         ],
@@ -582,6 +586,16 @@ export const CHARACTER_QUICK_REPLY_SETS = {
             "Alright. Ask me something.",
             "Tell me about Omphale first.",
             "I have a story for you."
+        ],
+        [
+            "What's the story with you and Queen Omphale?",
+            "What was it really like having Zeus as your father?",
+            "What did Hera actually do to you?"
+        ],
+        [
+            "Which of the Twelve Labors was the hardest?",
+            "What do people get most wrong about you?",
+            "What do you wish you had learned sooner?"
         ]
     ]
 };
