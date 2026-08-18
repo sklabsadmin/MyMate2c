@@ -167,6 +167,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// said they are watching.
   bool _entryGateActive = false;
 
+  /// Whether tapping through the entry card should start the scripted opening.
+  ///
+  /// True for a genuinely empty chat. False when the card is up over history
+  /// the visitor never spoke in — a monologue an older bundle auto-played and
+  /// saved. Those visitors get the card (they have never engaged, and that is
+  /// what it measures) but tapping it must not replay the opening under lines
+  /// that are already on the screen; the model resumes from the history it
+  /// was built with, exactly as a reload does.
+  bool _entryGateStartsOpening = true;
+
   /// The character's title — the parenthetical half of the scenario string, so
   /// "Odysseus (King of Ithaca)" gives "King of Ithaca".
   ///
@@ -763,7 +773,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       detail: '${widget.characterId}#$source',
       appUserId: _appUserId,
     );
-    if (!startOpening) return;
+    // Nothing to start over a monologue that is already on screen — see
+    // _entryGateStartsOpening. The visitor was still gated and still counted;
+    // they simply resume the conversation from where the old bundle left it.
+    if (!startOpening || !_entryGateStartsOpening) return;
     // Only now does the character have an audience, so only now is anything
     // declared to the delivery log or spoken.
     _raiseGate();
@@ -911,11 +924,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         );
       }
 
-      // Welcome Sequence (Only if history is TRULY empty)
-      if (history.isEmpty) {
+      // The card comes up for anyone who has never spoken here, empty history
+      // or not. It used to require an empty history, which was too narrow by
+      // roughly nine to one on the first night: 45 Instagram visits reached a
+      // chat screen and 5 saw the card. Devices still serving the 1.7.0 bundle
+      // auto-play the monologue, and that writes the character's lines into
+      // localStorage — so once those devices update, history is not empty and
+      // the card never came up, for a visitor who has never engaged. The
+      // measurement was silently limited to fresh devices.
+      //
+      // _userHasSent is the visitor's side of that history and the actual
+      // question the card asks. Restored from storage above, so a returning
+      // visitor who did speak is still not gated.
+      //
+      // The opening itself is still only started into a TRULY empty chat, in
+      // _enterChat: a card over an existing monologue must not replay it.
+      if (!_userHasSent) {
+        _entryGateStartsOpening = history.isEmpty;
         // The entry card comes first and holds everything else back until it
         // is tapped; _enterChat starts the two lines below itself.
-        if (!_raiseEntryGate()) {
+        if (!_raiseEntryGate() && history.isEmpty) {
           // Before the sequence, not after it: the prompts are static content
           // and there is no reason to withhold them behind a paced greeting.
           // Calypso's first turn alone lands its last bubble ~2.6s in ("Hello."
@@ -937,6 +965,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           scenario: widget.scenario,
           characterId: widget.characterId,
         );
+        // Corrupt history was discarded, so this really is a fresh chat.
+        _entryGateStartsOpening = true;
         if (!_raiseEntryGate()) {
           _raiseGate();
           _triggerWelcomeSequence();
@@ -3012,6 +3042,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// a second entry_shown inside one visit cannot inflate the denominator, and
   /// _gateShownLogged still holds the story gate's event to one per screen.
   void _restartFromEntry() {
+    // Both callers have just emptied the conversation, so the card is over a
+    // genuinely fresh chat again and tapping it should start the opening.
+    _entryGateStartsOpening = true;
     if (!_raiseEntryGate()) {
       _raiseGate();
       _triggerWelcomeSequence();

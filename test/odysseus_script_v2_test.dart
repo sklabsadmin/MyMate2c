@@ -842,6 +842,40 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('comes up over a monologue the visitor never answered, and does '
+      'not replay it', (tester) async {
+    // The production case, first night of 1.7.1: devices still on the 1.7.0
+    // bundle auto-played the opening and saved it, so their history was not
+    // empty when they updated — and a card gated on empty history never came
+    // up for a visitor who had never engaged. 45 chat visits, 5 cards.
+    SharedPreferences.setMockInitialValues({
+      _historyKey: [
+        for (final (i, line) in [_firstLine, _p01Question].indexed)
+          jsonEncode({
+            'id': 'welcome_old_$i',
+            'text': line,
+            'isUser': false,
+            'timestamp': DateTime.now().toIso8601String(),
+          }),
+      ],
+    });
+    await _mountChat(tester, enterChat: false);
+
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'never spoke here, so the card is owed whatever the history');
+
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await _play(tester, limit: const Duration(seconds: 30));
+
+    // The two lines that were already there, and nothing added underneath.
+    final lines = await _delivered();
+    expect(lines, [_firstLine, _p01Question],
+        reason: 'tapping through must not replay the opening into it');
+
+    await _teardown(tester);
+  });
+
   testWidgets('does not come up for a returning conversation', (tester) async {
     // Someone who has already spoken here has demonstrably entered. Asking
     // again would gate a conversation they are in the middle of, and would put
