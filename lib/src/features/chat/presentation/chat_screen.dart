@@ -391,15 +391,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// worth incomparably more than no event.
   String? _appUserId;
 
+  /// Asks [DeliveryLog] for the id rather than reading storage directly, and
+  /// the difference is not cosmetic. This used to be a plain read, and on a
+  /// fresh device it ran before anything had created the id — [initState]
+  /// starts [DeliveryLog.init] first, but this call's `getInstance()` resolves
+  /// ahead of it, because a second waiter on an in-flight future is woken
+  /// before the first one's own `await` continues. So the read found nothing,
+  /// never looked again, and every funnel event of a first-time visitor went
+  /// out with no user id — 92% of screen_ping rows live, and 100% of
+  /// character_tap. Creating the id if it is missing makes the answer the same
+  /// whichever caller gets there first.
   Future<void> _loadAppUserId() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (!mounted) return;
-      _appUserId = prefs.getString('user_id');
-    } catch (_) {
-      // Storage unavailable. The id stays null and every funnel event still
-      // fires; swallowing this is the entire point.
-    }
+    final id = await DeliveryLog.userId();
+    if (!mounted) return;
+    _appUserId = id;
   }
 
   /// Guards the one-shot first_message funnel event.

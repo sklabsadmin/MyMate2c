@@ -2412,7 +2412,22 @@ async function recordMessageDelivery(rows, request, env) {
                 -- outage that made the first one necessary.
                 queued_ms = MAX(COALESCE(message_delivery.queued_ms, 0), COALESCE(excluded.queued_ms, 0)),
                 flush_attempts = MAX(COALESCE(message_delivery.flush_attempts, 0), COALESCE(excluded.flush_attempts, 0)),
-                queue_dropped = MAX(COALESCE(message_delivery.queue_dropped, 0), COALESCE(excluded.queue_dropped, 0))
+                queue_dropped = MAX(COALESCE(message_delivery.queue_dropped, 0), COALESCE(excluded.queue_dropped, 0)),
+                -- Client context, filled in by whichever flush first knows it.
+                -- These used to be written on insert only, and the insert is
+                -- the session's first flush — the one most likely to go out
+                -- before the client has finished finding out about itself.
+                -- Live, 56% of rows had no app_version for exactly that
+                -- reason, while a later flush for the same bubble carried it
+                -- and was ignored. Never overwritten once set, same as the
+                -- timestamps: the first answer is the closest to the moment
+                -- the bubble was shown.
+                app_version     = COALESCE(message_delivery.app_version,     excluded.app_version),
+                locale          = COALESCE(message_delivery.locale,          excluded.locale),
+                tz_offset_min   = COALESCE(message_delivery.tz_offset_min,   excluded.tz_offset_min),
+                connection_type = COALESCE(message_delivery.connection_type, excluded.connection_type),
+                viewport_w      = COALESCE(message_delivery.viewport_w,      excluded.viewport_w),
+                viewport_h      = COALESCE(message_delivery.viewport_h,      excluded.viewport_h)
         `).bind(
             bubbleId,
             turnId,

@@ -334,9 +334,8 @@ class DeliveryLog {
     }
     try {
       _prefs = await SharedPreferences.getInstance();
-      _ready = true;
 
-      _userId = _ensureUserId(_prefs!);
+      _userId = ensureUserId(_prefs!);
       _dropped = _prefs!.getInt(_droppedKey) ?? 0;
 
       final raw = _prefs!.getString(_queueKey);
@@ -364,16 +363,55 @@ class DeliveryLog {
       // adds nothing still shrinks the stored queue.
       _persist();
 
+      // Before _ready, not after: the first flush of a session carries the
+      // intent for the whole opening, and the worker writes app_version only
+      // when it first sees a bubble — so a version that resolved after that
+      // flush was lost for every one of those rows. Live, 56% of rows landed
+      // with no version at all, every one of them a welcome_script bubble from
+      // a session's first flush; the user/ai_reply rows, which come later,
+      // always had one. On web this is a fetch of version.json, so it is
+      // bounded: a stalled request must never hold receipts hostage, and a
+      // version that arrives late still applies to every flush after it.
+      final version = PackageInfo.fromPlatform()
+          .then((info) => '${info.version}+${info.buildNumber}');
+      // Version is context, not evidence: a failure here is swallowed and the
+      // receipts go out without one.
+      unawaited(version.then<void>((v) => _appVersion = v, onError: (_) {}));
       try {
-        final info = await PackageInfo.fromPlatform();
-        _appVersion = '${info.version}+${info.buildNumber}';
+        await version.timeout(_appVersionWait);
       } catch (_) {
-        // Version is context, not evidence. Carry on without it.
+        // Timed out or failed; the hook above still takes a late arrival.
       }
+      _ready = true;
 
       if (_pending.isNotEmpty) _scheduleFlush();
     } catch (e) {
       if (kDebugMode) debugPrint('DeliveryLog.init failed: $e');
+    }
+  }
+
+  /// How long the first flush waits for the app version before going without.
+  static const Duration _appVersionWait = Duration(seconds: 3);
+
+  /// The anonymous id this device's rows are recorded under — read from
+  /// storage, or created there if this is the first time anything asked.
+  ///
+  /// The one call every producer of that id should go through. Three places
+  /// used to read `user_id` independently, and one of them only read: the chat
+  /// screen's funnel events took whatever was in storage at the moment they
+  /// first looked, which on a fresh device was nothing — this class had not yet
+  /// created it, and the screen never looked again. Live, 92% of screen_ping
+  /// rows and every character_tap carried no user id, which is every new
+  /// device, so the join from a bounce to its transcript that migration 0006
+  /// exists for was silently limited to returning visitors. Creating rather
+  /// than reading is what makes the answer the same whoever asks first.
+  static Future<String?> userId() async {
+    try {
+      return ensureUserId(await SharedPreferences.getInstance());
+    } catch (_) {
+      // Storage unavailable. Same rule as everywhere else here: never let
+      // telemetry take the chat down with it.
+      return null;
     }
   }
 
@@ -386,7 +424,11 @@ class DeliveryLog {
   /// measure. Whichever runs first wins and the other reuses it; the format has
   /// to stay in step with isRealUserId in the worker ("user_" plus a 13-digit
   /// millisecond stamp, 18 characters).
-  static String _ensureUserId(SharedPreferences prefs) {
+  ///
+  /// Read-then-write with no await between, so two callers that both find the
+  /// key empty cannot each mint their own: the second one to run sees the
+  /// first one's write. That is what [userId] and the chat screen rely on.
+  static String ensureUserId(SharedPreferences prefs) {
     final existing = prefs.getString('user_id');
     if (existing != null && existing.isNotEmpty) return existing;
     final created = 'user_${DateTime.now().millisecondsSinceEpoch}';
