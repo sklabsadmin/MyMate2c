@@ -185,21 +185,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// visitor who does not know it is there will not scroll to find it. Every
   /// short-viewport tap rate read to date has been unable to separate
   /// "declined" from "never saw the button", which is what this closes.
+  ///
+  /// Owned by the screen and handed to _EntryGate, because the reader
+  /// (_raiseEntryGate's post-frame callback) lives here.
   final ScrollController _entryGateScrollController = ScrollController();
 
-  /// The character's title — the parenthetical half of the scenario string, so
-  /// "Odysseus (King of Ithaca)" gives "King of Ithaca".
+  /// The scenario string split once: "Odysseus (King of Ithaca)" → name
+  /// "Odysseus", title "King of Ithaca". Title is null for a scenario written
+  /// without one.
   ///
-  /// Null for a scenario written without one, in which case the entry card
-  /// shows the name alone rather than an empty line.
-  String? get _characterTitle {
+  /// The one parser for that format. There were three — this getter with
+  /// indexOf/lastIndexOf, _characterDisplayName with its own indexOf, and a
+  /// regex inside _openProfile — which agreed on every string in the roster
+  /// today and would disagree on the first title containing a parenthesis.
+  /// Name and title come from the same split so the entry card and the profile
+  /// screen cannot drift apart on what they call the character.
+  ({String name, String? title}) get _scenarioParts {
     final scenario = widget.scenario;
-    if (scenario == null) return null;
+    if (scenario == null || scenario.isEmpty) return (name: 'He', title: null);
     final open = scenario.indexOf(' (');
+    if (open <= 0) return (name: scenario, title: null);
     final close = scenario.lastIndexOf(')');
-    if (open < 0 || close <= open + 2) return null;
-    return scenario.substring(open + 2, close);
+    if (close <= open + 2) return (name: scenario, title: null);
+    return (
+      name: scenario.substring(0, open),
+      title: scenario.substring(open + 2, close),
+    );
   }
+
+  /// The parenthetical half of the scenario, or null. See [_scenarioParts].
+  String? get _characterTitle => _scenarioParts.title;
 
   /// Whether the message box currently holds anything, tracked so the send
   /// button can look disabled when there is nothing to send and light up when
@@ -403,12 +418,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   /// "Zeus (Olympian King)" -> "Zeus"; used in the typing indicator's
   /// rotating status phrases.
-  String get _characterDisplayName {
-    final scenario = widget.scenario;
-    if (scenario == null || scenario.isEmpty) return 'He';
-    final parenIndex = scenario.indexOf(' (');
-    return parenIndex > 0 ? scenario.substring(0, parenIndex) : scenario;
-  }
+  String get _characterDisplayName => _scenarioParts.name;
 
   @override
   void initState() {
@@ -3068,10 +3078,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
 
     // "Zeus (Olympian King)" → name and title, matching the card's layout.
-    final raw = widget.scenario ?? '';
-    final match = RegExp(r'^(.*?)\s*\((.*)\)$').firstMatch(raw);
-    final name = match?.group(1) ?? raw;
-    final title = match?.group(2) ?? '';
+    final parts = _scenarioParts;
+    final name = parts.name;
+    final title = parts.title ?? '';
 
     final question = await Navigator.of(context).push<String>(
       MaterialPageRoute(
@@ -3860,8 +3869,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               ),
             ),
           ),
-          // Content
-          Column(
+          // Content. Wrapped so that while the entry card is up the chat is
+          // out of the focus traversal as well as out of reach of a pointer:
+          // the card is opaque and swallows taps, but Tab on desktop web
+          // walked straight past it to the message field, and a keystroke
+          // there logged input_typed for a visit whose entry_shown stood
+          // untapped — "engaged but never entered", which the funnel cannot
+          // express. Same for a screen reader landing on controls the card is
+          // meant to be withholding.
+          ExcludeFocus(
+            excluding: _entryGateActive,
+            child: Column(
             children: [
               Expanded(
                 child: ListView.builder(
@@ -3946,6 +3964,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 ),
               _buildInputArea(theme),
             ],
+            ),
           ),
           // The entry gate, over everything in the body.
           //
@@ -3955,248 +3974,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           // come in must be able to leave in the ordinary way — a card they
           // cannot escape would turn a measurement into a trap, and "left
           // rather than tap" is a result we want recorded, not prevented.
-          if (_entryGateActive) _buildEntryGate(theme),
-        ],
-      ),
-    );
-  }
-
-  /// The card that has to be tapped before the conversation starts.
-  ///
-  /// Everything here is static — no image to fetch, no history to wait on, no
-  /// paced beat — so it is on screen the moment Flutter paints. That is the
-  /// whole design constraint: for the QR traffic that is two thirds of arrivals
-  /// the app paints at a ~2s median and half are gone by 3s, so anything the
-  /// visitor has to wait for is not something they declined, it is something
-  /// they never saw.
-  Widget _buildEntryGate(ThemeData theme) {
-    final title = _characterTitle;
-    final tagline = characterById(widget.characterId)?['tagline'] as String?;
-    // Exactly the condition _openProfile bails on, so the hint is never shown
-    // for a tap that would do nothing.
-    final hasProfile = profileForCharacter(widget.characterId) != null &&
-        widget.characterImage != null;
-    return Positioned.fill(
-      // Opaque, and every stop of it. This gradient is copied from the chat
-      // background below, where a translucent middle stop is free because
-      // there is nothing behind it — over the chat it is not: at 0.25 the
-      // quick-reply strip, a starter row and the message box all read straight
-      // through the card, so the "one button" screen arrived with four other
-      // tappable-looking things on it and did not read as a new screen at all.
-      //
-      // alphaBlend rather than a hand-picked hex so the tone still follows
-      // theme.primaryColor, composited onto the black it would have been
-      // sitting on anyway.
-      child: Container(
-        key: _entryGateKey,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              const Color(0xFF2E003E),
-              Color.alphaBlend(
-                theme.primaryColor.withOpacity(0.25),
-                Colors.black,
-              ),
-              Colors.black,
-            ],
-          ),
-        ),
-        child: SafeArea(
-          // Identity at the top, button at the bottom, gap between — rather
-          // than one centred stack.
-          //
-          // Still inside a scroll view, and that is the part worth keeping:
-          // the button is pinned to the bottom of the CONTENT, not to the
-          // viewport, so on a short screen (an older phone, or a browser with
-          // a fat in-app toolbar) it goes on being reachable by scrolling
-          // instead of being pushed off the edge. minHeight is what makes it
-          // sit at the bottom when there is room to spare, and yield when
-          // there is not.
-          child: LayoutBuilder(
-            builder: (context, constraints) => SingleChildScrollView(
-              // Read once post-frame by _raiseEntryGate: maxScrollExtent > 0
-              // here means the button starts below the fold.
-              controller: _entryGateScrollController,
-              // The top inset clears the app bar, which this body extends
-              // behind (extendBodyBehindAppBar). Centred content never needed
-              // it; top-aligned content slides under the header without it.
-              padding: const EdgeInsets.fromLTRB(
-                32,
-                kToolbarHeight + 24,
-                32,
-                28,
-              ),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - (kToolbarHeight + 52),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                  // Portrait, name, title and tagline are one tap target, not
-                  // four. They read as a single block, so a visitor who tries
-                  // the name after the photo did nothing would conclude the
-                  // whole thing is inert — and the hint below promises both.
-                  //
-                  // Inert, with no hint shown, for a character who has no
-                  // profile written: _openProfile returns early in that case,
-                  // and advertising a tap that does nothing is worse than not
-                  // advertising it.
-                  GestureDetector(
-                    onTap: hasProfile ? _openProfile : null,
-                    behavior: HitTestBehavior.opaque,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (widget.characterImage != null)
-                          Container(
-                            // 190, up from 132. It is the only image on the
-                            // first screen anyone sees, and at 132 it read as
-                            // an avatar next to the name rather than as the
-                            // portrait the screen is built around.
-                            width: 190,
-                            height: 190,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: theme.colorScheme.secondary
-                                    .withOpacity(0.6),
-                                width: 2,
-                              ),
-                              image: DecorationImage(
-                                image: AssetImage(widget.characterImage!),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                        const SizedBox(height: 24),
-                        Text(
-                          _characterDisplayName,
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.outfit(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 30,
-                          ),
-                        ),
-                        if (title != null) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            title,
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.outfit(
-                              color: Colors.white.withOpacity(0.65),
-                              fontSize: 17,
-                            ),
-                          ),
-                        ],
-                        if (tagline != null) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            tagline,
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.outfit(
-                              color: Colors.white.withOpacity(0.55),
-                              fontSize: 15,
-                            ),
-                          ),
-                        ],
-                        if (hasProfile) ...[
-                          const SizedBox(height: 12),
-                          // The hint. Says which things are tappable and what
-                          // arrives if you tap them, because "tap to learn
-                          // more" on a screen that already has a big button
-                          // saying "Tap to continue" would just compete with
-                          // it. The icon carries most of the work at a glance.
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.touch_app_outlined,
-                                size: 15,
-                                color: theme.colorScheme.secondary
-                                    .withOpacity(0.75),
-                              ),
-                              const SizedBox(width: 6),
-                              // Flexible, not bare. A Row sizes its children
-                              // to their natural width, so this line overflowed
-                              // the 390px reference phone by 252px — clipped
-                              // text in release, overflow stripes in debug.
-                              // Letting it wrap costs a second line on a narrow
-                              // screen and nothing on a wide one.
-                              Flexible(
-                                child: Text(
-                                  'Tap the photo or name for the full profile',
-                                  textAlign: TextAlign.center,
-                                  style: GoogleFonts.outfit(
-                                    color: theme.colorScheme.secondary
-                                        .withOpacity(0.75),
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  // Three children, so spaceBetween puts one at the top, one
-                  // in the middle and one at the foot. The invitation used to
-                  // travel with the button as a caption under it, which left
-                  // it stranded at the very bottom of the screen, a long way
-                  // under the profile hint it reads on from.
-                  //
-                  // An invitation rather than a label for the button. The line
-                  // this replaced ("to speak with the King of Ithaca") only
-                  // restated the title printed two rows above it, so it spent
-                  // the last line on the screen saying nothing new. This one
-                  // gives a reason to press.
-                  //
-                  // Sized close to the title above it rather than as fine
-                  // print. It is the only sentence on the card doing any
-                  // persuading, and at 14px against a 30px name it read as a
-                  // caption for the button — the opacity goes up with it,
-                  // because bigger but still faint is half a change.
-                  //
-                  // The break after "talk to you," is deliberate and hard,
-                  // not left to the wrap: it splits the sentence at its own
-                  // comma, so the two halves read as two thoughts rather than
-                  // wherever the phone's width happens to cut them.
-                  //
-                  // No gendered word left in it. Shortening the second half
-                  // dropped the "how he can help" clause, so this line is now
-                  // identical for every character on the roster — which is
-                  // why the per-character pronoun helper this used to call is
-                  // gone from characters.dart rather than sitting there
-                  // uncalled.
-                  Text(
-                    '$_characterDisplayName would like to talk to you,\n'
-                    'and understand your journey',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.outfit(
-                      color: Colors.white.withOpacity(0.75),
-                      fontSize: 17,
-                      height: 1.4,
-                    ),
-                  ),
-                  // Alone at the foot. The only thing on the screen that does
-                  // anything, and nothing rides along under it.
-                  //
-                  // Not full width: stretched to the card's gutters it read as
-                  // a banner, a thing the layout happened to end on, and a
-                  // button that is obviously a button beats a bigger one that
-                  // is not. Sized to its text instead, and pulsing, so it is
-                  // the only moving thing on an otherwise still screen.
-                  _PulsingEnterButton(onPressed: () => _enterChat()),
-                  ],
-                ),
-              ),
+          if (_entryGateActive)
+            _EntryGate(
+              name: _characterDisplayName,
+              title: _characterTitle,
+              characterId: widget.characterId,
+              imagePath: widget.characterImage,
+              onEnter: () => _enterChat(),
+              onOpenProfile: _openProfile,
+              scrollController: _entryGateScrollController,
             ),
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -4543,6 +4331,290 @@ class _PulsingEnterButtonState extends State<_PulsingEnterButton>
   }
 }
 
+/// The entry card: portrait, name, title, one button, over the chat until it
+/// is tapped.
+///
+/// Everything here is static — no image to fetch, no history to wait on, no
+/// paced beat — so it is on screen the moment Flutter paints. That is the
+/// whole design constraint: for the QR traffic that is two thirds of arrivals
+/// the app paints at a ~2s median and half are gone by 3s, so anything the
+/// visitor has to wait for is not something they declined, it is something
+/// they never saw.
+///
+/// A widget of its own, like [_StarterPrompts] and [_PulsingEnterButton], rather
+/// than a builder on the chat screen's State — which is where it started, and
+/// where every copy tweak was landing in the largest and hottest file in the
+/// repo. It holds nothing: whether it is up, and what tapping it does, both
+/// belong to the screen and arrive as arguments.
+class _EntryGate extends StatelessWidget {
+  final String name;
+  final String? title;
+  final String? characterId;
+  final String? imagePath;
+
+  /// Tapping the button.
+  final VoidCallback onEnter;
+
+  /// Tapping the portrait/name block. The card decides for itself whether to
+  /// wire and advertise this — see hasProfile in [build] — so a caller passes
+  /// it unconditionally.
+  final VoidCallback onOpenProfile;
+
+  /// The screen's controller for this card's scroll view, so the screen can
+  /// read maxScrollExtent one frame after raising the gate — that is how
+  /// entry_shown learns whether the button was inside the first viewport
+  /// (#fold=fit) or below it (#fold=below). Owned and disposed by the screen;
+  /// this widget only attaches it.
+  final ScrollController? scrollController;
+
+  const _EntryGate({
+    required this.name,
+    required this.title,
+    required this.characterId,
+    required this.imagePath,
+    required this.onEnter,
+    required this.onOpenProfile,
+    this.scrollController,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final title = this.title;
+    final tagline = characterById(characterId)?['tagline'] as String?;
+    // Exactly the condition _openProfile bails on, so the hint is never shown
+    // for a tap that would do nothing.
+    final hasProfile =
+        profileForCharacter(characterId) != null && imagePath != null;
+    return Positioned.fill(
+      // Opaque, and every stop of it. This gradient is copied from the chat
+      // background below, where a translucent middle stop is free because
+      // there is nothing behind it — over the chat it is not: at 0.25 the
+      // quick-reply strip, a starter row and the message box all read straight
+      // through the card, so the "one button" screen arrived with four other
+      // tappable-looking things on it and did not read as a new screen at all.
+      //
+      // alphaBlend rather than a hand-picked hex so the tone still follows
+      // theme.primaryColor, composited onto the black it would have been
+      // sitting on anyway.
+      child: Container(
+        key: _entryGateKey,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF2E003E),
+              Color.alphaBlend(
+                theme.primaryColor.withOpacity(0.25),
+                Colors.black,
+              ),
+              Colors.black,
+            ],
+          ),
+        ),
+        child: SafeArea(
+          // Identity at the top, button at the bottom, gap between — rather
+          // than one centred stack.
+          //
+          // Still inside a scroll view, and that is the part worth keeping:
+          // the button is pinned to the bottom of the CONTENT, not to the
+          // viewport, so on a short screen (an older phone, or a browser with
+          // a fat in-app toolbar) it goes on being reachable by scrolling
+          // instead of being pushed off the edge. minHeight is what makes it
+          // sit at the bottom when there is room to spare, and yield when
+          // there is not.
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              // Read once post-frame by _raiseEntryGate: maxScrollExtent > 0
+              // here means the button starts below the fold.
+              controller: scrollController,
+              // The top inset clears the app bar, which this body extends
+              // behind (extendBodyBehindAppBar). Centred content never needed
+              // it; top-aligned content slides under the header without it.
+              padding: const EdgeInsets.fromLTRB(
+                32,
+                kToolbarHeight + 24,
+                32,
+                28,
+              ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  // Clamped: an in-app browser with the soft keyboard up can
+                  // hand this builder less than the padding it subtracts, and
+                  // a negative minHeight fails BoxConstraints' own assert.
+                  minHeight: max(0, constraints.maxHeight - (kToolbarHeight + 52)),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                  // Portrait, name, title and tagline are one tap target, not
+                  // four. They read as a single block, so a visitor who tries
+                  // the name after the photo did nothing would conclude the
+                  // whole thing is inert — and the hint below promises both.
+                  //
+                  // Inert, with no hint shown, for a character who has no
+                  // profile written: _openProfile returns early in that case,
+                  // and advertising a tap that does nothing is worse than not
+                  // advertising it.
+                  GestureDetector(
+                    onTap: hasProfile ? onOpenProfile : null,
+                    behavior: HitTestBehavior.opaque,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (imagePath != null)
+                          Container(
+                            // 190, up from 132. It is the only image on the
+                            // first screen anyone sees, and at 132 it read as
+                            // an avatar next to the name rather than as the
+                            // portrait the screen is built around.
+                            width: 190,
+                            height: 190,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: theme.colorScheme.secondary
+                                    .withOpacity(0.6),
+                                width: 2,
+                              ),
+                              image: DecorationImage(
+                                image: AssetImage(imagePath!),
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 24),
+                        Text(
+                          name,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.outfit(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 30,
+                          ),
+                        ),
+                        if (title != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            title,
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.outfit(
+                              color: Colors.white.withOpacity(0.65),
+                              fontSize: 17,
+                            ),
+                          ),
+                        ],
+                        if (tagline != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            tagline,
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.outfit(
+                              color: Colors.white.withOpacity(0.55),
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                        if (hasProfile) ...[
+                          const SizedBox(height: 12),
+                          // The hint. Says which things are tappable and what
+                          // arrives if you tap them, because "tap to learn
+                          // more" on a screen that already has a big button
+                          // saying "Tap to continue" would just compete with
+                          // it. The icon carries most of the work at a glance.
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.touch_app_outlined,
+                                size: 15,
+                                color: theme.colorScheme.secondary
+                                    .withOpacity(0.75),
+                              ),
+                              const SizedBox(width: 6),
+                              // Flexible, not bare. A Row sizes its children
+                              // to their natural width, so this line overflowed
+                              // the 390px reference phone by 252px — clipped
+                              // text in release, overflow stripes in debug.
+                              // Letting it wrap costs a second line on a narrow
+                              // screen and nothing on a wide one.
+                              Flexible(
+                                child: Text(
+                                  'Tap the photo or name for the full profile',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.outfit(
+                                    color: theme.colorScheme.secondary
+                                        .withOpacity(0.75),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  // Three children, so spaceBetween puts one at the top, one
+                  // in the middle and one at the foot. The invitation used to
+                  // travel with the button as a caption under it, which left
+                  // it stranded at the very bottom of the screen, a long way
+                  // under the profile hint it reads on from.
+                  //
+                  // An invitation rather than a label for the button. The line
+                  // this replaced ("to speak with the King of Ithaca") only
+                  // restated the title printed two rows above it, so it spent
+                  // the last line on the screen saying nothing new. This one
+                  // gives a reason to press.
+                  //
+                  // Sized close to the title above it rather than as fine
+                  // print. It is the only sentence on the card doing any
+                  // persuading, and at 14px against a 30px name it read as a
+                  // caption for the button — the opacity goes up with it,
+                  // because bigger but still faint is half a change.
+                  //
+                  // The break after "talk to you," is deliberate and hard,
+                  // not left to the wrap: it splits the sentence at its own
+                  // comma, so the two halves read as two thoughts rather than
+                  // wherever the phone's width happens to cut them.
+                  //
+                  // No gendered word left in it. Shortening the second half
+                  // dropped the "how he can help" clause, so this line is now
+                  // identical for every character on the roster — which is
+                  // why the per-character pronoun helper this used to call is
+                  // gone from characters.dart rather than sitting there
+                  // uncalled.
+                  Text(
+                    '$name would like to talk to you,\n'
+                    'and understand your journey',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.outfit(
+                      color: Colors.white.withOpacity(0.75),
+                      fontSize: 17,
+                      height: 1.4,
+                    ),
+                  ),
+                  // Alone at the foot. The only thing on the screen that does
+                  // anything, and nothing rides along under it.
+                  //
+                  // Not full width: stretched to the card's gutters it read as
+                  // a banner, a thing the layout happened to end on, and a
+                  // button that is obviously a button beats a bigger one that
+                  // is not. Sized to its text instead, and pulsing, so it is
+                  // the only moving thing on an otherwise still screen.
+                  _PulsingEnterButton(onPressed: onEnter),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Identifies the entry card's backing container so a test can assert it is
 /// actually opaque. It shipped once with a translucent middle stop under a
 /// comment claiming otherwise, and no test could have caught it: a widget test
@@ -4743,6 +4815,17 @@ class _StarterPromptsState extends State<_StarterPrompts>
   /// still spends most of its life at rest. It also stops for good once
   /// [_StarterPrompts.teach] goes false.
   void _runEntrance() {
+    // Reduce-motion: land the rows and stop. The entry button already honours
+    // this setting (_PulsingEnterButton) and it was inconsistent for the very
+    // next thing on the same screen to stagger in, run a travelling glow and
+    // flash — the exact motion class the preference exists to suppress. The
+    // strip is fully usable at rest; only the teaching flourish is skipped.
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      _controller.value = 1;
+      _attention.value = 0;
+      _flash.value = 0;
+      return;
+    }
     _controller.forward(from: 0);
     _attention.value = 0;
     _flash.value = 0;

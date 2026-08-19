@@ -276,18 +276,15 @@ export default {
                        SUM(CASE WHEN a.dwell_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
                        SUM(CASE WHEN a.saw_app THEN 1 ELSE 0 END) AS saw_app,
                        CAST(AVG(a.load_ms) AS INTEGER) AS avg_load_ms,
-                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms,
-                       -- The honest average. avg_ms is wall clock and 91% of
-                       -- these exits are backgroundings, so it mostly measures
-                       -- how long a dead tab sat behind the feed — it once
-                       -- read a flat 5.2s median as a triumphant 32.7s.
-                       CAST(AVG(a.seen_ms) AS INTEGER) AS avg_seen_ms
+                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms
                 FROM (
                     SELECT v.visit_id,
                            MIN(v.source) AS source,
                            MIN(${visitClientSql("v")}) AS client,
-                           ${visitDwellMsSql("v")} AS dwell_ms,
-                           ${visitVisibleMsSql("v")} AS seen_ms,
+                           -- Time on screen, not wall clock: see
+                           -- visitTimeOnScreenMsSql. "Left under 3s" and the
+                           -- average are the two numbers this page is read for.
+                           ${visitTimeOnScreenMsSql("v")} AS dwell_ms,
                            (SELECT MIN(r.duration_ms) FROM site_visits r
                              WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
                            EXISTS (SELECT 1 FROM site_visits r
@@ -323,8 +320,9 @@ export default {
                        MIN(a.utm_campaign) AS utm_campaign, MIN(a.country) AS country,
                        MIN(a.referer) AS referer,
                        MIN(${visitClientSql("a")}) AS client,
-                       ${visitDwellMsSql("a")} AS duration_ms,
-                       ${visitVisibleMsSql("a")} AS seen_ms,
+                       -- Same figure the buckets above are cut on, so a row's
+                       -- Dwell agrees with the bucket it was counted in.
+                       ${visitTimeOnScreenMsSql("a")} AS duration_ms,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
@@ -738,6 +736,14 @@ export default {
                        (SELECT a2.nav_type FROM site_visits a2
                          WHERE a2.visit_id = a.visit_id AND a2.event = 'arrive'
                            AND a2.nav_type IS NOT NULL LIMIT 1) AS nav_type,
+                       -- 1.7.1's entry card, for the CSV: same MIN-first-open
+                       -- shape as the visits table, see the note there.
+                       (SELECT MIN(s.duration_ms) FROM site_visits s
+                         WHERE s.visit_id = a.visit_id AND s.event = 'entry_shown') AS entry_shown_ms,
+                       (SELECT MIN(t2.duration_ms) FROM site_visits t2
+                         WHERE t2.visit_id = a.visit_id AND t2.event = 'entry_tap') AS entry_tap_ms,
+                       (SELECT COUNT(*) FROM site_visits pv
+                         WHERE pv.visit_id = a.visit_id AND pv.event = 'profile_view') AS profile_views,
                        (SELECT COUNT(*) FROM site_visits g
                          WHERE g.visit_id = a.visit_id AND g.event = 'screen_ping') AS ticks,
                        -- The elapsed time the last tick actually reported, rather
@@ -1232,7 +1238,17 @@ export default {
                         headers: corsHeaders(request),
                     });
                 }
-                return jsonResponse({ acked: result.acked }, { headers: corsHeaders(request) });
+                // stored: false only when the receipts were deliberately
+                // discarded (DELIVERY_LOGGING off), so an ack that stored
+                // nothing can be told apart from one that stored everything.
+                // Absent on the normal path rather than `stored: true`, so the
+                // marker is only ever present when something is worth noticing.
+                return jsonResponse(
+                    result.stored === false
+                        ? { acked: result.acked, stored: false }
+                        : { acked: result.acked },
+                    { headers: corsHeaders(request) },
+                );
             } catch (e) {
                 console.error(JSON.stringify({
                     event: "delivery_log_failed",
@@ -2330,8 +2346,16 @@ async function recordMessageDelivery(rows, request, env) {
     // Only the exact string "false" disables it, so a var that is missing or
     // misspelled cannot quietly switch off the logging — same rule as
     // REQUIRE_SIGNATURE.
+    //
+    // `stored: false` is what says so on the wire. Without it this response is
+    // byte-identical to a successful write, so an empty table and a healthy
+    // one are indistinguishable from outside the worker — which is the exact
+    // ambiguity this whole feature exists to remove, and it was reintroduced
+    // here in the one place that silently drops data on purpose. A deploy with
+    // the flag off would otherwise look, from every angle a person can check
+    // quickly, like delivery logging working perfectly and nobody chatting.
     if (env.DELIVERY_LOGGING === "false") {
-        return { acked: rows.map((r) => r.bubbleId) };
+        return { acked: rows.map((r) => r.bubbleId), stored: false };
     }
     if (!env.CHAT_LOGS_DB) return { acked: [], error: "no_database" };
     if (isSyntheticTest(request)) return { acked: rows.map((r) => r.bubbleId) };
@@ -3100,6 +3124,22 @@ function visitVisibleMsSql(alias) {
     )`;
 }
 
+/// The dwell figure the buckets and averages are cut on: time on screen where
+/// the client reported it, wall clock where it did not.
+///
+/// The buckets used to read wall clock alone. That put a visit that was
+/// backgrounded for forty seconds and then closed into "stayed over 30s"
+/// alongside someone who actually read for forty seconds — the very confusion
+/// visible_ms was added to remove — and the 2026-08-18 handoff flagged the
+/// buckets as still reading the wrong column. 74% of the last 30 days' visits
+/// carry visible_ms; the fallback keeps the other 26% (older rows, and any
+/// killed before a hide checkpoint) in the histogram rather than dropping them,
+/// at the cost of those few reading a little long. That is the direction to be
+/// wrong in for a "how quickly did they leave" chart.
+function visitTimeOnScreenMsSql(alias) {
+    return `COALESCE(${visitVisibleMsSql(alias)}, ${visitDwellMsSql(alias)})`;
+}
+
 /// Rows the CSV export will carry at most.
 ///
 /// High enough that no real range hits it — 90 days of current traffic is
@@ -3143,6 +3183,11 @@ const SESSION_CSV_COLUMNS = [
     // exactly the evidence for it in the view you would check.
     ["ticks", (r) => r.ticks || 0],
     ["opened_character", (r) => (r.opened_character ? 1 : 0)],
+    // 1.7.1's entry card and profile views. The release's headline number is
+    // entry_tap over entry_shown; without these the CSV could not compute it.
+    ["entry_shown_ms", (r) => r.entry_shown_ms],
+    ["entry_tap_ms", (r) => r.entry_tap_ms],
+    ["profile_views", (r) => r.profile_views || 0],
     ["tapped_starter", (r) => (r.tapped_starter ? 1 : 0)],
     ["messages", (r) => r.messages || 0],
     ["tapped", (r) => r.tapped || 0],
@@ -5750,7 +5795,7 @@ async function render(out) {
   let h = '<div class="wrap"><table class="sortable"><tr><th data-sorted="desc">When (UTC)</th>' +
           '<th>Source</th><th>Path</th>' +
           '<th>Character</th><th>Country</th><th data-type="num">Load</th>' +
-          '<th data-type="num" title="wall clock from arrival to the last thing the browser reported">Dwell</th>' +
+          '<th data-type="num" title="time the page was actually on screen (falls back to wall clock for visits that never reported it)">Dwell</th>' +
           '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Seen</th>' +
           '<th title="how the visit ended, and how often it was backgrounded first">Exit</th>' +
           '<th data-type="num">Ticks</th>' +
@@ -6454,18 +6499,17 @@ async function render(out) {
        'trust the client column for that question. <b>Reported a dwell</b> is the ' +
        'denominator for the columns after it &mdash; visits whose tab was ' +
        'killed outright never report one and cannot be counted either way. ' +
-       '<b>Avg dwell</b> is wall clock and keeps running while the tab sits ' +
-       'backgrounded behind the feed, which is how most of these visits end ' +
-       '&mdash; <b>Avg seen</b> is the time a person was actually looking, and ' +
-       'is the column to trust.</p>' +
+       '<b>Avg dwell</b> is time actually on screen where the client reported ' +
+       'it, wall clock only for the shrinking share of rows that predate the ' +
+       'measurement &mdash; never the raw wall clock that once read a 5.2s ' +
+       'median as 32.7s.</p>' +
        '<div class="wrap"><table class="sortable"><tr><th>Source</th><th>Client</th>' +
        '<th data-type="num" data-sorted="desc">Visits</th>' +
        '<th data-type="num">Saw the app</th><th data-type="num">Gave up loading</th>' +
        '<th data-type="num">Avg load</th>' +
        '<th data-type="num">Reported a dwell</th>' +
        '<th data-type="num">Left under 3s</th>' +
-       '<th data-type="num" title="wall clock from arrival to the last thing the browser reported - runs while backgrounded">Avg dwell</th>' +
-       '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Avg seen</th></tr>';
+       '<th data-type="num" title="time on screen where reported; wall clock only for rows that predate visible_ms">Avg dwell</th></tr>';
   for (const r of d.bySource) {
     const gaveUp = r.visits - (r.saw_app || 0);
     const known = r.with_duration || 0;
@@ -6484,10 +6528,9 @@ async function render(out) {
          ' <span class="muted">of ' + r.visits + '</span>' +
          '</td><td class="num"' + sv(known ? bounced : null) + '>' +
          (known ? bounced + bouncePct : '<span class="muted">&mdash;</span>') +
-         '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) +
-         '</td><td class="num"' + sv(r.avg_seen_ms) + '>' + dur(r.avg_seen_ms) + '</td></tr>';
+         '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) + '</td></tr>';
   }
-  if (!d.bySource.length) h += '<tr><td colspan="10" class="muted">No visits yet.</td></tr>';
+  if (!d.bySource.length) h += '<tr><td colspan="9" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
   // Which ad bought which behaviour — rendered only when the links carry ad
@@ -6559,8 +6602,7 @@ async function render(out) {
        // the page's inline script, where a bare ' closes the single-quoted
        // string it lands in and the whole admin script stops parsing —
        // admin_pages.test.mjs catches it, which is how this one was found.
-       '<th data-type="num" title="wall clock from arrival to the last thing the browser reported - runs while backgrounded">Dwell</th>' +
-       '<th data-type="num" title="time the page was actually on screen, summed across backgroundings - the honest one">Seen</th>' +
+       '<th data-type="num" title="time on screen where reported; wall clock only for rows that predate visible_ms">Dwell</th>' +
        '<th data-type="num" title="when the entry card appeared, measured from arrival">Card at</th>' +
        '<th data-type="num" title="when they tapped Tap to continue, measured from arrival — blank means the card was shown and never tapped">Tapped at</th>' +
        '<th data-type="num" title="times the character profile was opened this visit, from the chat header or the entry card; hover for when the first one happened">Profile</th>' +
@@ -6599,7 +6641,6 @@ async function render(out) {
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
-         '</td><td class="num"' + sv(r.seen_ms) + '>' + dur(r.seen_ms) +
          '</td><td class="num"' + sv(r.entry_shown_ms) + '>' +
          (r.entry_shown_ms == null
            ? '<span class="muted">—</span>'
@@ -6618,9 +6659,9 @@ async function render(out) {
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="14"></td></tr>';
+         '" style="display:none"><td colspan="13"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="14" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="13" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);

@@ -992,6 +992,135 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('keeps the message field out of focus traversal while up',
+      (tester) async {
+    // The card is opaque and swallows taps, but Tab on desktop web walked past
+    // it to the field, and a keystroke there logged input_typed for a visit
+    // whose card was never tapped. ExcludeFocus now takes the chat out of
+    // traversal while the card is up, and puts it back the moment it drops.
+    await _mountChat(tester, enterChat: false);
+    expect(find.text(_enterButton), findsOneWidget);
+
+    // Whichever node the field would receive focus through, it must not be
+    // reachable by traversal.
+    final fieldElement = tester.element(find.byType(TextField));
+    final scope = FocusScope.of(fieldElement);
+    final reachable = scope.traversalDescendants
+        .where((n) => n.context != null && n.context!.widget is EditableText)
+        .toList();
+    expect(reachable, isEmpty,
+        reason: 'the field must not be reachable by Tab while the card is up');
+
+    // Tap through, and it comes back. Asserted on the field's own node rather
+    // than a second traversalDescendants read: that list is rebuilt lazily,
+    // and reading it again in the same frame returns the stale exclusion.
+    // canRequestFocus is what a Tab press actually consults.
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    // The TextField's own node, not Focus.of(EditableText): the latter is an
+    // inner node EditableText wraps, and ExcludeFocus does not restore its
+    // flag on the way out — a probe showed the field's node returning to
+    // true at +1ms and typing working, while the inner one stayed false.
+    final tf = tester.widget<TextField>(find.byType(TextField));
+    expect(tf.focusNode?.canRequestFocus, isTrue,
+        reason: 'once entered, the field is focusable again');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('parses a title that contains a parenthesis the same way '
+      'everywhere', (tester) async {
+    // Three parsers of the scenario string agreed on every roster entry and
+    // would have disagreed on this one. Now there is one, and the entry card
+    // and the profile header read from it — asserted through the two surfaces
+    // that used to have their own.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: 'Zeus (King (of the Gods))',
+            characterId: 'zeus',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    // Name is everything before the FIRST " (", title everything inside up to
+    // the LAST ")". The card shows both; the app bar shows the raw scenario.
+    expect(find.text('Zeus'), findsWidgets);
+    expect(find.text('King (of the Gods)'), findsOneWidget,
+        reason: 'the inner parenthesis belongs to the title, not the name');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('shows every part of the card as it actually ships',
+      (tester) async {
+    // The one test that asserts the card's parts by name, with an image — the
+    // rest of the suite mounts without one, so the portrait and the profile
+    // hint were rendered in no test that checked for them, and a regression
+    // hiding either would have kept everything green. Written alongside the
+    // extraction into _EntryGate, so it also proves the extraction moved
+    // nothing.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatScreen(
+            scenario: 'Hercules (Son of Zeus)',
+            characterId: 'hercules',
+            characterImage: 'assets/images/avatar_hercules_real.jpg',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    // Identity block: portrait, name, title, tagline.
+    final portrait = find.byWidgetPredicate((w) =>
+        w is Container &&
+        w.decoration is BoxDecoration &&
+        (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+        (w.decoration as BoxDecoration).image != null &&
+        w.constraints?.maxWidth == 190);
+    expect(portrait, findsOneWidget, reason: 'the 190px circular portrait');
+    expect(find.text('Hercules'), findsWidgets);
+    expect(find.text('Son of Zeus'), findsWidgets);
+    expect(find.text('Strongest Mortal and Hero of Olympus.'), findsOneWidget,
+        reason: 'the tagline, which only Hercules currently has');
+
+    // The profile hint — shown only when there is a profile AND an image,
+    // which is why no other test ever rendered it.
+    expect(find.text('Tap the photo or name for the full profile'),
+        findsOneWidget);
+    expect(find.byIcon(Icons.touch_app_outlined), findsWidgets);
+
+    // The invitation, split at its comma, and the button.
+    expect(
+      find.text('Hercules would like to talk to you,\nand understand your journey'),
+      findsOneWidget,
+    );
+    expect(find.text(_enterButton), findsOneWidget);
+
+    // The reduce-motion branch of the button is deliberately not asserted
+    // here: MaterialApp's View rebuilds MediaQuery from the platform
+    // dispatcher, and driving that flag through the test harness turned out
+    // to need more investigation than a presence test should carry.
+
+    await _teardown(tester);
+  });
+
   testWidgets('does not come up for a returning conversation', (tester) async {
     // Someone who has already spoken here has demonstrably entered. Asking
     // again would gate a conversation they are in the middle of, and would put
