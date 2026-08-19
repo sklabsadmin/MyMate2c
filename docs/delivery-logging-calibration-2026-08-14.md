@@ -8,6 +8,36 @@ The Windows session had already met the calibration goal, so this is a delta.
 Its value is what a second machine saw differently — and, in the follow-up, a
 likely explanation for the seq 16-22 anomaly that does not require a bug.
 
+> **Correction, 2026-08-19.** That last clause was wrong in a way that pointed
+> away from a real defect, and §1 and §3 below should be read against
+> `docs/delivery-seq0-hole-2026-08-17.md`.
+>
+> §1 says a missing render stamp "self-heals on the next flush". That is only
+> true while the receipt stays `dirty`. The seq 0 hole is exactly the case where
+> it does not: an ack was applied to receipts as they stood when the response
+> came back rather than as they were posted, so a stamp landing mid-flight was
+> marked delivered without ever being sent — and then never sent again. A
+> sighting in that window was worse, because `seenAt` makes a receipt
+> discardable and the ack deleted the record outright. Production showed seq 0
+> intended 291 against rendered 11.
+>
+> So "rendered lags the client and catches up" describes the healthy case only.
+> The unhealthy one has the same appearance and never catches up, and nothing in
+> §1 distinguishes them. Offering flush latency as the benign reading of seq
+> 16-22 was too confident on one machine's evidence.
+>
+> §3 is the concrete miss. The single `never_rendered` row there is a lone
+> `seq 0`, which I attributed to abandonment. That is the signature of this bug,
+> in the position it most often strikes — the opening's first bubble is drawn
+> ~742ms after intent is declared, inside the window of the session's first
+> flush. One row on one machine was not evidence of anything on its own, but it
+> was the same shape, and calling it abandonment closed the question early.
+>
+> The lesson is the one this document argues for elsewhere and did not apply to
+> itself: a benign explanation for a "recorded, then nothing" row needs the same
+> scrutiny as an alarming one, because both explain the observation equally well
+> and only one of them is safe to be wrong about.
+
 ## 1. The seq 16-22 anomaly did not reproduce — and here is what it looks like
 
 Ran the documented repro lead in full on a fresh session: 49-bubble Odysseus
@@ -30,6 +60,12 @@ and the moment an observer is most likely to look. A read taken during or just
 after an interactive session shows bubbles that were visibly on screen with
 `rendered_at` NULL — precisely the documented signature — and it self-heals on
 the next flush.
+
+**It self-heals only while the receipt stays `dirty`.** See the correction at
+the top: the seq 0 hole is the same appearance with the opposite ending, where
+an ack clears `dirty` for a stamp that was never sent and the row stays empty
+for good. Everything below describes the healthy case; it does not rule out the
+other one.
 
 **Worth checking whether the seq 16-22 read was taken before that session's
 final flush landed.** If it was, this is instrument latency rather than a
@@ -95,6 +131,12 @@ WHERE id IN (SELECT DISTINCT conversation_log_id FROM message_delivery
 
 The single `never_rendered` is a lone `seq 0` welcome bubble in a hands-off
 session whose tab was closed mid-script — abandonment, not a cluster.
+
+**Probably wrong.** `docs/delivery-seq0-hole-2026-08-17.md` found a real bug
+whose signature is precisely a missing `seq 0`, and the opening's first bubble
+sits inside the window of the session's first flush. Abandonment was a
+plausible reading of one row; it was not the only one, and it was the reading
+that required no further work.
 
 ## 4. Synthetic clicks work here; `initialMessage` is a race
 

@@ -1163,7 +1163,17 @@ export default {
                         headers: corsHeaders(request),
                     });
                 }
-                return jsonResponse({ acked: result.acked }, { headers: corsHeaders(request) });
+                // stored: false only when the receipts were deliberately
+                // discarded (DELIVERY_LOGGING off), so an ack that stored
+                // nothing can be told apart from one that stored everything.
+                // Absent on the normal path rather than `stored: true`, so the
+                // marker is only ever present when something is worth noticing.
+                return jsonResponse(
+                    result.stored === false
+                        ? { acked: result.acked, stored: false }
+                        : { acked: result.acked },
+                    { headers: corsHeaders(request) },
+                );
             } catch (e) {
                 console.error(JSON.stringify({
                     event: "delivery_log_failed",
@@ -2261,8 +2271,16 @@ async function recordMessageDelivery(rows, request, env) {
     // Only the exact string "false" disables it, so a var that is missing or
     // misspelled cannot quietly switch off the logging — same rule as
     // REQUIRE_SIGNATURE.
+    //
+    // `stored: false` is what says so on the wire. Without it this response is
+    // byte-identical to a successful write, so an empty table and a healthy
+    // one are indistinguishable from outside the worker — which is the exact
+    // ambiguity this whole feature exists to remove, and it was reintroduced
+    // here in the one place that silently drops data on purpose. A deploy with
+    // the flag off would otherwise look, from every angle a person can check
+    // quickly, like delivery logging working perfectly and nobody chatting.
     if (env.DELIVERY_LOGGING === "false") {
-        return { acked: rows.map((r) => r.bubbleId) };
+        return { acked: rows.map((r) => r.bubbleId), stored: false };
     }
     if (!env.CHAT_LOGS_DB) return { acked: [], error: "no_database" };
     if (isSyntheticTest(request)) return { acked: rows.map((r) => r.bubbleId) };
