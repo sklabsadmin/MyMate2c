@@ -394,8 +394,28 @@ test('DELIVERY_LOGGING=false acks the batch and stores nothing', async () => {
     assert.equal(res.status, 200);
     assert.deepEqual(res.json.acked, ['b0', 'b1']);
 
+    // And it says so. Without this the response is byte-identical to a
+    // successful write, which makes a flag left off indistinguishable from a
+    // quiet site — the same "recorded, then nothing" ambiguity the table
+    // exists to resolve, in the one path that drops data deliberately.
+    assert.equal(res.json.stored, false);
+
     const stored = db.prepare('SELECT COUNT(*) AS n FROM message_delivery').get();
     assert.equal(stored.n, 0);
+});
+
+test('a stored batch carries no stored marker', async () => {
+    // The marker means "worth noticing", so it must be absent on the ordinary
+    // path — otherwise anything reading it has to distinguish false from
+    // missing, and the cheap check (is the key there?) silently inverts.
+    const { env, db } = envWith();
+
+    const res = await flush(env, [receipt()]);
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json.acked, ['b1']);
+    assert.equal('stored' in res.json, false);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM message_delivery').get().n, 1);
 });
 
 test('delivery logging stays on unless the var is exactly "false"', async () => {
