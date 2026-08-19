@@ -57,7 +57,7 @@ test('a Meta-sized query survives with its trailing utm params intact', async ()
     // 45h window — utm_term reduced to a six-character stump — so the ad ids
     // the campaign was already sending never reached the table whole.
     const { env, db } = testEnv();
-    const query = '?fbclid=' + 'A'.repeat(120) +
+    const query = '?fbclid=' + 'A'.repeat(180) +
         '&utm_source=fb&utm_medium=paid&utm_campaign=hercules-paid-20260817' +
         '&utm_id=52613165086331&utm_content=52613165107531&utm_term=52613164274931';
     assert.ok(query.length > 300, 'fixture must exceed the old cap');
