@@ -122,5 +122,38 @@ if ! grep -qF "$WORKER_URL" build/web/main.dart.js; then
   exit 1
 fi
 
+# Stamp the bundle version into the visit beacon. The beacon runs in <head>
+# before Flutter exists, so it cannot ask package_info — the build has to
+# tell it. Without this stamp every site_visits row is versionless and a
+# funnel cannot be segmented across a deploy: the day that question actually
+# came up, versions had to be reconstructed from delivery receipts, which
+# only exist for visits that rendered a bubble
+# (docs/EVAL-2026-08-18-entry-rate-by-bundle.md).
+APP_VERSION="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -1 | tr -d '[:space:]')"
+if [[ -z "$APP_VERSION" ]]; then
+  echo "ERROR: could not read version: from pubspec.yaml." >&2
+  exit 1
+fi
+python3 - "$APP_VERSION" <<'PY'
+import pathlib, sys
+version = sys.argv[1]
+p = pathlib.Path("build/web/index.html")
+s = p.read_text(encoding="utf-8")
+token = "%MYTHOS_APP_VERSION%"
+if token not in s:
+    # Missing means the beacon is absent or already stamped — either way this
+    # build's rows would be versionless or mislabeled. flutter_native_splash
+    # regenerating index.html before tool/patch_splash.py re-ran is the known
+    # way to get here.
+    sys.exit("build/web/index.html has no " + token +
+             " placeholder - run python3 tool/patch_splash.py and rebuild")
+p.write_text(s.replace(token, version), encoding="utf-8")
+PY
+if ! grep -qF "'${APP_VERSION}'" build/web/index.html; then
+  echo "ERROR: version stamp did not land in build/web/index.html." >&2
+  exit 1
+fi
+echo "==> stamped bundle version ${APP_VERSION} into the visit beacon"
+
 echo "==> ok: APP_SECRET baked in, API at ${WORKER_URL}"
 du -sh build/web

@@ -5,7 +5,7 @@
   "scripts": {
     "test": "node --test \"backend/test/*.test.mjs\"",
     "build:web": "bash tool/build_web.sh",
-    "deploy": "bash tool/preflight_deploy.sh && bash tool/build_web.sh release && wrangler deploy && bash tool/verify_deploy.sh https://chat.deeploveechoes.com && bash tool/assert_domains.sh && bash tool/smoke_test.sh https://chat.deeplovepoems.com",
+    "deploy": "bash tool/preflight_deploy.sh && wrangler d1 migrations apply mymate2_db --remote && bash tool/build_web.sh release && wrangler deploy && bash tool/verify_deploy.sh https://chat.deeploveechoes.com && bash tool/log_deploy.sh && bash tool/assert_domains.sh && bash tool/smoke_test.sh https://chat.deeplovepoems.com",
     "preview": "wrangler dev",
     "preview:local": "bash tool/preview_web.sh serve",
     "preview:shot": "bash tool/preview_web.sh shot",

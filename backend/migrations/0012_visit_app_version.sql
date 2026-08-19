@@ -1,0 +1,22 @@
+-- Which bundle served this page load, as pubspec's version+build ("1.7.1+68").
+--
+-- Nothing in site_visits said which bundle a visit ran, and deploys do not
+-- switch devices atomically — cached bundles linger for hours. So the day an
+-- entry rate had to be segmented across a deploy boundary (the a9813f1
+-- denominator fix), the only version signal anywhere was
+-- message_delivery.app_version, which exists solely for visits that rendered
+-- a bubble: the tappers and the auto-players, never the card-decliners the
+-- question was actually about. The eval had to bound contamination from
+-- behaviour instead (docs/EVAL-2026-08-18-entry-rate-by-bundle.md).
+--
+-- The splash beacon now sends the version on every event, stamped into
+-- index.html by tool/build_web.sh at build time — the beacon runs before
+-- Flutter exists, so it cannot ask package_info and the build has to tell it.
+-- NULL means the row predates the stamp, or a dev build that skipped it:
+-- unknown, never zero, same rule as visible_ms in 0009.
+--
+-- Apply BEFORE deploying the worker that writes it (npm run deploy now runs
+-- d1 migrations first): the write path names this column unconditionally, and
+-- its failure handler drops the row — an unapplied migration would silently
+-- cost every funnel event until it landed.
+ALTER TABLE site_visits ADD COLUMN app_version TEXT;

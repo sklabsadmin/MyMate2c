@@ -72,8 +72,11 @@ confidently wrong answer:
   `exit_mode='hidden'` — backgrounded, not closed — and the clock keeps running
   in a browser nobody is looking at. Reading it as attention turns a flat
   **5.2s** median into a triumphant **32.7s**. Use `visible_ms`.
-  *The admin pages still bucket on `duration_ms` and are wrong in exactly this
-  way — an unfixed known issue.*
+  *Corrected 2026-08-19: "the admin pages bucket on `duration_ms`" was only
+  half true — the giving-up buckets count screen_ping ticks and were roughly
+  honest. The real wall-clock-as-attention surfaces were the visits page's
+  Avg dwell and per-visit Dwell column and the "on the site" phrasing, all of
+  which now show Seen (`visible_ms`) beside a labeled wall clock.*
 - **`character_tap` is not a tap.** It fires on landing on `/c/<character>`, in
   the same breath as `entry_shown`. It means "reached a character screen".
   Engagement is `input_typed` / `starter_tap` / `first_message`, nothing else.
@@ -139,7 +142,16 @@ nothing is broken. People are choosing to leave.
   signature" while the site looks healthy.
 - **Revoke the Cloudflare token** `cfat_lUa…` — posted in chat, never
   authenticated, and unnecessary now.
-- **Fix the admin dwell buckets** to read `visible_ms` instead of `duration_ms`.
+- ~~**Fix the admin dwell buckets** to read `visible_ms` instead of
+  `duration_ms`.~~ Done 2026-08-19 (branch `claude/logs-logging-eval-adi2i9`),
+  with the diagnosis corrected along the way: the buckets were tick-based and
+  fine; the wall-clock surfaces were the visits-page averages, the per-visit
+  Dwell column, and the session-view phrasing. The same change adds
+  `site_visits.app_version` (migration 0012, stamped into the beacon by
+  `tool/build_web.sh`), auto-applies D1 migrations and auto-logs every deploy
+  in `npm run deploy` — the +70 hole cannot recur — and re-syncs
+  `tool/patch_splash.py`, whose stored beacon had silently drifted back to
+  the pre-`visible_ms` one.
 - Standing rule from an earlier mistake: **do not infer remote state from
   local.** Advice written from a local D1 inspection once contradicted the real
   remote and would have caused the failure it warned about.

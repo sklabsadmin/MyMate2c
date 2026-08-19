@@ -38,13 +38,19 @@ PICTURE_SOURCES = (
     '      <img class="center" aria-hidden="true" src="splash/img/logodark-1x.png" alt="">\n'
 )
 
-CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create —
+# Verbatim mirror of the block in web/index.html — regenerated, not
+# hand-edited. Edit web/index.html first, then re-mirror here, or the
+# next flutter_native_splash:create + re-patch silently reverts the
+# index.html change. The old parameterised copy drifted exactly that
+# way: it still carried the pre-visibility beacon and a splash script
+# with no splash_cap_timeout marker.
+CSS = r'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create —
        re-apply with: python3 tool/patch_splash.py -->
   <style id="splash-extras">
     /* Same colour as AppTheme.backgroundColor, so the splash and the app it
        covers are literally the same surface — the logo lifts away instead of
        the whole screen changing colour under it. */
-    #mythos-backdrop {{ position: fixed; inset: 0; background: {BACKDROP}; z-index: 9998; }}
+    #mythos-backdrop { position: fixed; inset: 0; background: #1A0520; z-index: 9998; }
     /* z-index must sit on the img: #splash is a <picture>, which is not
        positioned, so a z-index there does nothing. .center makes the img
        absolute. */
@@ -53,40 +59,40 @@ CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create
        ready — the first thing a visitor saw was motion that then vanished. It
        is now simply present from the first frame. */
     /* The logo art has the backdrop colour baked into it (it is RGB, no
-       alpha), so its square edges are invisible against {BACKDROP} — sampled at
+       alpha), so its square edges are invisible against #1A0520 — sampled at
        rgb(26,3,33), within a shade of AppTheme.backgroundColor. Capped so it
        reads as a logo rather than filling a large desktop window. */
-    #splash img {{ z-index: 9999; width: min(62vw, 300px); height: auto; }}
+    #splash img { z-index: 9999; width: min(62vw, 300px); height: auto; }
     /* Anchored to the logo, not the viewport bottom. The logo is vertically
        centred and square, so its lower edge sits at 50% + half its width;
        28px below that keeps the tagline visually attached to the mark instead
        of stranded near the bottom of a tall phone screen. */
-    #splash-tagline {{
+    #splash-tagline {
       position: fixed; left: 50%; transform: translateX(-50%);
       top: calc(50% + min(31vw, 150px) + 28px);
       margin: 0; width: 92%; text-align: center; z-index: 9999;
       font-family: Georgia, "Times New Roman", serif;
       font-size: clamp(15px, 4.2vw, 19px); letter-spacing: .02em;
       /* Light enough to read on the dark backdrop; the old #6B4B7A was picked
-         against cream and is near-invisible on {BACKDROP}. */
+         against cream and is near-invisible on #1A0520. */
       color: #C9B3D6;
-    }}
-    #splash-tagline .dots span {{ opacity: 0; animation: mythos-dot 1.4s infinite; }}
-    #splash-tagline .dots span:nth-child(2) {{ animation-delay: .2s; }}
-    #splash-tagline .dots span:nth-child(3) {{ animation-delay: .4s; }}
-    @keyframes mythos-dot {{ 0%,60%,100% {{ opacity: 0; }} 30% {{ opacity: 1; }} }}
+    }
+    #splash-tagline .dots span { opacity: 0; animation: mythos-dot 1.4s infinite; }
+    #splash-tagline .dots span:nth-child(2) { animation-delay: .2s; }
+    #splash-tagline .dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes mythos-dot { 0%,60%,100% { opacity: 0; } 30% { opacity: 1; } }
     /* pointer-events:none so the app is usable the instant the fade starts.
        These sit at z-index 9999 over Flutter, so without it the first 420ms
        of every session silently swallowed taps on a screen that looks ready. */
     body.mythos-leaving #mythos-backdrop,
     body.mythos-leaving #splash,
-    body.mythos-leaving #splash-tagline {{
+    body.mythos-leaving #splash-tagline {
       transition: opacity 420ms ease; opacity: 0; pointer-events: none;
-    }}
+    }
     /* Only the loading dots animate now, so they are all this needs to stop. */
-    @media (prefers-reduced-motion: reduce) {{
-      #splash-tagline .dots span {{ animation: none; opacity: 1; }}
-    }}
+    @media (prefers-reduced-motion: reduce) {
+      #splash-tagline .dots span { animation: none; opacity: 1; }
+    }
     /* Direct character links: no splash, and the load gap is painted in the
        app's own background (AppTheme.backgroundColor) rather than the splash's
        peach. Without this the visitor gets a light flash then a dark chat,
@@ -94,12 +100,18 @@ CSS = f'''  <!-- Custom splash. Regenerated away by flutter_native_splash:create
        seamless. The class is set in <head>, so this applies before first paint. */
     html.mythos-direct #mythos-backdrop,
     html.mythos-direct #splash,
-    html.mythos-direct #splash-tagline {{ display: none; }}
-    html.mythos-direct, html.mythos-direct body {{ background: {APP_BG}; }}
+    html.mythos-direct #splash-tagline { display: none; }
+    html.mythos-direct, html.mythos-direct body { background: #1A0520; }
   </style>
 '''
 
-SCRIPT = f'''  <script id="splash-screen-script">
+# Verbatim mirror of the block in web/index.html — regenerated, not
+# hand-edited. Edit web/index.html first, then re-mirror here, or the
+# next flutter_native_splash:create + re-patch silently reverts the
+# index.html change. The old parameterised copy drifted exactly that
+# way: it still carried the pre-visibility beacon and a splash script
+# with no splash_cap_timeout marker.
+SCRIPT = r'''  <script id="splash-screen-script">
     // Direct character links get no splash at all.
     //
     // Someone tapping /c/odysseus came for Odysseus, not for a logo — a brand
@@ -109,9 +121,9 @@ SCRIPT = f'''  <script id="splash-screen-script">
     //
     // Normal arrivals at / still get it: there the splash is doing real work,
     // covering a ~3MB bundle load that would otherwise be a blank page.
-    if (location.pathname.indexOf("/c/") === 0) {{
+    if (location.pathname.indexOf("/c/") === 0) {
       document.documentElement.className += " mythos-direct";
-    }}
+    }
 
     // The app never calls FlutterNativeSplash.remove(), so the generated
     // removeSplashFromWeb() never fires. We layer the splash above Flutter
@@ -126,66 +138,88 @@ SCRIPT = f'''  <script id="splash-screen-script">
     // never saw the app at all, only the logo. Half of all Instagram arrivals
     // left inside 3s. Someone following a /c/<character> link is here for a
     // specific character, so any hold is pure cost.
-    function mythosDismissSplash() {{
+    function mythosDismissSplash() {
       document.body.classList.add("mythos-leaving");
-      setTimeout(function () {{
+      setTimeout(function () {
         var ids = ["mythos-backdrop", "splash", "splash-tagline", "splash-branding"];
-        for (var i = 0; i < ids.length; i++) {{
+        for (var i = 0; i < ids.length; i++) {
           var el = document.getElementById(ids[i]);
           if (el) el.remove();
-        }}
+        }
         document.body.style.background = "transparent";
-      }}, 420);
-    }}
+      }, 420);
+    }
 
     // Longest we will ever hold someone behind the splash waiting for
     // Flutter. Past this we drop it regardless — a stuck bundle should show
     // whatever the app managed rather than an indefinite logo.
-    var MYTHOS_READY_CAP_MS = {READY_CAP_MS};
+    var MYTHOS_READY_CAP_MS = 15000;
 
     // Resolves when Flutter has actually put a frame on screen. Three
     // detectors, because no single one is reliable across Flutter versions:
     // the flutter-first-frame event, the view element appearing, and a hard
     // cap. First to fire wins; the rest become no-ops.
-    function mythosOnFlutterReady(cb) {{
+    function mythosOnFlutterReady(cb) {
       var fired = false, observer = null;
-      function fire() {{
+      // Whether the app actually painted, or we simply stopped waiting. The
+      // beacon reports the same event either way, so without this an app_ready
+      // at 15s is indistinguishable from an app that loaded in 15s — a failure
+      // wearing a success's clothes, and one that drags every load average with
+      // it. Two of 25 lost sessions on 10 Aug were this.
+      function fire(timedOut) {
         if (fired) return;
         fired = true;
-        try {{ if (observer) observer.disconnect(); }} catch (e) {{}}
-        cb();
-      }}
+        try { if (observer) observer.disconnect(); } catch (e) {}
+        cb(!!timedOut);
+      }
       var sel = "flt-glass-pane, flutter-view, flt-scene-host";
       if (document.querySelector(sel)) return fire();
-      window.addEventListener("flutter-first-frame", fire);
-      try {{
-        observer = new MutationObserver(function () {{
+      // Wrapped, not passed directly: addEventListener hands the listener an
+      // Event object, which as fire's first argument would read as timedOut
+      // and mark every successful paint a timeout.
+      window.addEventListener("flutter-first-frame", function () { fire(false); });
+      try {
+        observer = new MutationObserver(function () {
           if (document.querySelector(sel)) fire();
-        }});
-        observer.observe(document.documentElement, {{ childList: true, subtree: true }});
-      }} catch (e) {{}}
-      setTimeout(fire, MYTHOS_READY_CAP_MS);
-    }}
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (e) {}
+      setTimeout(function () { fire(true); }, MYTHOS_READY_CAP_MS);
+    }
 
-    document.addEventListener("DOMContentLoaded", function () {{
+    document.addEventListener("DOMContentLoaded", function () {
       // Readiness is the only gate. The splash still covers the whole load —
       // it is dismissed by Flutter painting, not by a timer — so a slow
       // connection never gets dropped onto a blank page, which was the
       // original reason a dwell was introduced. It just no longer holds
       // anyone back once the app is actually there.
-      mythosOnFlutterReady(function () {{
+      mythosOnFlutterReady(function (timedOut) {
         // How long the visitor actually waited for a usable app — the number
         // that separates "left during load" from "saw the app and left".
-        try {{
-          if (window.mythosVisitBeacon) window.mythosVisitBeacon("app_ready");
-        }} catch (e) {{}}
+        //
+        // failureReason marks the ones where Flutter never painted and the cap
+        // fired instead, so those can be excluded from load averages rather
+        // than silently inflating them.
+        try {
+          if (window.mythosVisitBeacon) {
+            window.mythosVisitBeacon(
+              "app_ready", undefined, undefined,
+              timedOut ? "splash_cap_timeout" : undefined);
+          }
+        } catch (e) {}
         mythosDismissSplash();
-      }});
-    }});
+      });
+    });
 
-    function removeSplashFromWeb() {{}}
+    function removeSplashFromWeb() {}
   </script>'''
 
+# Verbatim mirror of the block in web/index.html — regenerated, not
+# hand-edited. Edit web/index.html first, then re-mirror here, or the
+# next flutter_native_splash:create + re-patch silently reverts the
+# index.html change. The old parameterised copy drifted exactly that
+# way: it still carried the pre-visibility beacon and a splash script
+# with no splash_cap_timeout marker.
 CHIME = r'''  <!-- Quick-reply chime.
        Three ascending notes as the quick-reply rows light up, then the chord
        they spell as the instruction flashes. Synthesised with oscillators
@@ -269,6 +303,12 @@ CHIME = r'''  <!-- Quick-reply chime.
   </script>
 '''
 
+# Verbatim mirror of the block in web/index.html — regenerated, not
+# hand-edited. Edit web/index.html first, then re-mirror here, or the
+# next flutter_native_splash:create + re-patch silently reverts the
+# index.html change. The old parameterised copy drifted exactly that
+# way: it still carried the pre-visibility beacon and a splash script
+# with no splash_cap_timeout marker.
 BEACON = r'''  <!-- Arrival/exit beacon.
        Runs here, in the document head, rather than inside the Flutter app:
        main.dart.js is ~3MB, and a visitor arriving from an Instagram in-app
@@ -302,13 +342,25 @@ BEACON = r'''  <!-- Arrival/exit beacon.
     // messages did this session send before quitting" answerable.
     window.mythosVisitId = visitId;
 
+    // Which bundle this page load ran. tool/build_web.sh stamps the real
+    // version over the placeholder after every release build; a dev serve or
+    // a bare `flutter build web` leaves the token, and it is sent as nothing
+    // rather than as a literal placeholder. It rides on EVERY event, not only
+    // arrive, so a visit is versionable from any row it managed to write —
+    // segmenting the entry rate across a deploy previously meant
+    // reconstructing versions from delivery receipts, and most visits render
+    // no bubble to receipt (docs/EVAL-2026-08-18-entry-rate-by-bundle.md).
+    var APP_VERSION = '%MYTHOS_APP_VERSION%';
+    if (APP_VERSION.indexOf('%') !== -1) APP_VERSION = '';
+
     function send(event, extra) {
       var body = JSON.stringify(Object.assign({
         visitId: visitId,
         event: event,
         path: location.pathname,
         query: location.search,
-        referer: document.referrer || ''
+        referer: document.referrer || '',
+        appVersion: APP_VERSION || undefined
       }, extra || {}));
       try {
         // sendBeacon survives the page being torn down, which a fetch() does
@@ -335,22 +387,139 @@ BEACON = r'''  <!-- Arrival/exit beacon.
       });
     };
 
-    // Viewport width is only meaningful at arrival: it is what the visitor
-    // actually saw, before any rotation or window resize.
-    send('arrive', { viewportW: window.innerWidth || undefined });
+    // Viewport is only meaningful at arrival: it is what the visitor actually
+    // saw, before any rotation or window resize.
+    //
+    // Height matters as much as width and for a sharper reason. The
+    // quick-reply strip drops from three prompts to two below 720 logical
+    // pixels (_shortScreenHeight in chat_screen.dart), and an in-app browser
+    // spends a good part of a phone's height on its own chrome — so whether a
+    // visitor was offered three options or two is decided here, and without
+    // this we cannot tell which of them saw what.
+    send('arrive', {
+      viewportW: window.innerWidth || undefined,
+      viewportH: window.innerHeight || undefined,
+      // navigate / reload / back_forward. A reload is a fresh visit id and so
+      // a second arrival for the same person, which is the inflation
+      // docs/ANALYTICS_HANDOFF.md 4.1 describes; until now that could only be
+      // inferred from timestamps sitting suspiciously close together.
+      navType: (function () {
+        try {
+          var nav = performance.getEntriesByType('navigation')[0];
+          return nav && nav.type ? nav.type : undefined;
+        } catch (e) { return undefined; }
+      })()
+    });
 
+    // How the visit ended, and how much of it they actually watched.
+    //
+    // "hidden" and "gone" are different things and used to be the same event.
+    // leave() fired on the first visibilitychange as well as on pagehide, and
+    // latched, so a visitor who backgrounded the app for a moment — or began
+    // an interruptible swipe-to-dismiss on a Meta in-app browser sheet and
+    // thought better of it — was recorded as having left at that instant and
+    // never corrected. Measured on production data, 24 of 68 sessions kept
+    // firing screen_ping ticks after their own "leave": one was recorded as a
+    // 1.2s bounce while demonstrably still on the chat screen 28 seconds later.
+    //
+    // So visibility now accumulates rather than terminates:
+    //   hide   each time the page is backgrounded, carrying the visible time
+    //          so far. A checkpoint, not an ending — and the reason a session
+    //          whose pagehide never arrives still reports something, which is
+    //          how a third of the lost sessions currently vanish entirely.
+    //   show   on return, carrying how long they were away. A hide/show pair a
+    //          few hundred ms apart is an aborted swipe; forty seconds apart is
+    //          an app switch they came back from.
+    //   leave  on pagehide only — the page is genuinely going away.
+    //
+    // What cannot be captured, and is not guessed at anywhere below: which
+    // control they used. The X button, the swipe and the system back gesture
+    // are the host app's own chrome, and a webview is never told which one
+    // dismissed it.
+    var visibleMs = 0;
+    var visibleSince = document.visibilityState === 'visible' ? Date.now() : null;
+    var hiddenAt = null;
+    var hideCount = 0;
     var left = false;
-    function leave() {
+    // Chrome that shows and hides on scroll can flap visibility. The counter
+    // keeps counting past this so the total stays true; only the rows stop.
+    var MAX_VISIBILITY_EVENTS = 20;
+
+    function settleVisible() {
+      if (visibleSince !== null) {
+        visibleMs += Date.now() - visibleSince;
+        visibleSince = null;
+      }
+    }
+
+    function onHidden() {
+      if (left || hiddenAt !== null) return;
+      settleVisible();
+      hiddenAt = Date.now();
+      hideCount++;
+      if (hideCount <= MAX_VISIBILITY_EVENTS) {
+        // The running count rides along on every checkpoint, not only on
+        // leave. A visit killed while backgrounded never sends a leave at all
+        // — the population this whole change exists to see — and counting the
+        // hide rows instead would stop at MAX_VISIBILITY_EVENTS and quietly
+        // report a flapping visit as exactly 20 backgroundings.
+        send('hide', {
+          durationMs: Date.now() - ARRIVED_AT,
+          visibleMs: visibleMs,
+          hideCount: hideCount
+        });
+      }
+    }
+
+    function onVisible() {
+      if (left) return;
+      if (visibleSince === null) visibleSince = Date.now();
+      if (hiddenAt !== null) {
+        if (hideCount <= MAX_VISIBILITY_EVENTS) {
+          send('show', { durationMs: Date.now() - hiddenAt });
+        }
+        hiddenAt = null;
+      }
+    }
+
+    function leave(persisted) {
       if (left) return;
       left = true;
-      send('leave', { durationMs: Date.now() - ARRIVED_AT });
+      // Read before settling: settleVisible() does not touch visibilityState,
+      // but the order is the thing that decides whether this reads as ending
+      // while on screen or ending after having been put away.
+      var wasHidden = document.visibilityState === 'hidden';
+      settleVisible();
+      send('leave', {
+        // Unchanged: wall-clock since arrival, so every historical dwell stays
+        // comparable with every new one. visibleMs is the honest figure and is
+        // reported alongside it rather than in place of it.
+        durationMs: Date.now() - ARRIVED_AT,
+        visibleMs: visibleMs,
+        hideCount: hideCount,
+        // bfcache means the page was frozen, not destroyed, and a back gesture
+        // can bring this very visit back — which is why it is not "dismissed".
+        exitMode: persisted ? 'bfcache' : (wasHidden ? 'hidden' : 'dismissed')
+      });
     }
-    // pagehide is the one that fires reliably on mobile Safari and inside
-    // in-app browsers; visibilitychange catches tab-switching and app
-    // backgrounding. Both funnel through the same once-only guard.
-    window.addEventListener('pagehide', leave);
+
+    window.addEventListener('pagehide', function (e) {
+      leave(!!(e && e.persisted));
+    });
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden') leave();
+      if (document.visibilityState === 'hidden') onHidden();
+      else onVisible();
+    });
+    // Restored from bfcache: the same visit is live again, so the terminal
+    // guard is released and the clock restarts. Without this the returning
+    // visitor would look like someone who left and never came back, which is
+    // the population most worth being able to see.
+    window.addEventListener('pageshow', function (e) {
+      if (e && e.persisted) {
+        left = false;
+        hiddenAt = hiddenAt === null ? Date.now() : hiddenAt;
+        onVisible();
+      }
     });
   })();
   </script>

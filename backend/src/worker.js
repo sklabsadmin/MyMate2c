@@ -276,12 +276,18 @@ export default {
                        SUM(CASE WHEN a.dwell_ms < 3000 THEN 1 ELSE 0 END) AS bounced_under_3s,
                        SUM(CASE WHEN a.saw_app THEN 1 ELSE 0 END) AS saw_app,
                        CAST(AVG(a.load_ms) AS INTEGER) AS avg_load_ms,
-                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms
+                       CAST(AVG(a.dwell_ms) AS INTEGER) AS avg_ms,
+                       -- The honest average. avg_ms is wall clock and 91% of
+                       -- these exits are backgroundings, so it mostly measures
+                       -- how long a dead tab sat behind the feed — it once
+                       -- read a flat 5.2s median as a triumphant 32.7s.
+                       CAST(AVG(a.seen_ms) AS INTEGER) AS avg_seen_ms
                 FROM (
                     SELECT v.visit_id,
                            MIN(v.source) AS source,
                            MIN(${visitClientSql("v")}) AS client,
                            ${visitDwellMsSql("v")} AS dwell_ms,
+                           ${visitVisibleMsSql("v")} AS seen_ms,
                            (SELECT MIN(r.duration_ms) FROM site_visits r
                              WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS load_ms,
                            EXISTS (SELECT 1 FROM site_visits r
@@ -318,6 +324,7 @@ export default {
                        MIN(a.referer) AS referer,
                        MIN(${visitClientSql("a")}) AS client,
                        ${visitDwellMsSql("a")} AS duration_ms,
+                       ${visitVisibleMsSql("a")} AS seen_ms,
                        (SELECT MIN(r.duration_ms) FROM site_visits r
                          WHERE r.visit_id = a.visit_id AND r.event = 'app_ready') AS load_ms,
                        (SELECT COUNT(*) FROM site_visits m
@@ -2829,6 +2836,11 @@ async function recordSiteVisit(raw, request, env) {
     const exitMode = EXIT_MODES.includes(payload.exitMode) ? payload.exitMode : null;
     const NAV_TYPES = ["navigate", "reload", "back_forward", "prerender"];
     const navType = NAV_TYPES.includes(payload.navType) ? payload.navType : null;
+    // "1.7.1+68", stamped into the beacon at build time. Length-capped like
+    // every other client string; no whitelist, because the set of versions
+    // grows with every release and a stale list would null out exactly the
+    // new bundle each segmentation exists to see.
+    const appVersion = String(payload.appVersion || "").slice(0, 40) || null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -2837,8 +2849,9 @@ async function recordSiteVisit(raw, request, env) {
                 utm_medium, utm_campaign, referer, user_agent,
                 country, colo, duration_ms, detail, app_user_id,
                 viewport_w, viewport_h, failure_reason,
-                visible_ms, hide_count, exit_mode, nav_type, platform
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                visible_ms, hide_count, exit_mode, nav_type, platform,
+                app_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -2862,7 +2875,8 @@ async function recordSiteVisit(raw, request, env) {
             Number.isFinite(hideCount) && hideCount >= 0 ? Math.round(hideCount) : null,
             exitMode,
             navType,
-            detectPlatform(request)
+            detectPlatform(request),
+            appVersion
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -4808,7 +4822,10 @@ function renderTimeline(container, events, fmtTime) {
       t2.textContent = fmtTime(e.created_at);
       item.appendChild(t2);
       var label = e.event + (e.detail ? " (" + e.detail + ")" : "");
-      if (isLeave && e.duration_ms) label += " - dwell " + fmtDuration(e.duration_ms);
+      // Seen first, wall second: the wall clock kept counting behind the
+      // feed, and on this traffic that is most of what it counted.
+      if (isLeave && e.visible_ms) label += " - seen " + fmtDuration(e.visible_ms);
+      if (isLeave && e.duration_ms) label += " - wall " + fmtDuration(e.duration_ms);
       // hide and show are checkpoints, not endings, and the gap between a
       // pair is the whole point of them: a few hundred milliseconds is an
       // aborted swipe-to-dismiss, forty seconds is an app switch they came
@@ -5824,7 +5841,10 @@ function renderVisitDetail(cell, detail, messages) {
       bfcache: 'frozen, not closed — a back gesture could restore it',
     };
     lines.push('Left <b>' + esc(utcClock(detail.left_at)) + '</b>' +
-      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the site' : '') +
+      // "on the wall clock", not "on the site": the clock keeps running while
+      // the tab sits backgrounded, and the honest figure is the "actually on
+      // screen" line below this one.
+      (detail.dwell_ms ? ' after ' + fmtDuration(detail.dwell_ms) + ' on the wall clock' : '') +
       (ENDINGS[detail.exit_mode] ? ' &mdash; ' + ENDINGS[detail.exit_mode] : ''));
   } else {
     lines.push('<span class="muted">No leave event — the page was destroyed ' +
@@ -6313,14 +6333,20 @@ async function render(out) {
        'from the user-agent. A bio link tagged <code>?utm_source=ig</code> reads ' +
        '&ldquo;ig&rdquo; even when Facebook&rsquo;s in-app browser opened it, so ' +
        'trust the client column for that question. <b>Reported a dwell</b> is the ' +
-       'denominator for the two columns after it &mdash; visits whose tab was ' +
-       'killed outright never report one and cannot be counted either way.</p>' +
+       'denominator for the columns after it &mdash; visits whose tab was ' +
+       'killed outright never report one and cannot be counted either way. ' +
+       '<b>Avg dwell</b> is wall clock and keeps running while the tab sits ' +
+       'backgrounded behind the feed, which is how most of these visits end ' +
+       '&mdash; <b>Avg seen</b> is the time a person was actually looking, and ' +
+       'is the column to trust.</p>' +
        '<div class="wrap"><table class="sortable"><tr><th>Source</th><th>Client</th>' +
        '<th data-type="num" data-sorted="desc">Visits</th>' +
        '<th data-type="num">Saw the app</th><th data-type="num">Gave up loading</th>' +
        '<th data-type="num">Avg load</th>' +
        '<th data-type="num">Reported a dwell</th>' +
-       '<th data-type="num">Left under 3s</th><th data-type="num">Avg dwell</th></tr>';
+       '<th data-type="num">Left under 3s</th>' +
+       '<th data-type="num" title="wall clock from arrival to the last thing the browser reported - runs while backgrounded">Avg dwell</th>' +
+       '<th data-type="num" title="time the page was actually on screen, summed across backgroundings">Avg seen</th></tr>';
   for (const r of d.bySource) {
     const gaveUp = r.visits - (r.saw_app || 0);
     const known = r.with_duration || 0;
@@ -6339,9 +6365,10 @@ async function render(out) {
          ' <span class="muted">of ' + r.visits + '</span>' +
          '</td><td class="num"' + sv(known ? bounced : null) + '>' +
          (known ? bounced + bouncePct : '<span class="muted">&mdash;</span>') +
-         '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) + '</td></tr>';
+         '</td><td class="num"' + sv(r.avg_ms) + '>' + dur(r.avg_ms) +
+         '</td><td class="num"' + sv(r.avg_seen_ms) + '>' + dur(r.avg_seen_ms) + '</td></tr>';
   }
-  if (!d.bySource.length) h += '<tr><td colspan="9" class="muted">No visits yet.</td></tr>';
+  if (!d.bySource.length) h += '<tr><td colspan="10" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
   // Each day drills into the sessions that made up its count. Same
@@ -6360,11 +6387,12 @@ async function render(out) {
   h += '<h2>Recent arrivals</h2><div class="wrap"><table class="sortable">' +
        '<tr><th data-sorted="desc">When (UTC)</th><th>Path</th>' +
        '<th>Source</th><th>Client</th><th>Campaign</th><th>Country</th><th data-type="num">Load</th>' +
-       '<th data-type="num">Dwell</th>' +
        // No apostrophe in these titles. This string is emitted verbatim into
        // the page's inline script, where a bare ' closes the single-quoted
        // string it lands in and the whole admin script stops parsing —
        // admin_pages.test.mjs catches it, which is how this one was found.
+       '<th data-type="num" title="wall clock from arrival to the last thing the browser reported - runs while backgrounded">Dwell</th>' +
+       '<th data-type="num" title="time the page was actually on screen, summed across backgroundings - the honest one">Seen</th>' +
        '<th data-type="num" title="when the entry card appeared, measured from arrival">Card at</th>' +
        '<th data-type="num" title="when they tapped Tap to continue, measured from arrival — blank means the card was shown and never tapped">Tapped at</th>' +
        '<th data-type="num" title="times the character profile was opened this visit, from the chat header or the entry card; hover for when the first one happened">Profile</th>' +
@@ -6403,6 +6431,7 @@ async function render(out) {
          esc([r.utm_medium, r.utm_campaign].filter(Boolean).join(' / ')) +
          '</td><td>' + esc(r.country) + '</td><td class="num"' + sv(r.load_ms) + '>' + dur(r.load_ms) +
          '</td><td class="num"' + sv(r.duration_ms) + '>' + dur(r.duration_ms) +
+         '</td><td class="num"' + sv(r.seen_ms) + '>' + dur(r.seen_ms) +
          '</td><td class="num"' + sv(r.entry_shown_ms) + '>' +
          (r.entry_shown_ms == null
            ? '<span class="muted">—</span>'
@@ -6421,9 +6450,9 @@ async function render(out) {
            ? '<a href="#" class="drill" data-v="' + esc(r.visit_id) + '">view</a>'
            : '<span class="muted">—</span>') +
          '</td></tr><tr class="chat" id="chat-' + esc(r.visit_id) +
-         '" style="display:none"><td colspan="13"></td></tr>';
+         '" style="display:none"><td colspan="14"></td></tr>';
   }
-  if (!d.recent.length) h += '<tr><td colspan="13" class="muted">Nothing yet.</td></tr>';
+  if (!d.recent.length) h += '<tr><td colspan="14" class="muted">Nothing yet.</td></tr>';
   h += '</table></div>';
   out.innerHTML = h;
   makeSortable(out);
@@ -7197,9 +7226,17 @@ ${visitTimelineJs()}
     }
     if (data.left_at) {
       lines.push("Left <b>" + fmtTime(data.left_at) + "</b>" +
-        (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : ""));
+        (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the wall clock" : ""));
     } else {
       lines.push("<span class=\\"silent-note\\">No leave event - the tab was closed without firing one, so the exit time is unknown.</span>");
+    }
+    // The honest figure, on the population where the wall clock lies hardest:
+    // a silent visit that "sat there" for a minute mostly sat backgrounded.
+    if (data.visible_ms !== null && data.visible_ms !== undefined) {
+      lines.push("On screen for <b>" + fmtDuration(data.visible_ms) + "</b>" +
+        (data.hide_count
+          ? ", backgrounded " + data.hide_count + (data.hide_count === 1 ? " time" : " times")
+          : " without interruption"));
     }
     sum.innerHTML = lines.join("<br>");
     messagesEl.appendChild(sum);
@@ -7262,7 +7299,7 @@ ${visitTimelineJs()}
           bfcache: "frozen, not closed - a back gesture could restore it",
         };
         parts.push("left <b>" + fmtTime(data.left_at) + "</b>" +
-          (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the site" : "") +
+          (data.dwell_ms ? " after " + fmtDuration(data.dwell_ms) + " on the wall clock" : "") +
           (ENDINGS[data.exit_mode] ? " - " + ENDINGS[data.exit_mode] : ""));
       }
       // The same pair the sessions page reports, and for the same reason: wall

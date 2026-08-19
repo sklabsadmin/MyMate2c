@@ -143,8 +143,18 @@ about +68/+70 changes how fast tappers accumulate.
 
 Unchanged from `docs/HANDOFF-2026-08-18-prod-data-access.md`: `duration_ms`
 is wall clock (use `visible_ms`); `character_tap` means "reached a screen",
-never a tap; the admin dwell buckets still read `duration_ms` and are still
-wrong. New from this eval: **"reached" must mean `character_tap`, never
+never a tap. New from this eval: **"reached" must mean `character_tap`, never
 `path=/c/*`** — by path, 59 first-night load-deaths masqueraded as an unasked
 cohort and produced the 45-vs-5 misread that motivated a fix for a fault that
 barely existed.
+
+**Correction (2026-08-19):** this doc originally repeated the handoff's claim
+that "the admin dwell buckets read `duration_ms`". Wrong on inspection: the
+"How long before giving up" buckets count `screen_ping` ticks, which stop
+when the tab is backgrounded — roughly honest. The surfaces that actually
+presented wall clock as attention were the visits page's **Avg dwell**
+(an average of `duration_ms` — the literal 5.2s-read-as-32.7s mechanism), the
+per-visit **Dwell** column, and every "after Xm on the site" phrase in the
+session views. All fixed on this branch: each now shows **Seen**
+(`visible_ms`) beside a wall clock that is labeled as such, and a visit that
+predates `visible_ms` reads unknown, never zero.

@@ -129,3 +129,24 @@ test('the visits page still aggregates with the new columns present', async () =
     // Four arrivals, each counted once however many events it left behind.
     assert.equal(res.json.recent.length, 4);
 });
+
+test('visits aggregates report seen time beside the wall clock, not instead of it', async () => {
+    const { env } = testEnv();
+    const res = await adminFetch(env, '/api/admin/visits?days=30');
+    const row = res.json.bySource[0];
+    // The fixture: v_flap left at 120s wall / 61s seen, v_killed was killed
+    // backgrounded at 30s wall / 21s seen, v_old predates visible_ms entirely,
+    // v_quiet reported nothing. Wall averages the three that reported one;
+    // seen averages only the two that measured one — v_old must read as
+    // unknown, never as zero dragging the average down.
+    assert.equal(row.avg_ms, 60000);
+    assert.equal(row.avg_seen_ms, 41000);
+
+    const flap = res.json.recent.find((r) => r.visit_id === 'v_flap');
+    assert.equal(flap.duration_ms, 120000);
+    assert.equal(flap.seen_ms, 61000);
+    // v_old has a wall dwell but no seen: the honest column says unknown.
+    const old = res.json.recent.find((r) => r.visit_id === 'v_old');
+    assert.equal(old.duration_ms, 30000);
+    assert.equal(old.seen_ms, null);
+});

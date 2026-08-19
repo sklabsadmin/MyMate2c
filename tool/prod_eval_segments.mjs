@@ -136,9 +136,10 @@ for (const v of all) {
 }
 
 // -------------------------------------------------------- bundle versions --
-// The exact bundle, where a visit rendered at least one bubble. Absent until
-// the worker that exports message_delivery is deployed — the script still
-// runs, it just has to lean entirely on time and behaviour.
+// Best source first: bundles since the beacon stamp carry app_version on
+// every site_visits row, so any visit that wrote anything is versioned —
+// decliners included. Older bundles fall back to message_delivery, which
+// only exists for visits that rendered a bubble (tappers and auto-players).
 const md = dump.tables?.message_delivery;
 const versionOf = new Map();
 if (md?.rows?.length) {
@@ -147,17 +148,24 @@ if (md?.rows?.length) {
         const set = versionOf.get(r.visit_id) || versionOf.set(r.visit_id, new Set()).get(r.visit_id);
         set.add(r.app_version);
     }
-    for (const v of all) {
-        const set = versionOf.get(v.id);
-        v.version = set ? [...set].sort().join(',') : null;
-    }
-    console.log(`\nbundle versions known for ${all.filter((v) => v.version).length}/${all.length} visits (via message_delivery)`);
-    console.log('  known only for visits that rendered a bubble — tappers and auto-players,');
-    console.log('  never the card-decliners, so no rate may use "versioned" as a denominator.');
-} else {
-    console.log('\n!! message_delivery is not in this export — the deployed worker predates the');
-    console.log('   wider export-all. Versions are unavailable; stale-bundle contamination is');
-    console.log('   bounded from behaviour only. Deploy the worker to close this.');
+}
+let direct = 0;
+for (const v of all) {
+    const own = [...v.ev.values()].flat().find((r) => r.app_version)?.app_version;
+    if (own) { v.version = own; direct++; continue; }
+    const set = versionOf.get(v.id);
+    v.version = set ? [...set].sort().join(',') : null;
+}
+const versioned = all.filter((v) => v.version).length;
+console.log(`\nbundle versions known for ${versioned}/${all.length} visits`
+    + ` (${direct} from the beacon itself, ${versioned - direct} via message_delivery)`);
+if (direct < versioned) {
+    console.log('  delivery-receipt versions exist only for visits that rendered a bubble —');
+    console.log('  never the card-decliners — so no rate may use them as a denominator.');
+}
+if (!md?.rows?.length) {
+    console.log('!! message_delivery is not in this export — the deployed worker predates the');
+    console.log('   wider export-all, so pre-stamp bundles cannot be versioned at all here.');
 }
 
 // ---------------------------------------------------------------- segments --

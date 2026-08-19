@@ -304,13 +304,25 @@
     // messages did this session send before quitting" answerable.
     window.mythosVisitId = visitId;
 
+    // Which bundle this page load ran. tool/build_web.sh stamps the real
+    // version over the placeholder after every release build; a dev serve or
+    // a bare `flutter build web` leaves the token, and it is sent as nothing
+    // rather than as a literal placeholder. It rides on EVERY event, not only
+    // arrive, so a visit is versionable from any row it managed to write —
+    // segmenting the entry rate across a deploy previously meant
+    // reconstructing versions from delivery receipts, and most visits render
+    // no bubble to receipt (docs/EVAL-2026-08-18-entry-rate-by-bundle.md).
+    var APP_VERSION = '%MYTHOS_APP_VERSION%';
+    if (APP_VERSION.indexOf('%') !== -1) APP_VERSION = '';
+
     function send(event, extra) {
       var body = JSON.stringify(Object.assign({
         visitId: visitId,
         event: event,
         path: location.pathname,
         query: location.search,
-        referer: document.referrer || ''
+        referer: document.referrer || '',
+        appVersion: APP_VERSION || undefined
       }, extra || {}));
       try {
         // sendBeacon survives the page being torn down, which a fetch() does
