@@ -109,6 +109,14 @@ so the skew is much smaller there than on the first night — but it is not zero
 and the fix ships as **+68**. Segment on bundle version before comparing any
 entry rate across the boundary, and treat 0.9% as a pre-fix reading.
 
+> **Correction (2026-08-18 12:00 UTC):** the first-night 45-vs-5 does not
+> reproduce against `site_visits`. Counted by `character_tap`, 49 of 49
+> Instagram visits that reached a screen that night saw the card; the
+> card-less "reached" population was load-deaths counted by URL path
+> (median visible 0–1.7s). The skew the +68 fix targets measured ~1 visit in
+> 320 across the whole +67 era, so 0.9% was never meaningfully biased.
+> Full workings: `docs/EVAL-2026-08-18-entry-rate-by-bundle.md`.
+
 **Reading:** the card was genuinely on screen for 87% of people, so 99% are
 *declining* a visible one-tap ask, not missing it. Lowering the bar from "type
 something to a stranger" to "press one button" moved the rate from 0.95% to

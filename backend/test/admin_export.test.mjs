@@ -71,7 +71,42 @@ test('full export covers every table and says how much it holds', async () => {
     assert.ok(res.json.tables.site_visits.count > 0);
     assert.equal(res.json.tables.conversation_logs.count, 3);
     assert.equal(res.json.tables.deploy_log.count, 0);
+    // Present even when empty: an absent key and an empty table read the same
+    // to a consumer, and only one of them means "nothing happened".
+    assert.equal(res.json.tables.message_delivery.count, 0);
     assert.equal(res.headers.get('X-Export-Truncated'), '0');
+});
+
+test('full export windows message_delivery on the server clock it actually has', async () => {
+    const { env, db } = testEnv();
+    const stamp = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600 * 1000)
+        .toISOString().slice(0, 19).replace('T', ' ');
+    const put = db.prepare(`
+        INSERT INTO message_delivery (bubble_id, turn_id, seq, visit_id, user_id,
+            origin, app_version, server_received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    put.run('b_new', 't1', 0, 'v_flap', 'user_1700000000000', 'welcome_script', '1.7.1+68', stamp(1));
+    // This table has no created_at, so a window or ORDER BY that reached for
+    // one would error the whole table out; and a window that silently matched
+    // nothing would let this month-old row through.
+    put.run('b_old', 't0', 0, 'v_gone', 'user_1700000000009', 'ai_reply', '1.6.6+62', stamp(24 * 30));
+    const res = await adminFetch(env, '/api/admin/export-all?hours=24');
+    assert.equal(res.status, 200);
+    const md = res.json.tables.message_delivery;
+    assert.equal(md.count, 1);
+    assert.equal(md.rows[0].bubble_id, 'b_new');
+    // The column this table is in the export for: the only place a visit says
+    // which bundle it actually ran.
+    assert.equal(md.rows[0].app_version, '1.7.1+68');
+});
+
+test('full export survives message_delivery not existing yet', async () => {
+    const { env } = testEnv({ skip: ['0011_message_delivery.sql'] });
+    const res = await adminFetch(env, '/api/admin/export-all?hours=24');
+    assert.equal(res.status, 200);
+    assert.ok(res.json.tables.message_delivery.error, 'expected the missing table to report itself');
+    assert.ok(res.json.tables.site_visits.count > 0, 'the other tables should still be there');
 });
 
 test('full export windows conversation_logs despite its different timestamp format', async () => {
