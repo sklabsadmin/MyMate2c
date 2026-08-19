@@ -491,6 +491,78 @@ export default {
                 GROUP BY a.source ORDER BY never_engaged DESC
             `).bind(since).all();
 
+            // Which ad bought which behaviour. The campaign links carry
+            // Meta's ids — utm_id (campaign), utm_content (ad), utm_term
+            // (adset) — but only inside the raw query string, so the parsing
+            // and grouping happen here in JS rather than in SQL. Collapsed to
+            // one row per visit first, same reason as everything above. Rows
+            // written before 2026-08-19 can hold six-character stumps of
+            // these ids: the recorder capped query at 300 chars and fbclid
+            // ate most of it, so old windows group imperfectly and the page
+            // says so.
+            const adRows = await db.prepare(`
+                SELECT a.visit_id,
+                       MIN(a.query) AS query,
+                       MIN(a.utm_campaign) AS utm_campaign,
+                       ${visitVisibleMsSql("a")} AS seen_ms,
+                       EXISTS (SELECT 1 FROM site_visits s
+                                WHERE s.visit_id = a.visit_id AND s.event = 'entry_shown') AS shown,
+                       EXISTS (SELECT 1 FROM site_visits t
+                                WHERE t.visit_id = a.visit_id AND t.event = 'entry_tap') AS tapped,
+                       EXISTS (SELECT 1 FROM site_visits e
+                                WHERE e.visit_id = a.visit_id
+                                  AND e.event IN ('input_typed', 'starter_tap', 'first_message')) AS engaged
+                FROM site_visits a
+                WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY a.visit_id
+                LIMIT 20000
+            `).bind(since).all();
+            const adBuckets = new Map();
+            for (const row of adRows.results || []) {
+                let ad = null, adset = null;
+                try {
+                    const q = new URLSearchParams(String(row.query || "").replace(/^\?/, ""));
+                    ad = q.get("utm_content");
+                    adset = q.get("utm_term");
+                } catch (_) { /* an unparseable query is still a visit */ }
+                const key = [row.utm_campaign || "", ad || "", adset || ""].join(" ");
+                let c = adBuckets.get(key);
+                if (!c) adBuckets.set(key, (c = {
+                    utm_campaign: row.utm_campaign || null,
+                    ad, adset,
+                    visits: 0, shown: 0, tapped: 0, engaged: 0,
+                    seen_known: 0, seen_5s: 0,
+                }));
+                c.visits++;
+                if (row.shown) c.shown++;
+                if (row.tapped) c.tapped++;
+                if (row.engaged) c.engaged++;
+                if (row.seen_ms != null) {
+                    c.seen_known++;
+                    if (row.seen_ms >= 5000) c.seen_5s++;
+                }
+            }
+            const byAd = [...adBuckets.values()].sort((a, b) => b.visits - a.visits).slice(0, 60);
+
+            // Funnel per A/B arm. variant rides every event, so the split
+            // does not depend on which row survived. Guarded: the column
+            // arrives with migration 0013, and the whole page must not 500
+            // against a database that has not run it yet.
+            let byVariant = [];
+            try {
+                const v = await db.prepare(`
+                    SELECT variant,
+                           COUNT(DISTINCT visit_id) AS visits,
+                           COUNT(DISTINCT CASE WHEN event = 'entry_shown' THEN visit_id END) AS shown,
+                           COUNT(DISTINCT CASE WHEN event = 'entry_tap' THEN visit_id END) AS tapped,
+                           COUNT(DISTINCT CASE WHEN event IN ('input_typed', 'starter_tap', 'first_message') THEN visit_id END) AS engaged
+                    FROM site_visits
+                    WHERE variant IS NOT NULL AND created_at >= datetime('now', ?)
+                    GROUP BY variant ORDER BY variant
+                `).bind(since).all();
+                byVariant = v.results || [];
+            } catch (_) { /* migration 0013 not applied yet */ }
+
             return jsonResponse({
                 bySource: bySource.results || [],
                 byDay: byDay.results || [],
@@ -498,6 +570,9 @@ export default {
                 funnel: funnel.results || [],
                 characters: characters.results || [],
                 dwellBuckets: dwellBuckets.results || [],
+                byAd,
+                adsTruncated: (adRows.results || []).length >= 20000,
+                byVariant,
             });
         }
 
@@ -2847,6 +2922,13 @@ async function recordSiteVisit(raw, request, env) {
     // grows with every release and a stale list would null out exactly the
     // new bundle each segmentation exists to see.
     const appVersion = String(payload.appVersion || "").slice(0, 40) || null;
+    // Migration 0013's trio: touches so far, been-here-before, and the A/B
+    // arm ("experiment:arm"). Coerced like their neighbours; absent reads as
+    // unknown, never zero.
+    const touchCount = Number(payload.touchCount);
+    const isReturn = payload.isReturn === 1 || payload.isReturn === true ? 1
+        : payload.isReturn === 0 || payload.isReturn === false ? 0 : null;
+    const variant = String(payload.variant || "").slice(0, 60) || null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -2856,8 +2938,8 @@ async function recordSiteVisit(raw, request, env) {
                 country, colo, duration_ms, detail, app_user_id,
                 viewport_w, viewport_h, failure_reason,
                 visible_ms, hide_count, exit_mode, nav_type, platform,
-                app_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                app_version, touch_count, is_return, variant
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -2882,7 +2964,10 @@ async function recordSiteVisit(raw, request, env) {
             exitMode,
             navType,
             detectPlatform(request),
-            appVersion
+            appVersion,
+            Number.isFinite(touchCount) && touchCount >= 0 ? Math.round(touchCount) : null,
+            isReturn,
+            variant
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -4525,12 +4610,33 @@ async function summariseReferralVisits(env, searchParams) {
     const days = Math.min(Math.max(parseInt(searchParams.get("days") || "7", 10) || 7, 1), 90);
     const since = `-${days} days`;
 
+    // Meta fetches every outbound link for previews, and those fetches land
+    // here as rows: in one 45h window 919 of 1,529 "referrals" were crawler
+    // hits, which read as half the funnel dying before the first beacon —
+    // real webview hits matched real arrivals almost exactly (573 vs 571).
+    // Counted separately rather than deleted: the split is the finding.
+    // A NULL user_agent is not called a crawler; unknown stays unknown.
+    const crawlerUa = `(
+        user_agent LIKE '%facebookexternalhit%' OR user_agent LIKE '%facebot%'
+        OR user_agent LIKE '%whatsapp%' OR user_agent LIKE '%telegram%'
+        OR user_agent LIKE '%bot%' OR user_agent LIKE '%crawler%'
+        OR user_agent LIKE '%spider%' OR user_agent LIKE '%preview%'
+    )`;
+    const realUa = `(user_agent IS NULL OR NOT ${crawlerUa})`;
+
     const bySource = await env.CHAT_LOGS_DB.prepare(`
         SELECT source, COUNT(*) AS visits
         FROM referral_visits
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= datetime('now', ?) AND ${realUa}
         GROUP BY source ORDER BY visits DESC
     `).bind(since).all();
+
+    const crawlerHits = await env.CHAT_LOGS_DB.prepare(`
+        SELECT COUNT(*) AS n
+        FROM referral_visits
+        WHERE created_at >= datetime('now', ?)
+          AND user_agent IS NOT NULL AND ${crawlerUa}
+    `).bind(since).first();
 
     // "chatters" is DISTINCT user_id, not DISTINCT chat_id.
     //
@@ -4564,6 +4670,12 @@ async function summariseReferralVisits(env, searchParams) {
                    AND ${realUserIdSql("l.user_id")}) AS chatters
         FROM referral_visits v
         WHERE v.created_at >= datetime('now', ?)
+          AND (v.user_agent IS NULL OR NOT (
+              v.user_agent LIKE '%facebookexternalhit%' OR v.user_agent LIKE '%facebot%'
+              OR v.user_agent LIKE '%whatsapp%' OR v.user_agent LIKE '%telegram%'
+              OR v.user_agent LIKE '%bot%' OR v.user_agent LIKE '%crawler%'
+              OR v.user_agent LIKE '%spider%' OR v.user_agent LIKE '%preview%'
+          ))
         GROUP BY v.character_id ORDER BY visits DESC
     `).bind(since, since).all();
 
@@ -4581,6 +4693,7 @@ async function summariseReferralVisits(env, searchParams) {
     return {
         days,
         totalVisits: (bySource.results || []).reduce((n, r) => n + r.visits, 0),
+        crawlerHits: crawlerHits?.n || 0,
         bySource: bySource.results || [],
         byCharacter: byCharacter.results || [],
         recent: recent.results || [],
@@ -6377,6 +6490,55 @@ async function render(out) {
   if (!d.bySource.length) h += '<tr><td colspan="10" class="muted">No visits yet.</td></tr>';
   h += '</table></div>';
 
+  // Which ad bought which behaviour — rendered only when the links carry ad
+  // ids at all, so the section does not sit empty on organic traffic.
+  if ((d.byAd || []).some(function (r) { return r.ad || r.adset; })) {
+    h += '<h2>By ad</h2><p class="muted" style="margin:0 0 8px">' +
+         'Meta ids from the campaign links: <b>ad</b> is utm_content, <b>adset</b> is ' +
+         'utm_term. Rows logged before 2026-08-19 can hold six-character stumps of ' +
+         'these ids &mdash; the recorder used to cap the query string at 300 characters ' +
+         'and fbclid ate most of it &mdash; so old windows group imperfectly. ' +
+         '<b>Seen 5s+</b> is real on-screen time, over visits that reported any.' +
+         (d.adsTruncated ? ' <b>Window truncated at 20000 visits.</b>' : '') + '</p>' +
+         '<div class="wrap"><table class="sortable"><tr><th>Campaign</th><th>Ad</th><th>Adset</th>' +
+         '<th data-type="num" data-sorted="desc">Visits</th><th data-type="num">Shown</th>' +
+         '<th data-type="num">Tapped</th><th data-type="num">Entry</th>' +
+         '<th data-type="num">Engaged</th><th data-type="num">Seen 5s+</th></tr>';
+    for (const r of d.byAd) {
+      const entry = r.shown ? (100 * r.tapped / r.shown).toFixed(1) + '%' : '<span class="muted">&mdash;</span>';
+      const seen = r.seen_known
+        ? Math.round(100 * r.seen_5s / r.seen_known) + '% <span class="muted">of ' + r.seen_known + '</span>'
+        : '<span class="muted">&mdash;</span>';
+      h += '<tr><td>' + esc(r.utm_campaign || '(none)') + '</td><td>' + esc(r.ad || '(none)') +
+           '</td><td>' + esc(r.adset || '(none)') +
+           '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+           '</td><td class="num"' + sv(r.shown) + '>' + r.shown +
+           '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped +
+           '</td><td class="num"' + sv(r.shown ? r.tapped / r.shown : null) + '>' + entry +
+           '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged +
+           '</td><td class="num"' + sv(r.seen_known ? r.seen_5s / r.seen_known : null) + '>' + seen + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
+
+  // A/B arms, hidden until an experiment is actually running — an always-on
+  // empty table would just be one more thing to scroll past.
+  if ((d.byVariant || []).length) {
+    h += '<h2>By variant</h2><div class="wrap"><table class="sortable">' +
+         '<tr><th>Variant</th><th data-type="num" data-sorted="desc">Visits</th>' +
+         '<th data-type="num">Shown</th><th data-type="num">Tapped</th>' +
+         '<th data-type="num">Entry</th><th data-type="num">Engaged</th></tr>';
+    for (const r of d.byVariant) {
+      const entry = r.shown ? (100 * r.tapped / r.shown).toFixed(1) + '%' : '<span class="muted">&mdash;</span>';
+      h += '<tr><td>' + esc(r.variant) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+           '</td><td class="num"' + sv(r.shown) + '>' + r.shown +
+           '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped +
+           '</td><td class="num"' + sv(r.shown ? r.tapped / r.shown : null) + '>' + entry +
+           '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
+
   // Each day drills into the sessions that made up its count. Same
   // date(created_at) grouping on both sides, so the number here and the number
   // of rows there agree.
@@ -6579,7 +6741,8 @@ async function render() {
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const d = await res.json();
   if (d.error) { document.getElementById('total').textContent = d.error; return; }
-  document.getElementById('total').textContent = d.totalVisits ?? 0;
+  document.getElementById('total').textContent = (d.totalVisits ?? 0) +
+    (d.crawlerHits ? ' (+' + d.crawlerHits + ' crawler/preview hits excluded)' : '');
   document.querySelector('#src tbody').innerHTML = (d.bySource || [])
     .map(r => '<tr><td>' + esc(r.source || 'unknown') + '</td><td class="num"' + sv(r.visits) + '>' + r.visits + '</td></tr>').join('')
     || '<tr><td colspan="2" class="muted">No visits yet.</td></tr>';

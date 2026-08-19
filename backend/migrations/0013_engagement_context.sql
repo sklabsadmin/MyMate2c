@@ -1,0 +1,31 @@
+-- Three one-bit-ish answers the funnel could not give, each requested after
+-- the 2026-08-19 re-check of the logging proposals against live data
+-- (docs/EVAL-2026-08-18-entry-rate-by-bundle.md is the trail head):
+--
+--   touch_count  did they ever touch the glass? 234 decliners in one 45h
+--                window watched the entry card for 5s+ and nothing recorded
+--                whether they were considering (pressed, scrolled) or holding
+--                an inert phone. Counted by the beacon from pointerdown and
+--                reported on every event, so entry_shown carries the touches
+--                that happened before the card and leave carries the total.
+--
+--   is_return    has this device been here before? Only engaged visits carry
+--                a user id, so the return rate of the other ~98% was
+--                unknowable — and with it, whether re-engagement is worth
+--                building at all. One localStorage bit, sent on every event.
+--
+--   variant      A/B arm, as "experiment:arm" ("card-copy-oct:b"). Dormant —
+--                NULL on every row — until an experiment is named in the
+--                beacon; then the visits page splits the funnel by it. A
+--                device draws its arm once and keeps it across visits.
+--
+-- All three ride every event rather than only arrive, so a visit whose
+-- arrive row was lost still answers. NULL means the row predates the bundle
+-- that sends them (or, for variant, that no experiment was running): unknown,
+-- never zero — the 0009 rule.
+--
+-- Apply before deploying the worker that writes them; npm run deploy does
+-- this automatically now.
+ALTER TABLE site_visits ADD COLUMN touch_count INTEGER;
+ALTER TABLE site_visits ADD COLUMN is_return INTEGER;
+ALTER TABLE site_visits ADD COLUMN variant TEXT;

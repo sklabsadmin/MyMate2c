@@ -315,6 +315,64 @@
     var APP_VERSION = '%MYTHOS_APP_VERSION%';
     if (APP_VERSION.indexOf('%') !== -1) APP_VERSION = '';
 
+    // The visibility accumulator, above send() because every event now
+    // reports the visible time at the moment it fired. That turns "how long
+    // was the card actually watched" from an approximation (visible-at-leave
+    // minus wall-clock-at-shown) into subtraction between two rows of the
+    // same visit. hide and leave still pass their own settled figure, which
+    // wins over this running one via Object.assign.
+    var visibleMs = 0;
+    var visibleSince = document.visibilityState === 'visible' ? Date.now() : null;
+    var hiddenAt = null;
+    var hideCount = 0;
+    var left = false;
+    // Chrome that shows and hides on scroll can flap visibility. The counter
+    // keeps counting past this so the total stays true; only the rows stop.
+    var MAX_VISIBILITY_EVENTS = 20;
+    function currentVisibleMs() {
+      return visibleMs + (visibleSince !== null ? Date.now() - visibleSince : 0);
+    }
+
+    // Did they ever touch the glass? A decliner who pressed or scrolled was
+    // considering; one whose screen was never touched was never deciding —
+    // and 234 decliners in one 45h window watched the card 5s+ with nothing
+    // recorded to tell those apart. pointerdown covers mouse and touch alike
+    // in every browser this traffic arrives in; the count rides every event,
+    // so entry_shown carries touches-before-the-card and leave the total.
+    var touchCount = 0;
+    window.addEventListener('pointerdown', function () { touchCount++; }, { capture: true, passive: true });
+
+    // Whether this device has been here before, one bit. Only engaged visits
+    // carry a user id, so the return rate of the other ~98% has been
+    // unknowable. localStorage on purpose: it lives exactly as long as the
+    // stored chat history that makes a return visit behave differently.
+    var IS_RETURN = 0;
+    try {
+      if (localStorage.getItem('mythos_seen')) IS_RETURN = 1;
+      else localStorage.setItem('mythos_seen', String(Date.now()));
+    } catch (e) {}
+
+    // A/B plumbing, dormant until an experiment is named here. To run one:
+    // set EXPERIMENT (e.g. 'card-copy-oct'), ship, and read the split on the
+    // visits page. Each device draws an arm once and keeps it across visits;
+    // every event then carries "name:arm". The app branches its UI on
+    // window.mythosVariant. Dormant sends nothing, so no column fills with a
+    // constant. At ~245 cards shown/day only bold variants are readable:
+    // 1.5%->3% needs ~13 days with two arms, 1.5%->2% ~97.
+    var EXPERIMENT = '';
+    var VARIANT = '';
+    try {
+      if (EXPERIMENT) {
+        var armKey = 'mythos_arm_' + EXPERIMENT;
+        VARIANT = localStorage.getItem(armKey) || '';
+        if (VARIANT !== 'a' && VARIANT !== 'b') {
+          VARIANT = Math.random() < 0.5 ? 'a' : 'b';
+          localStorage.setItem(armKey, VARIANT);
+        }
+        window.mythosVariant = EXPERIMENT + ':' + VARIANT;
+      }
+    } catch (e) {}
+
     function send(event, extra) {
       var body = JSON.stringify(Object.assign({
         visitId: visitId,
@@ -322,7 +380,11 @@
         path: location.pathname,
         query: location.search,
         referer: document.referrer || '',
-        appVersion: APP_VERSION || undefined
+        appVersion: APP_VERSION || undefined,
+        visibleMs: currentVisibleMs(),
+        touchCount: touchCount,
+        isReturn: IS_RETURN,
+        variant: EXPERIMENT && VARIANT ? EXPERIMENT + ':' + VARIANT : undefined
       }, extra || {}));
       try {
         // sendBeacon survives the page being torn down, which a fetch() does
@@ -398,15 +460,6 @@
     // control they used. The X button, the swipe and the system back gesture
     // are the host app's own chrome, and a webview is never told which one
     // dismissed it.
-    var visibleMs = 0;
-    var visibleSince = document.visibilityState === 'visible' ? Date.now() : null;
-    var hiddenAt = null;
-    var hideCount = 0;
-    var left = false;
-    // Chrome that shows and hides on scroll can flap visibility. The counter
-    // keeps counting past this so the total stays true; only the rows stop.
-    var MAX_VISIBILITY_EVENTS = 20;
-
     function settleVisible() {
       if (visibleSince !== null) {
         visibleMs += Date.now() - visibleSince;

@@ -177,6 +177,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// was built with, exactly as a reload does.
   bool _entryGateStartsOpening = true;
 
+  /// Scroll position of the entry card's own scroll view, read once per
+  /// showing to answer one question: was the Tap to Talk button inside the
+  /// first viewport, or below the fold? The card pins the button to the
+  /// bottom of its CONTENT, which on a short screen (an in-app browser with
+  /// fat chrome) extends past the viewport — reachable by scrolling, but a
+  /// visitor who does not know it is there will not scroll to find it. Every
+  /// short-viewport tap rate read to date has been unable to separate
+  /// "declined" from "never saw the button", which is what this closes.
+  final ScrollController _entryGateScrollController = ScrollController();
+
   /// The character's title — the parenthetical half of the scenario string, so
   /// "Odysseus (King of Ithaca)" gives "King of Ithaca".
   ///
@@ -600,6 +610,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // on every chat close since the screen was written.
     _cancelIdleTimer();
     _screenPingTimer?.cancel();
+    _entryGateScrollController.dispose();
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _inputFocus.dispose();
@@ -822,11 +833,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // this row also says how quickly the one tappable thing on the screen got
     // there — the number that decides whether a rate means anything on traffic
     // half of which is gone by 3s.
-    logFunnelEvent(
-      'entry_shown',
-      detail: widget.characterId,
-      appUserId: _appUserId,
-    );
+    //
+    // Logged after the frame that paints the card, not at raise: whether the
+    // button landed inside the first viewport is only knowable once the
+    // card's scroll view has laid out, and #fold is the half of this row that
+    // can finally separate a short-screen visitor who declined from one who
+    // never had the button on screen. Costs the row one frame of duration_ms.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final scroll = _entryGateScrollController;
+      final below = scroll.hasClients && scroll.position.maxScrollExtent > 0;
+      logFunnelEvent(
+        'entry_shown',
+        detail: '${widget.characterId}#fold=${below ? 'below' : 'fit'}',
+        appUserId: _appUserId,
+      );
+    });
     return true;
   }
 
@@ -3994,6 +4016,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           // there is not.
           child: LayoutBuilder(
             builder: (context, constraints) => SingleChildScrollView(
+              // Read once post-frame by _raiseEntryGate: maxScrollExtent > 0
+              // here means the button starts below the fold.
+              controller: _entryGateScrollController,
               // The top inset clears the app bar, which this body extends
               // behind (extendBodyBehindAppBar). Centred content never needed
               // it; top-aligned content slides under the header without it.

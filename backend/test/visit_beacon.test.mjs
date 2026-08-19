@@ -33,6 +33,70 @@ test('a visit row records the bundle version the beacon sent', async () => {
     assert.equal(rowFor(db, 'v_versioned').app_version, '1.7.1+70');
 });
 
+test('the engagement-context trio lands: touches, return bit, variant', async () => {
+    const { env, db } = testEnv();
+    await beacon(env, {
+        visitId: 'v_ctx', event: 'entry_shown', path: '/c/zeus', detail: 'zeus#fold=below',
+        touchCount: 3, isReturn: 1, variant: 'card-copy-oct:b',
+    });
+    const row = rowFor(db, 'v_ctx');
+    assert.equal(row.touch_count, 3);
+    assert.equal(row.is_return, 1);
+    assert.equal(row.variant, 'card-copy-oct:b');
+    // The fold flag rides detail; the '#' convention keeps character grouping
+    // intact because every consumer takes the part before the first '#'.
+    assert.equal(row.detail, 'zeus#fold=below');
+});
+
+test('absent context reads as unknown, and junk is coerced, not stored', async () => {
+    const { env, db } = testEnv();
+    await beacon(env, { visitId: 'v_bare', event: 'arrive', path: '/' });
+    const bare = rowFor(db, 'v_bare');
+    assert.equal(bare.touch_count, null);
+    assert.equal(bare.is_return, null);
+    assert.equal(bare.variant, null);
+
+    await beacon(env, {
+        visitId: 'v_junk', event: 'arrive', path: '/',
+        touchCount: -5, isReturn: 'yes', variant: 'x'.repeat(200),
+    });
+    const junk = rowFor(db, 'v_junk');
+    assert.equal(junk.touch_count, null, 'a negative count is not a count');
+    assert.equal(junk.is_return, null, 'a string is not the bit');
+    assert.equal(junk.variant.length, 60);
+});
+
+test('the visits page splits the funnel by variant once one exists', async () => {
+    const { env } = testEnv();
+    for (const [visit, arm, tapped] of [['v_a1', 'exp:a', false], ['v_b1', 'exp:b', true]]) {
+        await beacon(env, { visitId: visit, event: 'arrive', path: '/c/zeus', variant: arm });
+        await beacon(env, { visitId: visit, event: 'entry_shown', path: '/c/zeus', variant: arm });
+        if (tapped) await beacon(env, { visitId: visit, event: 'entry_tap', path: '/c/zeus', variant: arm });
+    }
+    const { adminFetch } = await import('./harness.mjs');
+    const res = await adminFetch(env, '/api/admin/visits?days=30');
+    const byVariant = res.json.byVariant;
+    assert.equal(byVariant.length, 2);
+    const b = byVariant.find((r) => r.variant === 'exp:b');
+    assert.equal(b.shown, 1);
+    assert.equal(b.tapped, 1);
+});
+
+test('the by-ad table groups on the ids inside the query string', async () => {
+    const { env } = testEnv();
+    const q = '?fbclid=' + 'A'.repeat(180) +
+        '&utm_source=fb&utm_medium=paid&utm_campaign=hercules-paid-20260817' +
+        '&utm_content=52613165107531&utm_term=52613164274931';
+    await beacon(env, { visitId: 'v_ad1', event: 'arrive', path: '/c/hercules', query: q });
+    await beacon(env, { visitId: 'v_ad1', event: 'entry_shown', path: '/c/hercules' });
+    const { adminFetch } = await import('./harness.mjs');
+    const res = await adminFetch(env, '/api/admin/visits?days=30');
+    const row = res.json.byAd.find((r) => r.ad === '52613165107531');
+    assert.ok(row, 'the ad id must survive parsing whole');
+    assert.equal(row.adset, '52613164274931');
+    assert.equal(row.shown, 1);
+});
+
 test('a beacon without a version stores unknown, never an empty string', async () => {
     // Dev serves and bare `flutter build web` skip the stamp and send nothing;
     // those rows must read as unknown, the same rule as every other column.
