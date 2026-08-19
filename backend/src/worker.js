@@ -2799,7 +2799,13 @@ async function recordSiteVisit(raw, request, env) {
 
     const url = new URL(request.url);
     const path = String(payload.path || "").slice(0, 200) || "/";
-    const query = String(payload.query || "").slice(0, 300);
+    // 600, up from 300. Meta appends fbclid (~120 chars) ahead of the utm
+    // params, so at 300 the cap amputated the tail on 536 of 605 arrivals in
+    // one 45h window — utm_term survived as a six-character stump on 275 of
+    // them, which is ad-level attribution destroyed at write time,
+    // unrecoverably. 600 holds fbclid plus the full utm set with headroom;
+    // still capped, because this endpoint is unauthenticated by design.
+    const query = String(payload.query || "").slice(0, 600);
     const referer = String(payload.referer || "").slice(0, 400);
 
     // detectTrafficSource wants a request-like object; build one from the

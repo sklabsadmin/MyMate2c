@@ -50,3 +50,18 @@ test('an oversized version string is capped, not stored verbatim', async () => {
     });
     assert.equal(rowFor(db, 'v_hostile').app_version.length, 40);
 });
+
+test('a Meta-sized query survives with its trailing utm params intact', async () => {
+    // The real shape that broke: fbclid first, the attribution params last.
+    // At the old 300-char cap the tail was amputated on 89% of arrivals in a
+    // 45h window — utm_term reduced to a six-character stump — so the ad ids
+    // the campaign was already sending never reached the table whole.
+    const { env, db } = testEnv();
+    const query = '?fbclid=' + 'A'.repeat(120) +
+        '&utm_source=fb&utm_medium=paid&utm_campaign=hercules-paid-20260817' +
+        '&utm_id=52613165086331&utm_content=52613165107531&utm_term=52613164274931';
+    assert.ok(query.length > 300, 'fixture must exceed the old cap');
+    await beacon(env, { visitId: 'v_meta', event: 'arrive', path: '/c/hercules', query });
+    assert.ok(rowFor(db, 'v_meta').query.endsWith('utm_term=52613164274931'),
+        'the last param must survive whole');
+});
