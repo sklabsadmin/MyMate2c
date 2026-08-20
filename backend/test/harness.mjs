@@ -65,7 +65,14 @@ export function d1(db) {
                 },
                 all() { return { results: db.prepare(sql).all(...bound) }; },
                 first() { return db.prepare(sql).get(...bound) ?? null; },
-                run() { return db.prepare(sql).run(...bound); },
+                // Real D1 reports mutations as { meta: { changes } }, and the
+                // coin spend/grant statements read exactly that to learn
+                // whether their conditional INSERT happened — so the shim
+                // must speak D1's shape, not node:sqlite's { changes }.
+                run() {
+                    const r = db.prepare(sql).run(...bound);
+                    return { success: true, meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+                },
             };
             return stmt;
         },
