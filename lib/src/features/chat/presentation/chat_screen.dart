@@ -22,6 +22,7 @@ import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
+import '../../wallet/presentation/coin_claim_screen.dart';
 import '../../wallet/presentation/coins_sheet.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
@@ -372,6 +373,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// cannot send the same opener a second time.
   bool _openerSent = false;
 
+  /// The claim screen: what it is showing, and what the entry tap deferred
+  /// until it is dismissed.
+  ///
+  /// Non-empty [_claimedGrants] is what puts the screen up — it is filled from
+  /// takeGrants, which is consume-once, so the screen cannot reappear for the
+  /// same coins. [_claimResumeOpening] carries the decision _enterChat had
+  /// already made about whether the opening should play, so dismissing the
+  /// screen resumes exactly what the tap would have done.
+  List<CoinGrant> _claimedGrants = const [];
+  int _claimBalance = 0;
+  bool _claimResumeOpening = false;
+
   /// Tribute ids whose ♥ bonus has already been credited. The server charges
   /// once per id (that is the whole idempotency design), so the meter follows
   /// the same rule: a retried tribute that finally lands scores once.
@@ -599,6 +612,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _screenPingTicks = 0;
     _openerSent = false;
     _scoredTributeIds.clear();
+    // Per-conversation, like everything else here: one State is reused across
+    // characters, and a claim left standing would cover the next one's chat.
+    _claimedGrants = const [];
+    _claimResumeOpening = false;
   }
 
   /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
@@ -912,32 +929,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       detail: '${widget.characterId}#$source',
       appUserId: _appUserId,
     );
-    // The button now says "Claim Coins", so the tap is where the claim must
-    // visibly land. The grants themselves happened at wallet sync on app
-    // load; on a campaign arrival the dashboard (whose listener normally
-    // toasts them) was never built, so they sit unconsumed — this is the
-    // moment they belong to. takeGrants is consume-once, so a visitor who
-    // already saw the dashboard toast gets nothing twice, and a returning
-    // visitor whose dawn offering is already claimed gets no false "+".
-    if (AppConfig.coinsUiEnabled) {
-      final claimed = ref.read(coinWalletProvider.notifier).takeGrants();
-      if (claimed.isNotEmpty && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: const Color(0xFF2D1035),
-          content: Text(
-            claimed.map((g) => '+${g.delta} ${g.label}').join('  ·  '),
-            style: const TextStyle(color: Colors.white),
-          ),
-        ));
-      }
-    }
     // Nothing to start over a monologue that is already on screen — see
     // _entryGateStartsOpening. The visitor was still gated and still counted;
     // they simply resume the conversation from where the old bundle left it.
-    if (!startOpening || !_entryGateStartsOpening) return;
+    final shouldOpen = startOpening && _entryGateStartsOpening;
+
+    // The button says "Tap to Claim Coins", so this tap is where the claim
+    // has to land — and on a campaign arrival it is the only place it can:
+    // the dashboard, whose listener normally toasts a grant, was never built.
+    // takeGrants is consume-once, so a visitor who already saw that toast
+    // gets no second payout, and a returning visitor with nothing pending
+    // never sees this screen at all.
+    if (AppConfig.coinsUiEnabled) {
+      final claimed = ref.read(coinWalletProvider.notifier).takeGrants();
+      if (claimed.isNotEmpty) {
+        setState(() {
+          _claimedGrants = claimed;
+          _claimBalance = ref.read(coinWalletProvider).value?.balance ?? 0;
+          _claimResumeOpening = shouldOpen;
+        });
+        logFunnelEvent(
+          'claim_shown',
+          detail: '${widget.characterId}#'
+              '${claimed.fold<int>(0, (sum, g) => sum + g.delta)}',
+          appUserId: _appUserId,
+        );
+        // Deliberately no _raiseGate/_triggerWelcomeSequence here: the claim
+        // screen covers the conversation, and the same rule the entry card is
+        // built on applies to it — not a line is spoken to a screen nobody is
+        // looking at. _dismissCoinClaim resumes both.
+        return;
+      }
+    }
+
+    if (!shouldOpen) return;
     // Only now does the character have an audience, so only now is anything
     // declared to the delivery log or spoken.
+    _raiseGate();
+    _triggerWelcomeSequence();
+  }
+
+  /// Leaves the claim screen and starts the conversation the entry tap
+  /// deferred.
+  void _dismissCoinClaim() {
+    if (_claimedGrants.isEmpty) return;
+    logFunnelEvent(
+      'claim_tap',
+      detail: '${widget.characterId}#'
+          '${_claimedGrants.fold<int>(0, (sum, g) => sum + g.delta)}',
+      appUserId: _appUserId,
+    );
+    final resume = _claimResumeOpening;
+    setState(() {
+      _claimedGrants = const [];
+      _claimResumeOpening = false;
+    });
+    if (!resume) return;
     _raiseGate();
     _triggerWelcomeSequence();
   }
@@ -3800,7 +3847,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
-                        'Your coins come with you — signing in adds +40.',
+                        'Your coins come with you — signing in adds +100.',
                         textAlign: TextAlign.center,
                         style: GoogleFonts.lato(
                           color: theme.colorScheme.secondary,
@@ -4168,6 +4215,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           // come in must be able to leave in the ordinary way — a card they
           // cannot escape would turn a measurement into a trap, and "left
           // rather than tap" is a result we want recorded, not prevented.
+          // Above the entry card in the stack because it replaces it: the
+          // card is already hidden by the time this is up, and if both were
+          // ever active the claim is the one the visitor just asked for.
+          if (_claimedGrants.isNotEmpty)
+            CoinClaimScreen(
+              grants: _claimedGrants,
+              balance: _claimBalance,
+              onCollect: _dismissCoinClaim,
+            ),
           if (_entryGateActive)
             _EntryGate(
               name: _characterDisplayName,

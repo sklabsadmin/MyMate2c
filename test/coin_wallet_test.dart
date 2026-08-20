@@ -27,25 +27,25 @@ void main() {
     final state = CoinWalletState.fromResponse({
       'enabled': true,
       'granted': [
-        {'reason': 'welcome', 'delta': 30},
-        {'reason': 'daily', 'delta': 10},
+        {'reason': 'welcome', 'delta': 80},
+        {'reason': 'daily', 'delta': 20},
       ],
       'wallet': {
-        'balance': 40,
-        'lifetime_earned': 40,
+        'balance': 100,
+        'lifetime_earned': 100,
         'lifetime_spent': 0,
         'today': {'reply_grants': 3, 'reply_grant_cap': 20},
         'prices': {
           'gift': {'small': 5, 'medium': 15, 'large': 50},
         },
         'recent': [
-          {'id': 'grant:welcome:u', 'delta': 30, 'kind': 'grant', 'reason': 'welcome'},
+          {'id': 'grant:welcome:u', 'delta': 80, 'kind': 'grant', 'reason': 'welcome'},
         ],
       },
     });
     expect(state, isNotNull);
     expect(state!.enabled, isTrue);
-    expect(state.balance, 40);
+    expect(state.balance, 100);
     expect(state.replyGrantsToday, 3);
     expect(state.tributePrices, {'small': 5, 'medium': 15, 'large': 50});
     expect(state.lastGranted.map((g) => g.reason), ['welcome', 'daily']);
@@ -56,7 +56,7 @@ void main() {
     // A new server-side faucet must show up as itself in a toast, not crash it.
     const grant = CoinGrant('prophecy', 7);
     expect(grant.label, 'prophecy');
-    expect(const CoinGrant('daily', 10).label, 'Dawn offering');
+    expect(const CoinGrant('daily', 25).label, 'Dawn offering');
   });
 
   test('the ♥ mapping covers exactly the tribute sizes the server prices', () {

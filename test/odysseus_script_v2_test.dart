@@ -599,13 +599,13 @@ void main() {
 /// The 1.7.1 entry gate — the card over the chat with one button on it.
 
 void _entryGateTests() {
-  testWidgets('the tap pays out the claim it advertises, and only once',
+  testWidgets('the claim screen pays out once, and holds the story until it is collected',
       (tester) async {
-    // The button says "Tap to Claim Coins", so the tap must be where any
-    // pending grant toast surfaces — on a campaign arrival the dashboard,
-    // whose listener normally shows it, was never built. The wallet is
-    // overridden with grants already pending, exactly the state a fresh
-    // visitor's app-load sync leaves behind.
+    // The button says "Tap to Claim Coins", so the tap owes the visitor a
+    // payout — and on a campaign arrival this screen is the only place it can
+    // be made: the dashboard, whose listener normally toasts a grant, is never
+    // built. The wallet is seeded the way an app-load sync leaves a fresh
+    // visitor, with the grants still pending.
     tester.view.physicalSize = const Size(390, 844) * 3.0;
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -624,22 +624,100 @@ void _entryGateTests() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
 
-    expect(find.text(_enterButton), findsOneWidget);
-    expect(find.byType(SnackBar), findsNothing,
-        reason: 'nothing may be claimed before the tap that claims it');
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing,
+        reason: 'nothing is claimed before the tap that claims it');
 
     final container =
         ProviderScope.containerOf(tester.element(find.byType(ChatScreen)));
     await tester.tap(find.text(_enterButton));
     await tester.pump();
 
-    expect(find.text('+30 Welcome gift  ·  +10 Dawn offering'),
-        findsOneWidget);
+    // What landed, itemised, with the total the headline promises.
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget);
+    expect(find.text('+100'), findsOneWidget,
+        reason: 'the headline is the sum the entry card promised');
+    expect(find.text('Welcome gift'), findsOneWidget);
+    expect(find.text('Dawn offering'), findsOneWidget);
     expect(container.read(coinWalletProvider).value?.lastGranted, isEmpty,
-        reason: 'consumed at the tap — a rebuild cannot toast it again');
+        reason: 'consumed at the tap — a rebuild cannot pay it a second time');
 
-    // Let the snackbar's own timer run out before teardown.
-    await tester.pump(const Duration(seconds: 5));
+    // Two minutes of virtual time with the claim up. The same rule the entry
+    // card is built on: not one line may be said to a screen nobody is
+    // looking at. Without the deferral in _enterChat the whole opening plays
+    // out behind this and is gone by the time it is dismissed.
+    await _play(tester, limit: const Duration(seconds: 120));
+    expect(await _delivered(), isEmpty,
+        reason: 'the opening must wait behind the claim screen');
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: 'and nothing dismisses it but the button');
+
+    // Collecting resumes exactly what the entry tap deferred.
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty,
+        reason: 'the conversation begins when the coins are collected');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('the claim screen fits the shortest viewport that reaches us',
+      (tester) async {
+    // 360x560 is the small end of the in-app browser band the entry card
+    // already has a #fold=below flag for. This screen is one Column of fixed
+    // content, so it cannot scroll out of trouble the way that card can: if
+    // it overflows, the button goes off the bottom and the visitor is stuck
+    // on a screen whose only exit is the one control they cannot reach.
+    tester.view.physicalSize = const Size(360, 560) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.tap(find.text(_enterButton), warnIfMissed: false);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget);
+    expect(tester.takeException(), isNull,
+        reason: 'a RenderFlex overflow here is a screen with no way out');
+
+    // The button is not merely in the tree — it is on the glass, above the
+    // bottom edge, which is the part an overflow would break.
+    final button = tester.getRect(find.text('Collect and begin'));
+    expect(button.bottom, lessThanOrEqualTo(560));
+    expect(button.top, greaterThanOrEqualTo(0));
+
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a visitor with nothing to claim goes straight into the story',
+      (tester) async {
+    // The returning visitor, and the reason takeGrants is consume-once: a
+    // claim screen showing "+0" would be worse than no screen at all.
+    await _mountChat(tester);
+
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty,
+        reason: 'nothing should have been deferred');
+
     await _teardown(tester);
   });
 
@@ -1255,7 +1333,7 @@ class _SeededWalletNotifier extends CoinWalletNotifier {
   @override
   Future<CoinWalletState?> build() async => const CoinWalletState(
         enabled: true,
-        balance: 40,
-        lastGranted: [CoinGrant('welcome', 30), CoinGrant('daily', 10)],
+        balance: 100,
+        lastGranted: [CoinGrant('welcome', 80), CoinGrant('daily', 20)],
       );
 }

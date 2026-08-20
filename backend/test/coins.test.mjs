@@ -110,12 +110,14 @@ test('a fresh sync grants the welcome and the dawn offering exactly once', async
         first.json.granted.map((g) => g.reason).sort(),
         ['daily', 'welcome'],
     );
-    assert.equal(first.json.wallet.balance, 40);
+    // 80 + 20: the arrival pays a round hundred, which is what the claim
+    // screen promises on the entry card.
+    assert.equal(first.json.wallet.balance, 100);
 
     const second = await callSync(env, { localDate: '2026-08-20' });
     assert.deepEqual(second.json.granted, []);
-    assert.equal(second.json.wallet.balance, 40);
-    assert.equal(cachedBalance(db, USER), 40);
+    assert.equal(second.json.wallet.balance, 100);
+    assert.equal(cachedBalance(db, USER), 100);
 });
 
 test('a dawn offering cannot be claimed twice by moving the clock', async () => {
@@ -127,19 +129,43 @@ test('a dawn offering cannot be claimed twice by moving the clock', async () => 
     // has not elapsed, so nothing is granted.
     const tomorrow = await callSync(env, { localDate: '2026-08-21' });
     assert.deepEqual(tomorrow.json.granted, []);
-    assert.equal(cachedBalance(db, USER), 40);
+    assert.equal(cachedBalance(db, USER), 100);
     assert.equal(rowCount(db, "reason = 'daily'"), 1);
+});
+
+test('the second day pays the return rate, not the arrival rate', async () => {
+    // Two numbers, one grant: 20 arrives beside the welcome so the first
+    // claim is a round 100, and every day after is worth 25 because coming
+    // back is the harder thing to ask for. Getting these the wrong way round
+    // is invisible until someone reads a week of ledger rows.
+    const { env, db } = coinsEnv();
+    const first = await callSync(env, { localDate: '2026-08-20' });
+    assert.deepEqual(first.json.granted, [
+        { reason: 'welcome', delta: 80 },
+        { reason: 'daily', delta: 20 },
+    ]);
+
+    // Age the clock past the 20-hour guard rather than the calendar: the
+    // guard is what a second day actually has to clear.
+    db.prepare(
+        "UPDATE coin_wallets SET last_daily_at = datetime('now', '-21 hours') WHERE user_id = ?"
+    ).run(USER);
+
+    const nextDay = await callSync(env, { localDate: '2026-08-21' });
+    assert.deepEqual(nextDay.json.granted, [{ reason: 'daily', delta: 25 }]);
+    assert.equal(nextDay.json.wallet.balance, 125);
+    assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
 });
 
 test('a retried offering charges once, and the second answer is still 200', async (t) => {
     const { env, db } = coinsEnv();
     stubFetch(t, openAiOk);
-    await callSync(env, { localDate: '2026-08-20' }); // balance 40
+    await callSync(env, { localDate: '2026-08-20' }); // balance 100
 
     const gift = { id: 'gift_retry_00001', size: 'medium' };
     const first = await callChat(env, { gift });
     assert.equal(first.status, 200);
-    assert.equal(first.json.wallet.balance, 26); // 40 - 15 + 1 reply grant
+    assert.equal(first.json.wallet.balance, 86); // 100 - 15 + 1 reply grant
 
     // The client never saw the first answer and replays the same turn with
     // the same gift id. The reply is generated again (it is a new request),
@@ -147,19 +173,20 @@ test('a retried offering charges once, and the second answer is still 200', asyn
     const second = await callChat(env, { gift });
     assert.equal(second.status, 200);
     assert.equal(rowCount(db, "kind = 'spend'"), 1);
-    assert.equal(second.json.wallet.balance, 27); // one more reply grant, no second charge
+    assert.equal(second.json.wallet.balance, 87); // one more reply grant, no second charge
     assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
 });
 
 test('an offering the balance cannot cover never reaches the model', async (t) => {
     const { env, db } = coinsEnv();
     const upstreamCalls = stubFetch(t, openAiOk);
-    await callSync(env, { localDate: '2026-08-20' }); // balance 40 < 50
-
-    const res = await callChat(env, { gift: { id: 'gift_poor_00001', size: 'large' } });
+    // Deliberately no sync: a wallet that has never been funded is the
+    // cheapest way to be certain the balance cannot cover the tribute, and
+    // it stays true whatever the grants are repriced to.
+    const res = await callChat(env, { gift: { id: 'gift_poor_00001', size: 'small' } });
     assert.equal(res.status, 402);
-    assert.equal(res.json.wallet.balance, 40);
-    assert.equal(res.json.wallet.needed, 50);
+    assert.equal(res.json.wallet.balance, 0);
+    assert.equal(res.json.wallet.needed, 5);
     assert.equal(upstreamCalls.length, 0);
     assert.equal(rowCount(db, "kind = 'spend'"), 0);
     // The refusal is a logged outcome, not a vanished request.
@@ -177,9 +204,9 @@ test('a reply that failed upstream grants nothing', async (t) => {
     const res = await callChat(env, {});
     assert.equal(res.status, 500);
     assert.equal(rowCount(db, "reason = 'reply'"), 0);
-    assert.equal(cachedBalance(db, USER), 40);
+    assert.equal(cachedBalance(db, USER), 100);
     // The settlement still reports the (unchanged) balance rather than hiding.
-    assert.equal(res.json.wallet.balance, 40);
+    assert.equal(res.json.wallet.balance, 100);
     assert.deepEqual(res.json.wallet.granted, []);
 });
 
@@ -247,7 +274,7 @@ test('signing in carries the anonymous balance across and pays the bonus once', 
         throw new Error(`unexpected upstream call: ${url}`);
     });
 
-    await callSync(env, { localDate: '2026-08-20' }); // anon balance 40
+    await callSync(env, { localDate: '2026-08-20' }); // anon balance 100
 
     const worker = await loadWorker();
     const signIn = () => worker.fetch(new Request(
@@ -259,7 +286,7 @@ test('signing in carries the anonymous balance across and pays the bonus once', 
     assert.equal(res.status, 302);
 
     const google = 'google:gsub1';
-    assert.equal(cachedBalance(db, google), 80); // 40 carried + 40 bonus
+    assert.equal(cachedBalance(db, google), 200); // 100 carried + 100 bonus
     assert.equal(cachedBalance(db, USER), 0);
     // The dawn-offering clock crossed too: the account cannot claim a second
     // morning the anonymous wallet already claimed.
@@ -269,7 +296,7 @@ test('signing in carries the anonymous balance across and pays the bonus once', 
     // A second login the same way must not merge or pay again.
     const again = await signIn();
     assert.equal(again.status, 302);
-    assert.equal(cachedBalance(db, google), 80);
+    assert.equal(cachedBalance(db, google), 200);
     assert.equal(rowCount(db, "reason = 'link' AND kind = 'grant'"), 1);
 
     // And through it all, the cache is only ever a view of the ledger.
@@ -315,14 +342,14 @@ test('saving a profile pays once, and a nameless save pays nothing', async () =>
 
     const first = await put({ name: 'Ada', location: 'Ithaca' });
     const firstBody = JSON.parse(await first.text());
-    assert.deepEqual(firstBody.wallet.granted, [{ reason: 'profile', delta: 20 }]);
-    assert.equal(firstBody.wallet.balance, 20);
+    assert.deepEqual(firstBody.wallet.granted, [{ reason: 'profile', delta: 200 }]);
+    assert.equal(firstBody.wallet.balance, 200);
 
     // Editing the profile later is not a second completion.
     const again = await put({ name: 'Ada B.', location: 'Ogygia' });
     const againBody = JSON.parse(await again.text());
     assert.deepEqual(againBody.wallet.granted, []);
-    assert.equal(againBody.wallet.balance, 20);
+    assert.equal(againBody.wallet.balance, 200);
     assert.equal(rowCount(db, "reason = 'profile'"), 1);
     assert.equal(cachedBalance(db, 'google:gprof1'), ledgerSum(db, 'google:gprof1'));
 });
@@ -342,7 +369,7 @@ test('the admin api names the missing migration instead of a bare 500', async ()
     await callSync(env, { localDate: '2026-08-20' });
     const ok = await adminFetch(env, '/api/admin/coins?days=14');
     assert.equal(ok.status, 200);
-    assert.equal(ok.json.totals.granted, 40);
+    assert.equal(ok.json.totals.granted, 100);
     assert.equal(ok.json.totals.spent, 0);
     assert.equal(ok.json.totals.users, 1);
     assert.ok(ok.json.by_day.length >= 1);

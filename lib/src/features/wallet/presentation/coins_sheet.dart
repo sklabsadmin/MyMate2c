@@ -143,15 +143,15 @@ Future<void> showCoinsSheet(
                   ),
                 ),
                 const SizedBox(height: 8),
-                const _EarnRow(Icons.wb_twilight, 'Return each day', '+10'),
+                const _EarnRow(Icons.wb_twilight, 'Return each day', '+25'),
                 _EarnRow(
                   Icons.chat_bubble_outline,
                   'Every reply in a conversation'
                   '${wallet != null && wallet.replyGrantCap > 0 ? ' (${wallet.replyGrantsToday}/${wallet.replyGrantCap} today)' : ''}',
                   '+1',
                 ),
-                const _EarnRow(Icons.account_circle_outlined, 'Sign in with Google', '+40'),
-                const _EarnRow(Icons.badge_outlined, 'Complete your profile', '+20'),
+                const _EarnRow(Icons.account_circle_outlined, 'Sign in with Google', '+100'),
+                const _EarnRow(Icons.badge_outlined, 'Complete your profile', '+200'),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[
                   const SizedBox(height: 18),
                   Text(

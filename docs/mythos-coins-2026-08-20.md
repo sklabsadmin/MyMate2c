@@ -11,8 +11,8 @@ if you find "drops" anywhere, it is stale.
 | | |
 |---|---|
 | Branch | `feat/coins` (local; not pushed at time of writing) |
-| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (this one) |
-| Tests | 75 worker (`npm test`), 73 Flutter (`flutter test`) — all passing |
+| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (`bf184b7`), entry card (`06f208e`), claim screen + repricing (this one) |
+| Tests | 77 worker (`npm test`), 76 Flutter (`flutter test`) — all passing |
 | Migration | `0014_coin_ledger.sql` — applied locally; **not applied to remote D1 yet** (the deploy chain does it) |
 | Production | untouched; `COIN_LEDGER` ships `"false"` in wrangler.jsonc |
 | Verified | end-to-end on the local stack with the flag on: grants, a tribute to Odysseus answered in character by the real pipeline, the ledger reading it back |
@@ -29,10 +29,18 @@ is a single conditional `INSERT OR IGNORE ... WHERE balance >= cost`, and a
 `changes = 0` result is disambiguated by looking the key up.
 
 Faucets (all amounts live in `COINS` in worker.js, never in the client):
-welcome +30 once · dawn offering +10 per local day (≥20 h apart, per-date
-idempotency key) · +1 per completed reply capped 20/day · Google link +40
-once, with the anonymous wallet merged across as two `merge` rows inside
-`recordLinkedAccount`'s once-only guard · profile-with-a-name +20 once.
+welcome +80 once · dawn offering +20 on the day it arrives beside the welcome
+and +25 on every day after (≥20 h apart, per-date idempotency key) · +1 per
+completed reply capped 20/day · Google link +100 once, with the anonymous
+wallet merged across as two `merge` rows inside `recordLinkedAccount`'s
+once-only guard · profile-with-a-name +200 once.
+
+The two daily rates are deliberate: 80 + 20 makes the first claim a round
+**100**, which is what the entry card promises, and the return is then worth
+more than the arrival because returning is the harder thing to ask for. The
+rate is chosen by "has this wallet ever had a dawn offering", not by "was the
+welcome granted in this same call", so a first sync whose daily failed still
+pays the arrival rate next time.
 
 The one sink: **tributes**. A chat turn carries `gift: { id, size }`
 (small/medium/large = 5/15/50, priced server-side); the worker debits after
@@ -43,6 +51,27 @@ character's in-character reaction. Client-side, tributes also move the
 ♥ meter (+1/+3/+10), which now lives in the coins sheet; the gold chip took
 its header slot and falls back to the old Level column whenever coins are
 off.
+
+## The claim screen
+
+The entry card's button reads **Tap to Claim Coins**, and the tap now puts up
+a full-bleed claim screen (`CoinClaimScreen`) that itemises what landed before
+the conversation starts. Two things about it matter operationally:
+
+- **It holds the story.** The screen defers `_raiseGate()` and
+  `_triggerWelcomeSequence()` until it is collected, the same rule the entry
+  card is built on — otherwise the opening plays out behind it and is gone by
+  the time the visitor looks. A widget test pins this.
+- **It is a new step in the funnel**, between `entry_tap` and the first line.
+  `claim_shown` and `claim_tap` bracket it, both carrying
+  `<characterId>#<coins claimed>`, and both are in `ALLOWED_EVENTS` — an event
+  the worker does not know is silently counted as an arrival, which would
+  inflate the denominator of every rate on the visits page. The gap between
+  the two events is what the screen costs; watch it.
+
+It never appears with nothing to show: the grants come from `takeGrants`,
+which is consume-once, so a returning visitor with no pending grant goes
+straight into the conversation.
 
 ## Surfaces
 

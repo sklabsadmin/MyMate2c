@@ -300,7 +300,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   'Make future premium access easier to recognize',
                   if (AppConfig.coinsUiEnabled &&
                       (ref.read(coinWalletProvider).value?.enabled ?? false))
-                    'Carry your Coins with you (+40 when you link)',
+                    'Carry your Coins with you (+100 when you link)',
                 ]),
 
               const SizedBox(height: 30),

@@ -2074,15 +2074,22 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
 // ---------------------------------------------------------------------------
 
 const COINS = {
-    welcome: 30,
-    daily: 10,
+    welcome: 80,
+    // The dawn offering pays 20 on the day it arrives beside the welcome, so
+    // the first claim screen reads a round 100, and 25 on every day after —
+    // the return is worth more than the arrival because returning is the
+    // harder thing to get. firstDaily is chosen by "has this wallet ever had
+    // a daily", not by "was the welcome granted in this same call", so a
+    // first sync whose daily failed still pays the arrival rate next time.
+    firstDaily: 20,
+    daily: 25,
     replyGrant: 1,
     // Caps what talking alone can mint in a day, and caps the ledger's write
     // volume per user — these rows share a database (and a quota) with the
     // chat logs themselves.
     replyGrantDailyCap: 20,
-    linkBonus: 40,
-    profileBonus: 20,
+    linkBonus: 100,
+    profileBonus: 200,
     // Gift sizes, named as acts. The names are the client API; the numbers
     // never leave this object.
     giftSizes: { small: 5, medium: 15, large: 50 },
@@ -2204,6 +2211,13 @@ async function coinSync(db, { userId, localDate, visitId = null, appVersion = nu
 
     const dateOk = typeof localDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(localDate);
     if (dateOk) {
+        // Read after the welcome grant on purpose: that grant creates the
+        // wallet row but leaves last_daily_at NULL, which is exactly the
+        // "never had a dawn offering" the arrival rate is for.
+        const clock = await db.prepare(
+            `SELECT last_daily_at FROM coin_wallets WHERE user_id = ?`
+        ).bind(userId).first();
+        const dailyAmount = clock && clock.last_daily_at ? COINS.daily : COINS.firstDaily;
         // The 20-hour guard lives on the wallet row (last_daily_at is server
         // time), the once-per-date guard lives in the ledger id. Both in one
         // statement, so there is no read-then-write to race.
@@ -2214,7 +2228,7 @@ async function coinSync(db, { userId, localDate, visitId = null, appVersion = nu
                   <= datetime('now', '-20 hours')
         `).bind(
             `grant:daily:${userId}:${localDate}`,
-            userId, COINS.daily, localDate, visitId, appVersion,
+            userId, dailyAmount, localDate, visitId, appVersion,
             userId,
         ).run();
         if (d1Changes(result) > 0) {
@@ -2222,7 +2236,7 @@ async function coinSync(db, { userId, localDate, visitId = null, appVersion = nu
                 UPDATE coin_wallets SET last_daily_on = ?, last_daily_at = CURRENT_TIMESTAMP
                 WHERE user_id = ?
             `).bind(localDate, userId).run();
-            granted.push({ reason: "daily", delta: COINS.daily });
+            granted.push({ reason: "daily", delta: dailyAmount });
         }
     }
 
@@ -3481,6 +3495,11 @@ async function recordSiteVisit(raw, request, env) {
         "strip_rotate", "hide", "show", "leave",
         "gate_shown", "gate_choice", "entry_shown", "entry_tap",
         "profile_view",
+        // The coin claim screen, between entry_tap and the conversation.
+        // claim_shown fires when it goes up, claim_tap when it is dismissed;
+        // the gap between them is how many visitors the screen costs. Both
+        // carry "<characterId>#<coins claimed>" as detail.
+        "claim_shown", "claim_tap",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
