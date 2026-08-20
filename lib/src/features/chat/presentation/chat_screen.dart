@@ -20,6 +20,9 @@ import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
+import '../../wallet/coin_wallet.dart';
+import '../../wallet/presentation/coin_chip.dart';
+import '../../wallet/presentation/coins_sheet.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
 /// for what each field does and why there is more than one set of them.
@@ -369,6 +372,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// cannot send the same opener a second time.
   bool _openerSent = false;
 
+  /// Tribute ids whose ♥ bonus has already been credited. The server charges
+  /// once per id (that is the whole idempotency design), so the meter follows
+  /// the same rule: a retried tribute that finally lands scores once.
+  final Set<String> _scoredTributeIds = {};
+
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
@@ -575,6 +583,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // could hit the cap on its first tick.
     _screenPingTicks = 0;
     _openerSent = false;
+    _scoredTributeIds.clear();
   }
 
   /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
@@ -3317,6 +3326,81 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
   }
 
+  void _openCoinsSheet() {
+    showCoinsSheet(
+      context,
+      ref: ref,
+      characterName: _characterDisplayName,
+      onTribute: _sendTribute,
+    );
+  }
+
+  /// A tribute is an ordinary chat turn with a coin debit attached: the
+  /// worker charges before calling the model and tells the character what was
+  /// offered, so the reply is the reaction. Mirrors [_handleSend]'s preamble
+  /// (gate, funnel, score) because to everything downstream it IS a message —
+  /// only the composer text box was never involved.
+  Future<void> _sendTribute(String size, int price) async {
+    _stopScreenPing();
+    _cancelIdleTimer();
+    _idleNudges = 0;
+
+    final authed = ref.read(authProvider).value?.authenticated ?? false;
+    if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+      logFunnelEvent(
+        'login_gate',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
+      _showLoginGate();
+      return;
+    }
+
+    _welcomeAbandoned = true;
+    if (!_sentFirstMessage) {
+      _sentFirstMessage = true;
+      logFunnelEvent(
+        'first_message',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
+    }
+
+    final option = kTributeOptions.firstWhere(
+      (o) => o.size == size,
+      orElse: () => kTributeOptions.first,
+    );
+    final text =
+        '*offers ${option.label.toLowerCase()} to $_characterDisplayName as a tribute*';
+
+    _addMessage(
+      ChatMessage(
+        id: DateTime.now().toString(),
+        text: text,
+        isUser: true,
+        timestamp: DateTime.now(),
+      ),
+      origin: DeliveryOrigin.user,
+    );
+    setState(() {
+      _isTyping = true;
+      _userHasSent = true;
+    });
+    ref.read(userScoreProvider.notifier).increment();
+
+    final gift = <String, dynamic>{
+      // Client-chosen so a retry replays the same id and cannot pay twice;
+      // shape must satisfy the worker's [A-Za-z0-9_-]{8,64} guard.
+      'id': 'tribute_${DateTime.now().millisecondsSinceEpoch}',
+      'size': size,
+    };
+    try {
+      await _deliverReply(text, gift: gift);
+    } finally {
+      if (mounted && _isTyping) setState(() => _isTyping = false);
+    }
+  }
+
   Future<void> _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -3405,7 +3489,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   ///
   /// Split out of [_handleSend] so that one `finally` there covers every way
   /// out of it, the indicator included.
-  Future<void> _deliverReply(String text) async {
+  Future<void> _deliverReply(String text, {Map<String, dynamic>? gift}) async {
     // A photo is a canned reply, not an AI one — the portrait used to be sent
     // automatically at the start of every chat, which gave it away before the
     // visitor had any reason to want it. Now it is a payoff for asking. Still
@@ -3439,9 +3523,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // the indicator.
     if (ai == null) return;
 
-    final responseText = await ai.sendMessage(text);
+    final responseText = await ai.sendMessage(text, gift: gift);
 
     if (!mounted) return;
+
+    // The wallet block riding on the response, whatever the outcome: the chip
+    // should move with the conversation, not on the next app start.
+    final walletUpdate = ai.lastWallet;
+    if (AppConfig.coinsUiEnabled && walletUpdate != null) {
+      ref.read(coinWalletProvider.notifier).applyFromChat(walletUpdate);
+    }
+    if (ai.lastFailureReason == 'insufficient_coins') {
+      // Nothing was charged and nothing went upstream. Say so plainly rather
+      // than letting the silence read as the character ignoring the gift —
+      // the sheet disables unaffordable tributes, so this is the rare race,
+      // not the normal path.
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text('Not enough coins for that tribute.'),
+      ));
+      return;
+    }
+    if (gift != null &&
+        ai.lastSendSucceeded &&
+        walletUpdate != null &&
+        walletUpdate['gift'] is Map) {
+      final giftId = gift['id'];
+      if (giftId is String && !_scoredTributeIds.contains(giftId)) {
+        _scoredTributeIds.add(giftId);
+        ref.read(userScoreProvider.notifier).add(
+              AppConfig.tributeHeartScore[gift['size']] ?? 0,
+            );
+      }
+    }
 
     // Count this toward the free allowance only if a real reply came back
     // (not a rate-limit/"trouble thinking" fallback), and only while the
@@ -3818,6 +3932,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           tooltip: 'Back',
         ),
         actions: [
+          // The coin balance, in the slot the premium diamond was drawn for.
+          // Tapping it opens the wallet sheet, which in a chat also offers
+          // the tribute sizes for this character.
+          if (AppConfig.coinsUiEnabled &&
+              (ref.watch(coinWalletProvider).value?.enabled ?? false))
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(
+                child: CoinChip(
+                  compact: true,
+                  balance: ref.watch(coinWalletProvider).value?.balance ?? 0,
+                  onTap: _openCoinsSheet,
+                ),
+              ),
+            ),
           if (!AppConfig.isFreeTier)
             IconButton(
               icon: const Icon(Icons.diamond_outlined),

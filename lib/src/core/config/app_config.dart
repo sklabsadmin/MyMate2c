@@ -150,6 +150,26 @@ class AppConfig {
   /// not count. Signing in removes the limit entirely.
   static const int freeRepliesPerCharacter = 20;
 
+  /// Mythos Coins, client half.
+  ///
+  /// The worker's COIN_LEDGER var is the real switch (off there, the server
+  /// answers enabled:false and this UI hides on its own). This constant is
+  /// the second, independent off switch: FALSE builds a client with no coin
+  /// surface at all — no chip, no sheet, no wallet requests — restoring the
+  /// header exactly as it was. One constant, so the way back is a redeploy
+  /// rather than an unpick across the release.
+  static const bool coinsUiEnabled = true;
+
+  /// How far a tribute moves the ♥ meter, by the server's size key. Coin
+  /// PRICES are never a client concern — they arrive with every wallet
+  /// read — but the meter is a client-side keepsake, so its mapping lives
+  /// beside the other client constants.
+  static const Map<String, int> tributeHeartScore = {
+    'small': 1,
+    'medium': 3,
+    'large': 10,
+  };
+
   /// The app is designed as a portrait, phone-shaped experience — two card
   /// columns, one chat column. Left unconstrained, a desktop window stretches
   /// the header and nav bar to the full width while the grid stays centred at
