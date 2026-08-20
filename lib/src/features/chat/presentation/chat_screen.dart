@@ -897,6 +897,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       detail: '${widget.characterId}#$source',
       appUserId: _appUserId,
     );
+    // The button now says "Claim Coins", so the tap is where the claim must
+    // visibly land. The grants themselves happened at wallet sync on app
+    // load; on a campaign arrival the dashboard (whose listener normally
+    // toasts them) was never built, so they sit unconsumed — this is the
+    // moment they belong to. takeGrants is consume-once, so a visitor who
+    // already saw the dashboard toast gets nothing twice, and a returning
+    // visitor whose dawn offering is already claimed gets no false "+".
+    if (AppConfig.coinsUiEnabled) {
+      final claimed = ref.read(coinWalletProvider.notifier).takeGrants();
+      if (claimed.isNotEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF2D1035),
+          content: Text(
+            claimed.map((g) => '+${g.delta} ${g.label}').join('  ·  '),
+            style: const TextStyle(color: Colors.white),
+          ),
+        ));
+      }
+    }
     // Nothing to start over a monologue that is already on screen — see
     // _entryGateStartsOpening. The visitor was still gated and still counted;
     // they simply resume the conversation from where the old bundle left it.
@@ -4449,7 +4469,13 @@ class _PulsingEnterButtonState extends State<_PulsingEnterButton>
         ),
       ),
       child: Text(
-        'Tap to Talk',
+        // Was 'Tap to Talk' through 1.7.2+76. Reworded 2026-08-20 to lead
+        // with the coins claim (the welcome/daily grants a first tap walks
+        // into). Note for whoever reads the funnel: entry_tap's meaning
+        // changes at this build — the ask is the same one tap, but the
+        // promise behind it is different, so compare rates across this
+        // boundary the way the segmented eval compares bundles.
+        'Tap to Claim Coins',
         style: GoogleFonts.outfit(
           fontSize: 19,
           fontWeight: FontWeight.w700,
@@ -4745,8 +4771,8 @@ class _EntryGate extends StatelessWidget {
                   // gone from characters.dart rather than sitting there
                   // uncalled.
                   Text(
-                    '$name would like to talk to you,\n'
-                    'and understand your journey',
+                    'Claim your coins for the Greek-themed\n'
+                    'Mythos Live interactive story adventure',
                     textAlign: TextAlign.center,
                     style: GoogleFonts.outfit(
                       color: Colors.white.withOpacity(0.75),

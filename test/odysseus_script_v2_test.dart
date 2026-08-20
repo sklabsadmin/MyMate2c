@@ -19,6 +19,7 @@ import 'dart:convert';
 
 import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
 import 'package:ai_boyfriend_chat/src/features/chat/presentation/chat_screen.dart';
+import 'package:ai_boyfriend_chat/src/features/wallet/coin_wallet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -42,7 +43,7 @@ const String _p12Question = 'Where should we begin?';
 
 /// The entry card's button, and the title it is built from — restated here
 /// rather than read from the widget for the same reason as the script lines.
-const String _enterButton = 'Tap to Talk';
+const String _enterButton = 'Tap to Claim Coins';
 const String _characterTitle = 'King of Ithaca';
 
 /// Quick replies for the first two pauses, and one of the cold-safe sets the
@@ -598,6 +599,50 @@ void main() {
 /// The 1.7.1 entry gate — the card over the chat with one button on it.
 
 void _entryGateTests() {
+  testWidgets('the tap pays out the claim it advertises, and only once',
+      (tester) async {
+    // The button says "Tap to Claim Coins", so the tap must be where any
+    // pending grant toast surfaces — on a campaign arrival the dashboard,
+    // whose listener normally shows it, was never built. The wallet is
+    // overridden with grants already pending, exactly the state a fresh
+    // visitor's app-load sync leaves behind.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.text(_enterButton), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing,
+        reason: 'nothing may be claimed before the tap that claims it');
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(ChatScreen)));
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+
+    expect(find.text('+30 Welcome gift  ·  +10 Dawn offering'),
+        findsOneWidget);
+    expect(container.read(coinWalletProvider).value?.lastGranted, isEmpty,
+        reason: 'consumed at the tap — a rebuild cannot toast it again');
+
+    // Let the snackbar's own timer run out before teardown.
+    await tester.pump(const Duration(seconds: 5));
+    await _teardown(tester);
+  });
+
   testWidgets('holds the whole conversation behind one button', (tester) async {
     await _mountChat(tester, enterChat: false);
 
@@ -1106,9 +1151,11 @@ void _entryGateTests() {
         findsOneWidget);
     expect(find.byIcon(Icons.touch_app_outlined), findsWidgets);
 
-    // The invitation, split at its comma, and the button.
+    // The claim line (replaced the per-character invitation 2026-08-20 when
+    // the button began leading with the coins), and the button.
     expect(
-      find.text('Hercules would like to talk to you,\nand understand your journey'),
+      find.text(
+          'Claim your coins for the Greek-themed\nMythos Live interactive story adventure'),
       findsOneWidget,
     );
     expect(find.text(_enterButton), findsOneWidget);
@@ -1199,3 +1246,16 @@ const List<String> _idlePrompts = [
   "No rush. Say something whenever you're ready.",
   "Where did you get to?",
 ];
+
+
+/// A wallet the way an app-load sync leaves it for a fresh visitor: enabled,
+/// funded, with the welcome and dawn grants still waiting for their toast.
+/// No network — overriding build() replaces the real notifier's refresh.
+class _SeededWalletNotifier extends CoinWalletNotifier {
+  @override
+  Future<CoinWalletState?> build() async => const CoinWalletState(
+        enabled: true,
+        balance: 40,
+        lastGranted: [CoinGrant('welcome', 30), CoinGrant('daily', 10)],
+      );
+}
