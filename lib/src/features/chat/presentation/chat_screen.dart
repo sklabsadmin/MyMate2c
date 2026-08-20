@@ -441,7 +441,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _historyLoaded = _loadHistory();
     _loadReplyCount();
     // Track active character
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Refresh auth status in case the user just returned from an OAuth
       // redirect back into this chat.
       //
@@ -454,12 +454,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // catch an OAuth return.
       ref.read(authProvider.notifier).refresh();
 
-      // Deliberately not awaited. The funnel events below must fire whether or
-      // not storage ever answers — that is the whole point of caching the id
-      // rather than logging inside a future that can reject and take the event
-      // with it. Events raced by this carry a null app user id and are counted
-      // exactly the same.
-      _loadAppUserId();
+      // Resolve the app user id BEFORE the funnel events, but bounded.
+      //
+      // character_tap fires once, here, and never again this session — unlike
+      // screen_ping, which fires on a timer and so picks up the id on a later
+      // tick. Fired synchronously it was raced by _loadAppUserId every time on
+      // a fresh device (the id is minted by storage this same frame), so 100%
+      // of live character_tap rows carried no app_user_id — which silently
+      // limited the bounce->transcript join (migration 0006) to visitors who
+      // already had an id from an earlier session.
+      //
+      // The await is what fixes it; the timeout is what preserves the original
+      // guarantee this comment used to make — that a hung or rejecting storage
+      // can never hold the funnel hostage. _loadAppUserId swallows its own
+      // errors, so this only ever waits out the timeout, and on timeout the id
+      // is null and the events fire anyway, exactly the old behaviour for the
+      // broken-storage case. On the normal path storage answers in a few ms.
+      await _loadAppUserId().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {},
+      );
+      if (!mounted) return;
 
       _openCharacter();
 
