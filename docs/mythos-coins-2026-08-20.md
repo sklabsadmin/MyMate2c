@@ -1,0 +1,127 @@
+# Mythos Coins — what shipped, how to turn it on, and what to watch
+
+Written 2026-08-20, on branch `feat/coins`, for whoever flips the switch.
+The full design brief (economy rationale, rejected mechanics, phases) lives
+outside the repo; this is the operational half. The currency was renamed from
+the working name "Ambrosia Drops" to **Coins** by the 20 Aug design meeting —
+if you find "drops" anywhere, it is stale.
+
+## Where things stand
+
+| | |
+|---|---|
+| Branch | `feat/coins` (local; not pushed at time of writing) |
+| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (this one) |
+| Tests | 75 worker (`npm test`), 73 Flutter (`flutter test`) — all passing |
+| Migration | `0014_coin_ledger.sql` — applied locally; **not applied to remote D1 yet** (the deploy chain does it) |
+| Production | untouched; `COIN_LEDGER` ships `"false"` in wrangler.jsonc |
+| Verified | end-to-end on the local stack with the flag on: grants, a tribute to Odysseus answered in character by the real pipeline, the ledger reading it back |
+
+## What it is, in one paragraph
+
+A server-authoritative wallet. Every movement of coins is one row in
+`coin_ledger`, whose PRIMARY KEY is an idempotency key the caller chooses
+(message_delivery's bubble_id trick), so a retry can never pay or charge
+twice. `coin_wallets.balance` is a cache maintained by a trigger in the same
+statement that writes the row — no code path updates it directly, and it is
+rebuildable as `SUM(delta)`. D1 has no interactive transactions, so a spend
+is a single conditional `INSERT OR IGNORE ... WHERE balance >= cost`, and a
+`changes = 0` result is disambiguated by looking the key up.
+
+Faucets (all amounts live in `COINS` in worker.js, never in the client):
+welcome +30 once · dawn offering +10 per local day (≥20 h apart, per-date
+idempotency key) · +1 per completed reply capped 20/day · Google link +40
+once, with the anonymous wallet merged across as two `merge` rows inside
+`recordLinkedAccount`'s once-only guard · profile-with-a-name +20 once.
+
+The one sink: **tributes**. A chat turn carries `gift: { id, size }`
+(small/medium/large = 5/15/50, priced server-side); the worker debits after
+validation and *before* the upstream call — an unaffordable turn costs no
+OpenAI request and returns 402 — then narrates the offering onto the last
+user message (both engine paths strip system messages), so the reply is the
+character's in-character reaction. Client-side, tributes also move the
+♥ meter (+1/+3/+10), which now lives in the coins sheet; the gold chip took
+its header slot and falls back to the old Level column whenever coins are
+off.
+
+## Surfaces
+
+- `POST /api/wallet/sync`, `GET /api/wallet` — same HMAC + identity
+  resolution as `/api/chat`; unrecognised ids get `wallet: null`, no rows.
+- `/api/chat` — accepts `gift`, answers with a `wallet { enabled, balance,
+  granted }` block; the client chip moves on every turn without polling.
+- `/api/profile` PUT — pays the profile bonus, answers with the same block.
+- `/admin/coins` + `/api/admin/coins` — faucets vs sinks by day and reason,
+  top balances, any user's history. Basic auth like every admin page.
+- Export-everything includes `coin_ledger` and `coin_wallets`.
+
+## The off switch (read before touching)
+
+`COIN_LEDGER` in wrangler.jsonc `vars`, currently the **default-off idiom**:
+only the exact string `"true"` enables it. Off follows DELIVERY_LOGGING's
+ack-don't-refuse rule — `/api/wallet*` answers `200 { enabled: false }` and a
+gifted turn goes through as plain chat carrying `wallet: { enabled: false }`
+— so "switched off" is distinguishable from "broken" in every response, and a
+client built with the UI in it goes quiet instead of retrying. The client
+additionally has its own kill switch, `AppConfig.coinsUiEnabled` (a build-time
+const): FALSE builds a client with no coin surface at all and restores the
+header exactly as it was. Once coins are the normal state, flip the worker
+check to the `!== "false"` idiom in the same commit that removes the
+allowlist.
+
+## Rollout, in order
+
+1. Merge to `main` with a version bump (suggest opening **1.8.0** — this is
+   the kind of feature version strings exist to mark). `npm run deploy`
+   applies migration 0014 to remote D1 *before* `wrangler deploy`; that
+   ordering is load-bearing, do not deploy by hand. **Check
+   `npx wrangler d1 migrations list mymate2_db --remote` first** — the 0008
+   numbering collision is a known wound and nothing else may claim 0014.
+2. Deployed dark, nothing is visible. Confirm: `/admin/coins` renders with
+   zero rows; the app header still shows ♥ Level.
+3. Soak: `npx wrangler secret put COIN_ALLOWLIST` with your own user id(s)
+   (comma-separated; the literal entry `synthetic` admits
+   `x-synthetic-test: 1` requests). Secrets take effect on the next deploy —
+   the operational-notes trap. Play a session; read it back in `/admin/coins`.
+4. Flip `COIN_LEDGER` to `"true"` in wrangler.jsonc, deploy. The next sync of
+   every visitor grants welcome+daily and the chip appears.
+5. To retreat: set it back to `"false"` and deploy. Balances keep; UI hides;
+   the header falls back on its own.
+
+## What to watch after the flip
+
+- `/api/chat` p95 — the tribute debit is on the critical path (one indexed
+  INSERT); the reply grant is not awaited into failure (it can cost at most
+  the coin, never the reply — persistConversationLog's rule).
+- `/admin/coins` faucet:sink by day — if nobody spends, the sink is the
+  problem, not the faucets.
+- The funnel pages — entry rate should not move (nothing coin-shaped exists
+  before the entry tap; if it moves, something leaked upstream of it).
+- Ledger write volume — it shares the D1 quota with chat logs and
+  screen_ping; the 20/day reply cap is partly a budget cap.
+
+## Traps specific to this feature
+
+- The ledger uses SQLite space-form timestamps on purpose; do not "fix" any
+  of its queries to ISO, and never window it jointly with conversation_logs
+  without normalising (`exportAllTables` shows how).
+- `x-user-id` is unverified. Anonymous wallets are deliberately allowed and
+  deliberately low-stakes (server-set amounts, cosmetic sink). Before
+  anything purchasable exists, add the claim-token step from the brief and
+  require a signed-in session for purchases. Do not key anything
+  irreversible on the bare header.
+- A retried tribute is free (same gift id) but its *reply* grants +1 again —
+  bounded by the daily cap, accepted for now.
+- An upstream failure after a debit is not refunded: the client retry with
+  the same gift id gets the reaction without paying twice, which heals the
+  common case. A stuck one is an admin `adjust` row.
+- The tribute bubble text (`*offers … as a tribute*`) is not a starter; if it
+  is ever routed through the starter strip instead, `gen_starters` will label
+  it "starter (unmatched)" — that label appearing is the alarm.
+
+## Deliberate gaps (phase 2+, in the brief)
+
+Streak bonus (blocked on `is_return` having a baseline) · claim tokens ·
+photo / "ask the Oracle" sinks · referral faucet · purchasable packs (needs a
+web-billing decision and server-side receipt validation, neither of which
+exists anywhere yet).
