@@ -871,9 +871,12 @@ class DeliveryLog {
 
   String _sign(String body, String timestamp) {
     final secret = AppConfig.appSecret;
-    // Empty on web by design (see AppConfig.appSecret), where the worker runs
-    // with REQUIRE_SIGNATURE=false. Same shape as OpenAIService, which also
-    // sends an empty signature there rather than omitting the header.
+    // Empty only when the build carried no secret — a bare `flutter build web`
+    // without the APP_SECRET define, the build tool/build_web.sh exists to
+    // refuse. Real web builds bake the secret in, and the worker runs with
+    // REQUIRE_SIGNATURE=true, so a secretless build gets a 401 from this
+    // endpoint rather than a quiet pass. Sending the empty string instead of
+    // omitting the header is the same shape as OpenAIService.
     if (secret.isEmpty) return '';
     return Hmac(sha256, utf8.encode(secret))
         .convert(utf8.encode(body + timestamp))

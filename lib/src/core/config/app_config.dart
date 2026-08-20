@@ -202,11 +202,15 @@ class AppConfig {
 
   /// Where delivery receipts go — what the client actually drew on screen.
   ///
-  /// Signed with the same HMAC as chatUrl() where a secret exists, which on web
-  /// is nowhere: appSecret is deliberately empty there, so REQUIRE_SIGNATURE is
-  /// off in production and this endpoint is as unauthenticated as /api/visit
-  /// already is. What keeps the table clean is the worker's user-id guard and
-  /// its batch cap, not the signature.
+  /// Signed with the same HMAC as chatUrl(), web included: tool/build_web.sh
+  /// bakes APP_SECRET into every web build as a --dart-define and refuses to
+  /// build without it, and the worker runs with REQUIRE_SIGNATURE=true
+  /// (wrangler.jsonc), so an unsigned post gets a 401. The empty-secret branch
+  /// in appSecret is only reachable from a bare `flutter build web` without
+  /// the define — the chat-is-dead build that script exists to prevent. The
+  /// signature is still not what keeps this table clean, though: the secret
+  /// ships inside public JavaScript, so the durable guards are the worker's
+  /// user-id guard and its batch cap.
   static String deliveryUrl() => apiUrl('/api/delivery');
 
   /// How long the client waits after a receipt changes before flushing, so the
