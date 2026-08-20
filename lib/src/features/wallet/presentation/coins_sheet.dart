@@ -151,6 +151,7 @@ Future<void> showCoinsSheet(
                   '+1',
                 ),
                 const _EarnRow(Icons.account_circle_outlined, 'Sign in with Google', '+40'),
+                const _EarnRow(Icons.badge_outlined, 'Complete your profile', '+20'),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[
                   const SizedBox(height: 18),
                   Text(

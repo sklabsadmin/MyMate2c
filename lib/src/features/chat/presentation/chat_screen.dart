@@ -3752,6 +3752,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   height: 1.4,
                 ),
               ),
+              // Only when the wallet is live: a promise about coins must not
+              // appear in a build where coins do not exist.
+              if (AppConfig.coinsUiEnabled &&
+                  (ref.read(coinWalletProvider).value?.enabled ?? false)) ...[
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.paid,
+                        size: 14, color: theme.colorScheme.secondary),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        'Your coins come with you — signing in adds +40.',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.lato(
+                          color: theme.colorScheme.secondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,

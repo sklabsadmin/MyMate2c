@@ -2082,6 +2082,7 @@ const COINS = {
     // chat logs themselves.
     replyGrantDailyCap: 20,
     linkBonus: 40,
+    profileBonus: 20,
     // Gift sizes, named as acts. The names are the client API; the numbers
     // never leave this object.
     giftSizes: { small: 5, medium: 15, large: 50 },
@@ -2532,7 +2533,38 @@ async function handlePutProfile(request, env) {
         .bind(identity.userId, identity.provider, identity.providerId, ...values)
         .run();
 
-    return jsonResponse({ ok: true }, { headers: corsHeaders(request) });
+    // The profile faucet: +20, once ever, and only for a profile that says
+    // who they are — a saved-but-empty form is not the moment the bonus
+    // exists for. Its own try because the save must survive a ledger hiccup;
+    // the wallet block on the response is how the client toasts it without a
+    // second request.
+    let wallet = null;
+    if (coinsActive(env, request, identity.userId)) {
+        try {
+            const granted = [];
+            const nameIndex = PROFILE_FIELDS.findIndex(([jsonKey]) => jsonKey === "name");
+            const hasName = nameIndex >= 0 && values[nameIndex].trim() !== "";
+            if (hasName && await coinGrant(env.CHAT_LOGS_DB, {
+                id: `grant:profile:${identity.userId}`,
+                userId: identity.userId,
+                delta: COINS.profileBonus,
+                reason: "profile",
+            })) {
+                granted.push({ reason: "profile", delta: COINS.profileBonus });
+            }
+            const state = await coinWalletState(env.CHAT_LOGS_DB, identity.userId);
+            wallet = { enabled: true, balance: state.balance, granted };
+        } catch (e) {
+            console.error(JSON.stringify({
+                event: "coin_profile_grant_failed",
+                error: e && e.message ? e.message : String(e),
+            }));
+        }
+    }
+
+    return jsonResponse(wallet ? { ok: true, wallet } : { ok: true }, {
+        headers: corsHeaders(request),
+    });
 }
 
 async function getSessionFromRequest(request, env) {

@@ -10,6 +10,7 @@
 // the worker's upstream call gets the answer the test chooses, and the ledger
 // is judged on what it did around that answer.
 
+import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testEnv, loadWorker, adminFetch } from './harness.mjs';
@@ -275,6 +276,55 @@ test('signing in carries the anonymous balance across and pays the bonus once', 
     for (const uid of [USER, google]) {
         assert.equal(cachedBalance(db, uid), ledgerSum(db, uid));
     }
+});
+
+/// A session cookie the worker itself would accept: base64url payload dot
+/// hex HMAC, signed with the same APP_SECRET the env carries (SESSION_SECRET
+/// falls back to it). Minted here so the profile tests drive the real
+/// cookie-auth path instead of an exported internal.
+function mintSession(secret, payload) {
+    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = createHmac('sha256', secret).update(encoded).digest('hex');
+    return `${encoded}.${signature}`;
+}
+
+test('saving a profile pays once, and a nameless save pays nothing', async () => {
+    const { env, db } = coinsEnv();
+    const worker = await loadWorker();
+    const session = mintSession(env.APP_SECRET, {
+        provider: 'google',
+        googleId: 'gprof1',
+        email: 'p@example.com',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const put = (profile) => worker.fetch(new Request('https://mythos.test/api/profile', {
+        method: 'PUT',
+        headers: {
+            'content-type': 'application/json',
+            Cookie: `mymate_session=${session}`,
+        },
+        body: JSON.stringify({ profile }),
+    }), env, { waitUntil() {}, passThroughOnException() {} });
+
+    // A form saved with no name is not "telling them about you" yet.
+    const nameless = await put({ location: 'Ithaca' });
+    assert.equal(nameless.status, 200);
+    const namelessBody = JSON.parse(await nameless.text());
+    assert.deepEqual(namelessBody.wallet.granted, []);
+    assert.equal(rowCount(db, "reason = 'profile'"), 0);
+
+    const first = await put({ name: 'Ada', location: 'Ithaca' });
+    const firstBody = JSON.parse(await first.text());
+    assert.deepEqual(firstBody.wallet.granted, [{ reason: 'profile', delta: 20 }]);
+    assert.equal(firstBody.wallet.balance, 20);
+
+    // Editing the profile later is not a second completion.
+    const again = await put({ name: 'Ada B.', location: 'Ogygia' });
+    const againBody = JSON.parse(await again.text());
+    assert.deepEqual(againBody.wallet.granted, []);
+    assert.equal(againBody.wallet.balance, 20);
+    assert.equal(rowCount(db, "reason = 'profile'"), 1);
+    assert.equal(cachedBalance(db, 'google:gprof1'), ledgerSum(db, 'google:gprof1'));
 });
 
 test('the admin api names the missing migration instead of a bare 500', async () => {
