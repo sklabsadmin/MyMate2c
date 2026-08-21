@@ -348,13 +348,18 @@ class _PursePainter extends CustomPainter {
     canvas.translate(0, size.height - 110 * s);
     canvas.scale(s);
 
-    // The purse gains weight as it fills — the point of the screen is that
-    // something arrived, so the object has to change.
-    final plump = 1.0 + 0.05 * fill;
+    // The purse SWELLS as it fills, from about two thirds up to full size.
+    // An empty bag that is already the size of a full one has nothing left to
+    // say when the coins land, and reads as oversized while it waits.
+    //
+    // Anchored at the base, not the middle, because a bag on a surface fills
+    // upward and outward — the bottom stays where it is and the body grows
+    // around it.
+    final swell = 0.66 + 0.34 * fill;
     canvas.save();
-    canvas.translate(50, 86);
-    canvas.scale(plump, 1.0 + 0.02 * fill);
-    canvas.translate(-50, -86);
+    canvas.translate(50, 107);
+    canvas.scale(swell);
+    canvas.translate(-50, -107);
 
     _paintGlow(canvas);
     _paintBody(canvas);
@@ -362,9 +367,11 @@ class _PursePainter extends CustomPainter {
     _paintFolds(canvas);
     _paintCord(canvas);
     _paintNeck(canvas);
+    // Inside the swell, so the coins fall into the neck wherever the neck has
+    // grown to rather than at a fixed height it has moved away from.
+    _paintFallingCoins(canvas);
 
     canvas.restore();
-    _paintFallingCoins(canvas);
     canvas.restore();
   }
 
@@ -573,7 +580,7 @@ class _PursePainter extends CustomPainter {
       if (t <= 0 || t >= 1) continue;
       final eased = t * t; // ease-in, because they are falling
       final x = 50 + (i.isEven ? -1 : 1) * (3.0 + (i % 3) * 2.5) * (1 - eased);
-      final y = -16 + eased * 48;
+      final y = -34 + eased * 66;
       // Fades through the opening rather than vanishing on the rim, which
       // reads as landing rather than being deleted.
       final opacity = t > 0.82 ? (1 - t) / 0.18 : 1.0;

@@ -59,6 +59,11 @@ class CoinWalletState {
   /// server from the ledger, so it cannot drift from what was charged.
   final List<String> pendants;
 
+  /// What each faucet pays, by server key (daily/reply/link/profile). Like
+  /// [tributePrices], the client holds no opinion of its own — an empty map
+  /// means "not read yet", and the earn list simply shows no figures.
+  final Map<String, int> grantValues;
+
   /// What the latest sync or chat turn granted — consumed once by the UI for
   /// a toast (see [CoinWalletNotifier.takeGrants]), never persisted.
   final List<CoinGrant> lastGranted;
@@ -73,6 +78,7 @@ class CoinWalletState {
     this.tributePrices = const {},
     this.recent = const [],
     this.pendants = const [],
+    this.grantValues = const {},
     this.lastGranted = const [],
   });
 
@@ -92,6 +98,7 @@ class CoinWalletState {
       tributePrices: tributePrices,
       recent: recent ?? this.recent,
       pendants: pendants ?? this.pendants,
+      grantValues: grantValues,
       lastGranted: lastGranted ?? this.lastGranted,
     );
   }
@@ -125,6 +132,10 @@ class CoinWalletState {
       pendants: (wallet['pendants'] is List)
           ? [for (final id in wallet['pendants'] as List) '$id']
           : const [],
+      grantValues: wallet['grants'] is Map
+          ? (wallet['grants'] as Map)
+              .map((k, v) => MapEntry(k.toString(), _asInt(v)))
+          : const {},
       lastGranted: parseGrants(data['granted']),
     );
   }

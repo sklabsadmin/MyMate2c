@@ -390,6 +390,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// the same rule: a retried tribute that finally lands scores once.
   final Set<String> _scoredTributeIds = {};
 
+  /// Gift rewards already sent in this conversation, keyed "<character>:<item>".
+  /// Sent once rather than every time: the photograph is the same photograph,
+  /// and receiving it twice in a row reads as the app repeating itself rather
+  /// than the character being pleased.
+  final Set<String> _sentGiftRewards = {};
+
+  /// A reward photograph waiting for the current reply to finish speaking.
+  String? _pendingGiftReward;
+
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
@@ -612,6 +621,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _screenPingTicks = 0;
     _openerSent = false;
     _scoredTributeIds.clear();
+    _sentGiftRewards.clear();
     // Per-conversation, like everything else here: one State is reused across
     // characters, and a claim left standing would cover the next one's chat.
     _claimedGrants = const [];
@@ -3653,6 +3663,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               AppConfig.tributeHeartScore[gift['item']] ?? 0,
             );
       }
+      // Some characters answer a gift with a photograph as well as words.
+      // Queued here and sent after the reply's bubbles below, so it arrives
+      // as the last thing in the turn rather than interrupting the sentence
+      // it belongs to.
+      final item = gift['item'];
+      if (applied['charged'] != false && item is String) {
+        final reward = giftRewardAsset(widget.characterId, item);
+        final key = '${widget.characterId}:$item';
+        if (reward != null && !_sentGiftRewards.contains(key)) {
+          _sentGiftRewards.add(key);
+          _pendingGiftReward = reward;
+        }
+      }
     }
 
     // Count this toward the free allowance only if a real reply came back
@@ -3749,6 +3772,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       );
     }
 
+    // A gift's reward photograph, if this turn earned one — after the words,
+    // never instead of them: the character answers the gesture in their own
+    // voice first, and the photo is the flourish on the end.
+    final reward = _pendingGiftReward;
+    if (reward != null) {
+      _pendingGiftReward = null;
+      await _sendGiftReward(reward);
+      if (!mounted) return;
+    }
+
     // Reply finished — this is a pause point in the same sense the script's
     // are, so move the strip on to the next set of questions. Done here rather
     // than when the message is sent so the questions change with her answer
@@ -3780,6 +3813,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// automatically. Paced like a real reply — a typing beat, then the image —
   /// rather than appearing instantly, which would look like it was already
   /// sitting there waiting.
+  /// The photograph a character sends back for a gift. Paced like the
+  /// portrait — a typing beat, then the image — so it reads as them choosing
+  /// to send it rather than an attachment the app stapled on.
+  Future<void> _sendGiftReward(String asset) async {
+    if (!mounted) return;
+    setState(() => _isTyping = true);
+    await Future.delayed(const Duration(milliseconds: 1100));
+    if (!mounted) return;
+    setState(() => _isTyping = false);
+    _addMessage(
+      ChatMessage(
+        id: 'giftreward_${DateTime.now().millisecondsSinceEpoch}',
+        text: 'A photo from $_characterDisplayName',
+        isUser: false,
+        timestamp: DateTime.now(),
+        imageAsset: asset,
+      ),
+      origin: DeliveryOrigin.giftReward,
+    );
+  }
+
   Future<void> _sendPortrait(String portrait) async {
     await Future.delayed(const Duration(milliseconds: 900));
     if (!mounted) return;
@@ -5776,6 +5830,37 @@ class _ChatBubble extends StatelessWidget {
       );
     }
 
+    // A gift is shown as the thing itself, with no bubble and no words.
+    //
+    // message.text still carries the stage direction, and deliberately so: it
+    // is what the model is answering, and _loadHistory rebuilds the model's
+    // view of the conversation from these stored messages — blank it and
+    // reopening the chat loses the fact that anything was ever given. It is
+    // also the accessibility label. It simply is not drawn, because the
+    // picture says it better than "*gives roses to Odysseus*" did.
+    //
+    // No frame, unlike the portrait above: the art is a cut-out with its own
+    // glow, and a rounded box around it reads as a photo of a gift rather
+    // than a gift.
+    final giftAsset = message.giftAsset;
+    if (giftAsset != null) {
+      return Align(
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          margin: EdgeInsets.only(bottom: gap),
+          child: Semantics(
+            label: message.text,
+            image: true,
+            child: SizedBox(
+              width: 104,
+              height: 104,
+              child: Image.asset(giftAsset, fit: BoxFit.contain),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
@@ -5808,38 +5893,14 @@ class _ChatBubble extends StatelessWidget {
               bottomRight: Radius.circular(isUser ? 4 : 14),
             ),
           ),
-          child: Builder(builder: (context) {
-            final label = Text(
-              message.text,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: Colors.white.withOpacity(0.95),
-                fontSize: 16,
-                height: 1.25,
-              ),
-            );
-            final gift = message.giftAsset;
-            if (gift == null) return label;
-            // A gift keeps its bubble and its stage direction, and puts the
-            // thing itself beside them. Not the portrait treatment above: that
-            // replaces the bubble with a cover-cropped square, which would cut
-            // the stem off a rose and lose the words entirely.
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    width: 46,
-                    height: 46,
-                    child: Image.asset(gift, fit: BoxFit.contain),
-                  ),
-                  const SizedBox(width: 10),
-                  Flexible(child: label),
-                ],
-              ),
-            );
-          }),
+          child: Text(
+            message.text,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: Colors.white.withOpacity(0.95),
+              fontSize: 16,
+              height: 1.25,
+            ),
+          ),
         ),
       ),
     );

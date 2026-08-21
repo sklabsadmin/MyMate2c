@@ -2253,6 +2253,16 @@ async function coinWalletState(db, userId) {
         lifetime_spent: wallet ? Number(wallet.lifetime_spent) : 0,
         today: { reply_grants: replyRow ? Number(replyRow.n) : 0, reply_grant_cap: COINS.replyGrantDailyCap },
         prices: { gift: prices },
+        // What the faucets pay. Travels for the same reason the prices do:
+        // the sheet lists "every reply +N", and a client holding its own copy
+        // of N goes stale the moment the economy is retuned — which it did,
+        // silently, the day replyGrant went from 1 to 8.
+        grants: {
+            daily: COINS.daily,
+            reply: COINS.replyGrant,
+            link: COINS.linkBonus,
+            profile: COINS.profileBonus,
+        },
         // The gifts already given that cannot be given again, so the sheet can
         // read "Worn" instead of a price.
         pendants: (worn || []).map((row) => row.ref),
@@ -2984,6 +2994,11 @@ async function deliveryReport(db, days) {
 /// here in the same change that starts sending it.
 const DELIVERY_ORIGINS = [
     "ai_reply", "welcome_script", "idle_nudge", "portrait",
+    // A photo the character sends back after a gift. Its own origin rather
+    // than folded into "portrait": the two are asked for in completely
+    // different ways, and the whole point of this column is to be able to
+    // tell what a bubble was when asking whether it arrived.
+    "gift_reward",
     "local_fallback", "system_banner", "user",
 ];
 

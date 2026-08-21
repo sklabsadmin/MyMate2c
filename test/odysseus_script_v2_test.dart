@@ -1412,6 +1412,44 @@ void _giftSheetTests() {
     await _teardown(tester);
   });
 
+  testWidgets('a given gift is the picture alone — the words go to the model only',
+      (tester) async {
+    // Two things have to be true at once, and they pull in opposite
+    // directions: the stage direction must still travel (it is what the
+    // character is answering, and _loadHistory rebuilds the model's view of
+    // the conversation out of these stored messages), but it must not be
+    // drawn. Deleting the text to hide it would silently cost the model the
+    // fact that anything was given.
+    _RichWalletNotifier.pendants = const [];
+    await _mountFunded(tester);
+
+    await tester.tap(find.text('Gift'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Roses'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.image(const AssetImage('assets/images/gift_roses.png')),
+        findsWidgets, reason: 'the roses themselves are the message');
+    expect(find.textContaining('gives roses'), findsNothing,
+        reason: 'the stage direction is for the model, not the screen');
+
+    // …and it is still on the message, which is what the model and a reopened
+    // conversation both read.
+    final stored = await SharedPreferences.getInstance();
+    final raw = stored.getStringList(_historyKey) ?? const [];
+    final gifts = raw
+        .map((s) => jsonDecode(s) as Map<String, dynamic>)
+        .where((m) => m['giftAsset'] != null)
+        .toList();
+    expect(gifts, hasLength(1));
+    expect(gifts.single['text'], contains('gives roses'));
+    expect(gifts.single['giftAsset'], 'assets/images/gift_roses.png');
+
+    await _teardown(tester);
+  });
+
   testWidgets('a pendant already given reads Worn, and cannot be bought again',
       (tester) async {
     // 500 coins is a lot to spend twice on the same neck.

@@ -29,6 +29,7 @@ enum DeliveryOrigin {
   welcomeScript('welcome_script'),
   idleNudge('idle_nudge'),
   portrait('portrait'),
+  giftReward('gift_reward'),
   localFallback('local_fallback'),
   systemBanner('system_banner'),
   user('user');

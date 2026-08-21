@@ -42,6 +42,20 @@ const List<TributeOption> kTributeOptions = [
       'assets/images/gift_pendant.png', once: true),
 ];
 
+/// What a character sends back for a gift, by character then gift.
+///
+/// Per-character on purpose: these are photographs of a specific person, and
+/// Hercules flexing in answer to roses given to Penelope would be a bug you
+/// could see from space. A character with no entry simply answers in words,
+/// which is what every one of them did before this existed.
+const Map<String, Map<String, String>> kGiftRewards = {
+  'hercules': {'roses': 'assets/images/hercules_flex.jpg'},
+};
+
+/// The reward for [item] from [characterId], or null when there isn't one.
+String? giftRewardAsset(String? characterId, String item) =>
+    characterId == null ? null : kGiftRewards[characterId]?[item];
+
 /// "Your Coins": balance, tributes (in a chat), how to earn, recent history.
 ///
 /// Same sheet language as the login gate (chat_screen's _showLoginGate):
@@ -66,6 +80,7 @@ Future<void> showCoinsSheet(
         final wallet = sheetRef.watch(coinWalletProvider).value;
         final balance = wallet?.balance ?? 0;
         final prices = wallet?.tributePrices ?? const <String, int>{};
+        final grants = wallet?.grantValues ?? const <String, int>{};
 
         return Container(
           padding: EdgeInsets.fromLTRB(
@@ -172,15 +187,22 @@ Future<void> showCoinsSheet(
                   ),
                 ),
                 const SizedBox(height: 8),
-                const _EarnRow(Icons.wb_twilight, 'Return each day', '+25'),
+                // Every figure below comes off the wire. None are written
+                // down here, because the last time they were, replyGrant was
+                // retuned server-side from 1 to 8 and this list carried on
+                // advertising the old number to everyone who opened it.
+                _EarnRow(Icons.wb_twilight, 'Return each day',
+                    _grant(grants, 'daily')),
                 _EarnRow(
                   Icons.chat_bubble_outline,
                   'Every reply in a conversation'
                   '${wallet != null && wallet.replyGrantCap > 0 ? ' (${wallet.replyGrantsToday}/${wallet.replyGrantCap} today)' : ''}',
-                  '+1',
+                  _grant(grants, 'reply'),
                 ),
-                const _EarnRow(Icons.account_circle_outlined, 'Sign in with Google', '+100'),
-                const _EarnRow(Icons.badge_outlined, 'Complete your profile', '+200'),
+                _EarnRow(Icons.account_circle_outlined, 'Sign in with Google',
+                    _grant(grants, 'link')),
+                _EarnRow(Icons.badge_outlined, 'Complete your profile',
+                    _grant(grants, 'profile')),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[
                   const SizedBox(height: 18),
                   Text(
@@ -211,6 +233,13 @@ Future<void> showCoinsSheet(
       },
     ),
   );
+}
+
+/// A faucet's amount as the server states it, or an em dash when the wallet
+/// has not been read yet — never a number this file made up.
+String _grant(Map<String, int> grants, String key) {
+  final value = grants[key];
+  return value == null ? '—' : '+$value';
 }
 
 class _TributeRow extends StatelessWidget {

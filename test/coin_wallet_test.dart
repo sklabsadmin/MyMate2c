@@ -94,6 +94,52 @@ void main() {
     }
   });
 
+  test('the earn list quotes the server, and hardcodes no faucet amount', () {
+    // The bug this catches actually shipped: replyGrant went from 1 to 8 on
+    // the worker and the sheet went on telling everyone "+1", because the
+    // number was written into the widget. Amounts and prices both belong to
+    // the server; the sheet is only allowed to render what it was handed.
+    final source = File('lib/src/features/wallet/presentation/coins_sheet.dart')
+        .readAsStringSync();
+    final earnRows = RegExp(r"_EarnRow\([^)]*\)", dotAll: true)
+        .allMatches(source)
+        .map((m) => m.group(0)!)
+        .where((row) => !row.contains('this.icon'));
+    expect(earnRows, isNotEmpty, reason: 'the earn list moved — update this test');
+    for (final row in earnRows) {
+      expect(row, isNot(matches(RegExp(r"'\+\d"))),
+          reason: 'a faucet amount is written into the widget: $row');
+    }
+  });
+
+  test('a gift reward is a real file, and belongs to the character who sends it', () {
+    // Two mistakes this catches. A missing file is a grey box in the chat,
+    // invisible to every other test. And an entry filed under the wrong
+    // character means Hercules flexes at someone who gave roses to Penelope,
+    // which is the kind of bug you can see from space.
+    for (final entry in kGiftRewards.entries) {
+      final character = entry.key;
+      for (final reward in entry.value.entries) {
+        expect(kTributeOptions.map((o) => o.item), contains(reward.key),
+            reason: '${reward.key} is not a gift this app sells');
+        final file = File(reward.value);
+        expect(file.existsSync(), isTrue,
+            reason: '$character rewards ${reward.key} with ${reward.value}, '
+                'which is not on disk');
+        expect(file.lengthSync(), lessThan(400 * 1024),
+            reason: '${reward.value} is too heavy to glob into every deploy');
+        expect(reward.value, contains(character),
+            reason: 'a reward filed under $character should be a picture of '
+                'them — ${reward.value} looks like someone else');
+      }
+    }
+    // Nothing is sent for a character with no entry; that is the normal case
+    // and must stay silent rather than falling back to a stranger's photo.
+    expect(giftRewardAsset('penelope', 'roses'), isNull);
+    expect(giftRewardAsset(null, 'roses'), isNull);
+    expect(giftRewardAsset('hercules', 'roses'), isNotNull);
+  });
+
   test('the pendant is the only gift given once, and the sheet knows it', () {
     // once:true is what makes the row read "Worn" instead of a price, and it
     // must match the server's COINS.gifts — where the pendant's ledger id is
