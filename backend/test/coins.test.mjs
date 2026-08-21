@@ -162,10 +162,10 @@ test('a retried offering charges once, and the second answer is still 200', asyn
     stubFetch(t, openAiOk);
     await callSync(env, { localDate: '2026-08-20' }); // balance 100
 
-    const gift = { id: 'gift_retry_00001', size: 'medium' };
+    const gift = { id: 'gift_retry_00001', item: 'roses' };
     const first = await callChat(env, { gift });
     assert.equal(first.status, 200);
-    assert.equal(first.json.wallet.balance, 86); // 100 - 15 + 1 reply grant
+    assert.equal(first.json.wallet.balance, 58); // 100 - 50 roses + 8 reply grant
 
     // The client never saw the first answer and replays the same turn with
     // the same gift id. The reply is generated again (it is a new request),
@@ -173,7 +173,7 @@ test('a retried offering charges once, and the second answer is still 200', asyn
     const second = await callChat(env, { gift });
     assert.equal(second.status, 200);
     assert.equal(rowCount(db, "kind = 'spend'"), 1);
-    assert.equal(second.json.wallet.balance, 87); // one more reply grant, no second charge
+    assert.equal(second.json.wallet.balance, 66); // one more reply grant, no second charge
     assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
 });
 
@@ -183,10 +183,10 @@ test('an offering the balance cannot cover never reaches the model', async (t) =
     // Deliberately no sync: a wallet that has never been funded is the
     // cheapest way to be certain the balance cannot cover the tribute, and
     // it stays true whatever the grants are repriced to.
-    const res = await callChat(env, { gift: { id: 'gift_poor_00001', size: 'small' } });
+    const res = await callChat(env, { gift: { id: 'gift_poor_00001', item: 'roses' } });
     assert.equal(res.status, 402);
     assert.equal(res.json.wallet.balance, 0);
-    assert.equal(res.json.wallet.needed, 5);
+    assert.equal(res.json.wallet.needed, 50);
     assert.equal(upstreamCalls.length, 0);
     assert.equal(rowCount(db, "kind = 'spend'"), 0);
     // The refusal is a logged outcome, not a vanished request.
@@ -373,4 +373,71 @@ test('the admin api names the missing migration instead of a bare 500', async ()
     assert.equal(ok.json.totals.spent, 0);
     assert.equal(ok.json.totals.users, 1);
     assert.ok(ok.json.by_day.length >= 1);
+});
+
+test('a pendant is given once per character, and the second giving is free', async (t) => {
+    // The whole point of the once-only gift: a visitor who taps it again
+    // (or whose client retries) must not be charged 500 twice. The guard is
+    // the ledger id itself — derived from (user, character), not from the
+    // client's random id — so the second insert collapses onto the first.
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 900, 'adjust', 'admin')"
+    ).run(USER);
+
+    const first = await callChat(env, { gift: { id: 'pendant_aaaa0001', item: 'pendant' } });
+    assert.equal(first.status, 200);
+    assert.equal(first.json.wallet.balance, 408); // 900 - 500 + 8
+    assert.equal(first.json.wallet.gift.charged, true);
+
+    // A different client id for the same character — the case a random id
+    // would happily charge for a second time.
+    const second = await callChat(env, { gift: { id: 'pendant_bbbb0002', item: 'pendant' } });
+    assert.equal(second.status, 200);
+    assert.equal(second.json.wallet.gift.charged, false,
+        'nothing was taken, so the client must not celebrate a spend');
+    assert.equal(rowCount(db, "reason = 'gift'"), 1);
+    assert.equal(second.json.wallet.balance, 416); // reply grant only
+    assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
+});
+
+test('a pendant given to one character is not worn by another', async (t) => {
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 2000, 'adjust', 'admin')"
+    ).run(USER);
+
+    await callChat(env, { gift: { id: 'pendant_odys0001', item: 'pendant' } });
+    // callChat always addresses odysseus; hercules must still be unadorned,
+    // and must still cost the full 500.
+    const worn = (await callSync(env)).json.wallet.pendants;
+    assert.deepEqual(worn, ['odysseus']);
+
+    const rows = db.prepare(
+        "SELECT id, ref, meta_json FROM coin_ledger WHERE reason = 'gift'"
+    ).all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].ref, 'odysseus');
+    assert.equal(JSON.parse(rows[0].meta_json).item, 'pendant');
+});
+
+test('the wallet quotes the catalogue, so the client never invents a price', async () => {
+    const { env } = coinsEnv();
+    const res = await callSync(env, { localDate: '2026-08-21' });
+    assert.deepEqual(res.json.wallet.prices.gift,
+        { roses: 50, ambrosia: 150, pendant: 500 });
+    assert.deepEqual(res.json.wallet.pendants, []);
+});
+
+test('a gift the catalogue does not sell is refused, not silently free', async (t) => {
+    const { env, db } = coinsEnv();
+    const upstreamCalls = stubFetch(t, openAiOk);
+    await callSync(env, { localDate: '2026-08-21' });
+
+    const res = await callChat(env, { gift: { id: 'gift_bogus_0001', item: 'chariot' } });
+    assert.equal(res.status, 400);
+    assert.equal(rowCount(db, "reason = 'gift'"), 0);
+    assert.equal(upstreamCalls.length, 0);
 });

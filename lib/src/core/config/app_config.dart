@@ -165,9 +165,9 @@ class AppConfig {
   /// read — but the meter is a client-side keepsake, so its mapping lives
   /// beside the other client constants.
   static const Map<String, int> tributeHeartScore = {
-    'small': 1,
-    'medium': 3,
-    'large': 10,
+    'roses': 1,
+    'ambrosia': 3,
+    'pendant': 10,
   };
 
   /// The app is designed as a portrait, phone-shaped experience — two card

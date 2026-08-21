@@ -47,12 +47,17 @@ class CoinWalletState {
   final int replyGrantsToday;
   final int replyGrantCap;
 
-  /// Tribute prices by size key (small/medium/large), straight from the
-  /// server. Empty until a full wallet read has happened.
+  /// Gift prices by catalogue key (roses/ambrosia/pendant), straight from the
+  /// server. Empty until a full wallet read has happened — the client never
+  /// invents a price, so an empty map means "not priced yet", not "free".
   final Map<String, int> tributePrices;
 
   /// The most recent ledger rows, newest first, as the server sent them.
   final List<Map<String, dynamic>> recent;
+
+  /// Character ids this person has already given a pendant to. Derived by the
+  /// server from the ledger, so it cannot drift from what was charged.
+  final List<String> pendants;
 
   /// What the latest sync or chat turn granted — consumed once by the UI for
   /// a toast (see [CoinWalletNotifier.takeGrants]), never persisted.
@@ -67,6 +72,7 @@ class CoinWalletState {
     this.replyGrantCap = 0,
     this.tributePrices = const {},
     this.recent = const [],
+    this.pendants = const [],
     this.lastGranted = const [],
   });
 
@@ -74,6 +80,7 @@ class CoinWalletState {
     int? balance,
     List<CoinGrant>? lastGranted,
     List<Map<String, dynamic>>? recent,
+    List<String>? pendants,
   }) {
     return CoinWalletState(
       enabled: enabled,
@@ -84,6 +91,7 @@ class CoinWalletState {
       replyGrantCap: replyGrantCap,
       tributePrices: tributePrices,
       recent: recent ?? this.recent,
+      pendants: pendants ?? this.pendants,
       lastGranted: lastGranted ?? this.lastGranted,
     );
   }
@@ -113,6 +121,9 @@ class CoinWalletState {
               for (final row in wallet['recent'] as List)
                 if (row is Map) Map<String, dynamic>.from(row),
             ]
+          : const [],
+      pendants: (wallet['pendants'] is List)
+          ? [for (final id in wallet['pendants'] as List) '$id']
           : const [],
       lastGranted: parseGrants(data['granted']),
     );

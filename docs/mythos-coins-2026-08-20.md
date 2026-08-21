@@ -11,8 +11,8 @@ if you find "drops" anywhere, it is stale.
 | | |
 |---|---|
 | Branch | `feat/coins` (local; not pushed at time of writing) |
-| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (`bf184b7`), entry card (`06f208e`), claim screen + repricing (this one) |
-| Tests | 77 worker (`npm test`), 76 Flutter (`flutter test`) — all passing |
+| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (`bf184b7`), entry card (`06f208e`), claim screen + repricing (`fa3af6e`), gift catalogue (this one) |
+| Tests | 81 worker (`npm test`), 81 Flutter (`flutter test`) — all passing |
 | Migration | `0014_coin_ledger.sql` — applied locally; **not applied to remote D1 yet** (the deploy chain does it) |
 | Production | untouched; `COIN_LEDGER` ships `"false"` in wrangler.jsonc |
 | Verified | end-to-end on the local stack with the flag on: grants, a tribute to Odysseus answered in character by the real pipeline, the ledger reading it back |
@@ -42,15 +42,37 @@ rate is chosen by "has this wallet ever had a dawn offering", not by "was the
 welcome granted in this same call", so a first sync whose daily failed still
 pays the arrival rate next time.
 
-The one sink: **tributes**. A chat turn carries `gift: { id, size }`
-(small/medium/large = 5/15/50, priced server-side); the worker debits after
-validation and *before* the upstream call — an unaffordable turn costs no
-OpenAI request and returns 402 — then narrates the offering onto the last
-user message (both engine paths strip system messages), so the reply is the
-character's in-character reaction. Client-side, tributes also move the
-♥ meter (+1/+3/+10), which now lives in the coins sheet; the gold chip took
-its header slot and falls back to the old Level column whenever coins are
-off.
+The one sink: **gifts**, three of them, and that is the whole MVP catalogue
+(`COINS.gifts`): **Roses 50**, **Ambrosia 150**, **Pendant 500**. A chat turn
+carries `gift: { id, item }`; the worker debits after validation and *before*
+the upstream call — an unaffordable turn costs no OpenAI request and returns
+402 — then narrates the gift onto the last user message (both engine paths
+strip system messages), so the reply is the character's in-character
+reaction. Client-side, gifts also move the ♥ meter (+1/+3/+10), which now
+lives in the coins sheet; the gold chip took its header slot and falls back
+to the old Level column whenever coins are off.
+
+Prices carry the whole economy, because there is nothing else to buy. They
+are set against the faucets deliberately: 100 on arrival affords Roses at
+once, a day's talking (20 replies × 8 = 160) affords Ambrosia, and the
+Pendant is the thing to come back for — or to unlock by completing a profile,
+which is the only reason that +200 exists.
+
+**The pendant is given once per character and worn from then on.** Its ledger
+id is derived from `(user, character)` rather than from the client's random
+id, so a second giving collapses onto the row that already exists: nothing is
+charged, the reply still happens, and the response carries
+`wallet.gift.charged: false` so the client does not celebrate a spend that
+did not occur. The sheet reads **Worn** instead of a price. From then on
+every turn with that character carries `PENDANT_NOTE` in the system prompt —
+worded permissively on purpose, because a model told to mention a keepsake
+mentions it in every single reply. Which characters wear one is derived from
+the ledger (`coinPendantWorn`), so there is no second source of truth to keep
+in step.
+
+The way in from the conversation is a **Gift** button in the quick-reply
+strip, beside Photo. Before it existed the only door was the coin chip in the
+app bar, which is findable only if you already know it is there.
 
 ## The claim screen
 
@@ -144,9 +166,14 @@ allowlist.
 - An upstream failure after a debit is not refunded: the client retry with
   the same gift id gets the reaction without paying twice, which heals the
   common case. A stuck one is an admin `adjust` row.
-- The tribute bubble text (`*offers … as a tribute*`) is not a starter; if it
-  is ever routed through the starter strip instead, `gen_starters` will label
-  it "starter (unmatched)" — that label appearing is the alarm.
+- The gift bubble text (`*gives … to <name>*`) is not a starter; if it is ever
+  routed through the starter strip instead, `gen_starters` will label it
+  "starter (unmatched)" — that label appearing is the alarm.
+- Two lists in different files have to agree: `COINS.gifts` on the worker and
+  `kTributeOptions` in the sheet, plus `AppConfig.tributeHeartScore`. A gift
+  added to one and not the others is priced-but-undrawable, or drawn and
+  scored zero. A Flutter test asserts the catalogue and the ♥ map have exactly
+  the same keys; the worker refuses an item it does not sell with a 400.
 
 ## Deliberate gaps (phase 2+, in the brief)
 

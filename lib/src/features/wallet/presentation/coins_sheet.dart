@@ -6,17 +6,37 @@ import '../../../core/services/storage_service.dart';
 import '../coin_wallet.dart';
 
 /// The tribute a player can offer a character, priced by the server.
+/// One gift in the catalogue. The price is NOT here: it arrives with every
+/// wallet read, because the server owns what things cost.
 class TributeOption {
-  final String size; // API key: small | medium | large
+  /// The API key the worker prices — roses | ambrosia | pendant.
+  final String item;
   final String label;
   final String detail;
-  const TributeOption(this.size, this.label, this.detail);
+  final IconData icon;
+
+  /// Given once per character and worn from then on, rather than consumed.
+  final bool once;
+
+  const TributeOption(
+    this.item,
+    this.label,
+    this.detail,
+    this.icon, {
+    this.once = false,
+  });
 }
 
+/// The MVP catalogue, in ascending price. Material glyphs rather than artwork:
+/// the icon font already ships in the bundle, and assets/images is globbed into
+/// every deploy.
 const List<TributeOption> kTributeOptions = [
-  TributeOption('small', 'A few coins', 'A small kindness — they will notice.'),
-  TributeOption('medium', 'A handful of coins', 'A real gesture, warmly received.'),
-  TributeOption('large', 'A pouch of gold', 'A grand tribute they will not forget.'),
+  TributeOption('roses', 'Roses', 'A small kindness — they will notice.',
+      Icons.local_florist),
+  TributeOption('ambrosia', 'Ambrosia', 'Food of the gods, offered by hand.',
+      Icons.liquor),
+  TributeOption('pendant', 'Pendant', 'Theirs to wear. Given once.',
+      Icons.military_tech, once: true),
 ];
 
 /// "Your Coins": balance, tributes (in a chat), how to earn, recent history.
@@ -29,7 +49,8 @@ Future<void> showCoinsSheet(
   BuildContext context, {
   required WidgetRef ref,
   String? characterName,
-  void Function(String size, int price)? onTribute,
+  String? characterId,
+  void Function(String item, int price)? onTribute,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -119,16 +140,21 @@ Future<void> showCoinsSheet(
                   for (final option in kTributeOptions)
                     _TributeRow(
                       option: option,
-                      price: prices[option.size] ?? 0,
+                      price: prices[option.item] ?? 0,
+                      // A pendant already given reads "Worn" instead of a
+                      // price — it cannot be bought twice, and offering it
+                      // again would look like a way to waste 500 coins.
+                      worn: option.once &&
+                          (wallet?.pendants ?? const []).contains(characterId),
                       // Unpriced (no wallet read yet) or unaffordable rows
                       // stay visible but disabled: the goal is legible, not
                       // hidden.
-                      enabled: (prices[option.size] ?? 0) > 0 &&
-                          balance >= (prices[option.size] ?? 0),
+                      enabled: (prices[option.item] ?? 0) > 0 &&
+                          balance >= (prices[option.item] ?? 0),
                       onTap: () {
-                        final price = prices[option.size] ?? 0;
+                        final price = prices[option.item] ?? 0;
                         Navigator.of(sheetContext).pop();
-                        onTribute(option.size, price);
+                        onTribute(option.item, price);
                       },
                     ),
                 ],
@@ -188,6 +214,7 @@ class _TributeRow extends StatelessWidget {
   final TributeOption option;
   final int price;
   final bool enabled;
+  final bool worn;
   final VoidCallback onTap;
 
   const _TributeRow({
@@ -195,29 +222,53 @@ class _TributeRow extends StatelessWidget {
     required this.price,
     required this.enabled,
     required this.onTap,
+    this.worn = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final gold = Theme.of(context).colorScheme.secondary;
+    // A worn pendant is not a disabled row — it is a finished one. Same gold
+    // as an affordable gift, so the sheet reads as an achievement rather than
+    // something switched off.
+    final live = enabled && !worn;
+    final ink = worn
+        ? gold
+        : enabled
+            ? Colors.white
+            : Colors.white38;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
-        color: enabled ? gold.withOpacity(0.10) : Colors.white.withOpacity(0.04),
+        color: worn
+            ? gold.withOpacity(0.07)
+            : enabled
+                ? gold.withOpacity(0.10)
+                : Colors.white.withOpacity(0.04),
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: enabled ? onTap : null,
+          onTap: live ? onTap : null,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: enabled ? gold.withOpacity(0.5) : Colors.white12,
+                color: worn
+                    ? gold.withOpacity(0.35)
+                    : enabled
+                        ? gold.withOpacity(0.5)
+                        : Colors.white12,
               ),
             ),
             child: Row(
               children: [
+                Icon(
+                  option.icon,
+                  size: 24,
+                  color: worn || enabled ? gold : Colors.white24,
+                ),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -225,29 +276,44 @@ class _TributeRow extends StatelessWidget {
                       Text(
                         option.label,
                         style: GoogleFonts.lato(
-                          color: enabled ? Colors.white : Colors.white38,
+                          color: ink,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
                       Text(
-                        option.detail,
+                        worn
+                            ? 'Worn since you gave it.'
+                            : option.detail,
                         style: GoogleFonts.lato(
-                          color: enabled ? Colors.white54 : Colors.white24,
+                          color: enabled || worn
+                              ? Colors.white54
+                              : Colors.white24,
                           fontSize: 12,
                         ),
                       ),
                     ],
                   ),
                 ),
-                Icon(Icons.paid, size: 14, color: enabled ? gold : Colors.white24),
-                const SizedBox(width: 4),
-                Text(
-                  price > 0 ? '$price' : '—',
-                  style: GoogleFonts.lato(
-                    color: enabled ? gold : Colors.white38,
-                    fontWeight: FontWeight.w800,
+                if (worn)
+                  Text(
+                    'Worn',
+                    style: GoogleFonts.lato(
+                      color: gold,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  )
+                else ...[
+                  Icon(Icons.paid,
+                      size: 14, color: enabled ? gold : Colors.white24),
+                  const SizedBox(width: 4),
+                  Text(
+                    price > 0 ? '$price' : '—',
+                    style: GoogleFonts.lato(
+                      color: enabled ? gold : Colors.white38,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),

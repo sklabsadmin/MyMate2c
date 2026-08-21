@@ -1607,26 +1607,38 @@ export default {
             let walletOffWithGift = false;
             if (body.gift && typeof body.gift === "object") {
                 const giftId = typeof body.gift.id === "string" ? body.gift.id : "";
-                const giftSize = typeof body.gift.size === "string" ? body.gift.size : "";
-                const giftAmount = COINS.giftSizes[giftSize];
+                const giftItem = typeof body.gift.item === "string" ? body.gift.item : "";
+                const gift = COINS.gifts[giftItem];
+                const giftAmount = gift ? gift.price : 0;
+                const giftTarget = metadata.characterId || chatId;
                 if (!walletActive) {
                     // Ack-don't-refuse: the turn goes through as plain chat and
                     // the response says the wallet is off, so a client built
                     // with the UI in it can tell "switched off" from "broke".
                     walletOffWithGift = true;
-                } else if (!giftAmount || !/^[A-Za-z0-9_-]{8,64}$/.test(giftId)) {
+                } else if (!gift || !/^[A-Za-z0-9_-]{8,64}$/.test(giftId)) {
                     return new Response(JSON.stringify({ error: "Invalid gift" }), {
                         status: 400,
                         headers: jsonHeaders(request)
                     });
                 } else {
+                    // A once-per-character gift derives its idempotency key
+                    // from (user, character) rather than from the client's id,
+                    // so a second pendant collapses onto the row that already
+                    // exists instead of charging again. The spend helper reads
+                    // that as alreadyApplied and answers ok — which is exactly
+                    // right here: they are already wearing it, and nothing was
+                    // taken for saying so twice.
                     const spend = await coinSpend(env.CHAT_LOGS_DB, {
-                        id: `gift:${giftId}`,
+                        id: gift.once
+                            ? `gift:${giftItem}:${userId}:${giftTarget}`
+                            : `gift:${giftId}`,
                         userId,
                         amount: giftAmount,
                         reason: "gift",
-                        ref: metadata.characterId || chatId,
+                        ref: giftTarget,
                         visitId,
+                        metaJson: JSON.stringify({ item: giftItem }),
                     });
                     if (!spend.ok) {
                         const state = await coinWalletState(env.CHAT_LOGS_DB, userId);
@@ -1645,7 +1657,7 @@ export default {
                             assistantMessage: null,
                             requestMessages: body.messages,
                             responseBody: { error: "Not enough coins" },
-                            error: `gift ${giftSize} needs ${giftAmount}, balance ${state.balance}`,
+                            error: `gift ${giftItem} needs ${giftAmount}, balance ${state.balance}`,
                             clientTimestamp: timestamp,
                         });
                         return new Response(JSON.stringify({
@@ -1656,26 +1668,40 @@ export default {
                             headers: jsonHeaders(request)
                         });
                     }
-                    giftApplied = { size: giftSize, amount: giftAmount };
+                    giftApplied = {
+                        item: giftItem,
+                        amount: giftAmount,
+                        // False when the pendant was already worn: nothing was
+                        // charged, so the client must not celebrate a spend
+                        // that did not happen.
+                        charged: !spend.alreadyApplied,
+                    };
                     // Both engine paths strip system messages (personas replace
                     // them, Inworld keeps only user/assistant), so the offering
                     // is narrated onto the last user message — the one part of
                     // the transcript every pipeline preserves. body.messages
                     // itself stays untouched: request_messages_json records
                     // what the client sent, not what we staged.
-                    const giftLabel = giftSize === "small" ? "a few coins"
-                        : giftSize === "medium" ? "a handful of coins" : "a pouch of gold coins";
+                    const giftLabel = GIFT_NARRATION[giftItem] || "a tribute";
                     const lastUser = [...body.messages].reverse().findIndex((m) => m && m.role === "user");
                     if (lastUser !== -1) {
                         const idx = body.messages.length - 1 - lastUser;
                         outboundMessages = body.messages.map((m, i) => i === idx
                             ? {
                                 ...m,
-                                content: `${m.content}\n\n[The visitor just offered you ${giftLabel} as a tribute — a real gesture of appreciation in this world. Accept it in your own voice, in character, in a sentence or two before continuing the conversation. Do not mention balances, apps, or anything outside the fiction.]`,
+                                content: `${m.content}\n\n[The visitor just gave you ${giftLabel} as a tribute — a real gesture of appreciation in this world. Accept it in your own voice, in character, in a sentence or two before continuing the conversation. Do not mention coins, balances, apps, or anything outside the fiction.]`,
                             }
                             : m);
                     }
                 }
+            }
+
+            // What this character carries from past conversations. Only the
+            // pendant, today — and it is read after the debit above, so the
+            // turn that gives one is also the first turn they wear it.
+            const relationshipNotes = [];
+            if (walletActive && await coinPendantWorn(env.CHAT_LOGS_DB, userId, metadata.characterId)) {
+                relationshipNotes.push(PENDANT_NOTE);
             }
 
             // 4. Generate the reply. Which engine handles this is decided purely by
@@ -1704,7 +1730,7 @@ export default {
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
                 try {
-                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId);
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
                     responseStatus = 200;
                     responseOk = true;
@@ -1722,7 +1748,7 @@ export default {
                     // client's generic system prompt; everyone else passes
                     // through untouched.
                     messages: persona
-                        ? applyPersonaToMessages(outboundMessages, persona, metadata.language)
+                        ? applyPersonaToMessages(outboundMessages, persona, metadata.language, relationshipNotes)
                         : outboundMessages,
                     temperature: 0.7,
                     max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
@@ -2083,16 +2109,46 @@ const COINS = {
     // first sync whose daily failed still pays the arrival rate next time.
     firstDaily: 20,
     daily: 25,
-    replyGrant: 1,
+    // Talking is the main faucet on purpose: the gifts are priced so that a
+    // conversation is what affords the good one. 8 x the 20/day cap is 160,
+    // which is roughly one Ambrosia a day for someone who really talks.
+    replyGrant: 8,
     // Caps what talking alone can mint in a day, and caps the ledger's write
     // volume per user — these rows share a database (and a quota) with the
     // chat logs themselves.
     replyGrantDailyCap: 20,
     linkBonus: 100,
     profileBonus: 200,
-    // Gift sizes, named as acts. The names are the client API; the numbers
-    // never leave this object.
-    giftSizes: { small: 5, medium: 15, large: 50 },
+    // The gift catalogue — the MVP's entire sink, which is why the prices
+    // carry the whole economy. The client names the gift; the price never
+    // leaves this object.
+    //
+    // Roses and Ambrosia are consumable and repeatable. The pendant is not:
+    // it is given once per character and worn from then on, which is what
+    // makes it worth 500 and worth coming back for.
+    gifts: {
+        roses: { price: 50, once: false },
+        ambrosia: { price: 150, once: false },
+        pendant: { price: 500, once: true },
+    },
+};
+
+/// What a worn pendant adds to a character's prompt, every turn, for as long
+/// as they wear it. Deliberately permissive rather than instructive: told to
+/// mention it, a model brings it up in every single reply, which turns a
+/// keepsake into a tic.
+const PENDANT_NOTE =
+    "KEEPSAKE: You are wearing a pendant this person gave you, and you have "
+    + "worn it since. It matters to you. Do not announce it or bring it up "
+    + "unprompted in most replies — let it surface only when it genuinely "
+    + "fits the moment, or when they mention it.";
+
+/// How the character is told what they were just handed. Kept beside the
+/// catalogue so a new gift cannot ship with a price and no words.
+const GIFT_NARRATION = {
+    roses: "a bunch of roses",
+    ambrosia: "a dish of ambrosia, the food of the gods",
+    pendant: "a pendant on a chain, to wear around their neck",
 };
 
 /// Whether the wallet is live for this request.
@@ -2153,12 +2209,12 @@ async function coinGrant(db, { id, userId, delta, reason, ref = null, visitId = 
 /// only happens if the balance covers it; changes tells us whether it did.
 /// changes === 0 is then ambiguous (already spent under this id, or too poor),
 /// and one SELECT on the id settles which.
-async function coinSpend(db, { id, userId, amount, reason, ref = null, visitId = null, appVersion = null }) {
+async function coinSpend(db, { id, userId, amount, reason, ref = null, visitId = null, appVersion = null, metaJson = null }) {
     const result = await db.prepare(`
-        INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version)
-        SELECT ?, ?, ?, 'spend', ?, ?, ?, ?
+        INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version, meta_json)
+        SELECT ?, ?, ?, 'spend', ?, ?, ?, ?, ?
         WHERE COALESCE((SELECT balance FROM coin_wallets WHERE user_id = ?), 0) >= ?
-    `).bind(id, userId, -amount, reason, ref, visitId, appVersion, userId, amount).run();
+    `).bind(id, userId, -amount, reason, ref, visitId, appVersion, metaJson, userId, amount).run();
     if (d1Changes(result) > 0) return { ok: true, alreadyApplied: false };
     const existing = await db.prepare(
         `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
@@ -2179,17 +2235,40 @@ async function coinWalletState(db, userId) {
         WHERE user_id = ? AND reason = 'reply' AND created_at >= date('now')
     `).bind(userId).first();
     const { results: recent } = await db.prepare(`
-        SELECT id, created_at, delta, kind, reason, ref FROM coin_ledger
+        SELECT id, created_at, delta, kind, reason, ref, meta_json FROM coin_ledger
         WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 20
     `).bind(userId).all();
+    // Which characters already wear a pendant. Derived from the ledger rather
+    // than stored anywhere: the once-per-character gift key IS the record, so
+    // there is nothing to keep in step with it.
+    const { results: worn } = await db.prepare(`
+        SELECT DISTINCT ref FROM coin_ledger
+        WHERE user_id = ? AND reason = 'gift' AND id LIKE 'gift:pendant:%' AND ref IS NOT NULL
+    `).bind(userId).all();
+    const prices = {};
+    for (const [item, gift] of Object.entries(COINS.gifts)) prices[item] = gift.price;
     return {
         balance: wallet ? Number(wallet.balance) : 0,
         lifetime_earned: wallet ? Number(wallet.lifetime_earned) : 0,
         lifetime_spent: wallet ? Number(wallet.lifetime_spent) : 0,
         today: { reply_grants: replyRow ? Number(replyRow.n) : 0, reply_grant_cap: COINS.replyGrantDailyCap },
-        prices: { gift: { ...COINS.giftSizes } },
+        prices: { gift: prices },
+        // The gifts already given that cannot be given again, so the sheet can
+        // read "Worn" instead of a price.
+        pendants: (worn || []).map((row) => row.ref),
         recent: recent || [],
     };
+}
+
+/// Whether this person has already given this character a pendant — the one
+/// piece of relationship state a gift leaves behind. Answered from the
+/// deterministic ledger id, so it cannot disagree with what was charged.
+async function coinPendantWorn(db, userId, characterId) {
+    if (!characterId) return false;
+    const row = await db.prepare(
+        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
+    ).bind(`gift:pendant:${userId}:${characterId}`).first();
+    return Boolean(row);
 }
 
 /// Applies the grants a sync can carry: welcome (once ever) and the dawn
@@ -4237,7 +4316,7 @@ function getCharacterPersona(characterId) {
  * entry. Keeping it out of the shared block is what stops a non-male character
  * inheriting a contradiction, which is the bug that broke Penelope.
  */
-function buildPersonaSystemPrompt(persona, language) {
+function buildPersonaSystemPrompt(persona, language, notes = []) {
     return [
         `You are ${persona.name}, ${persona.title}.`,
         "Remain fully in character in every response.",
@@ -4263,6 +4342,9 @@ function buildPersonaSystemPrompt(persona, language) {
         "TONE: Chat like a real person texting. Occasional emoji, not constant. You are NOT a helpful assistant: do not offer tips, options, or things to try unless the user directly asks for advice.",
         "GOAL: Make the user feel cared for, desired, heard and understood.",
         `LANGUAGE: Respond ONLY in ${language || "English"}.`,
+        // Relationship state — a worn pendant, today. After the shared blocks
+        // because it is about THIS person, and the shared blocks are generic.
+        ...notes,
         // Last thing the model reads, deliberately. Voice is what was being
         // lost, and the final line carries disproportionate weight.
         `Above all, stay in voice. ${persona.name} speaks like this: ${persona.style}`,
@@ -4275,8 +4357,8 @@ function buildPersonaSystemPrompt(persona, language) {
  * conversation history that follows intact. If no system message is present
  * the persona prompt is prepended instead.
  */
-function applyPersonaToMessages(messages, persona, language) {
-    const personaPrompt = buildPersonaSystemPrompt(persona, language);
+function applyPersonaToMessages(messages, persona, language, notes = []) {
+    const personaPrompt = buildPersonaSystemPrompt(persona, language, notes);
     const rest = Array.isArray(messages)
         ? messages.filter((m) => m && m.role !== "system")
         : [];
@@ -4291,7 +4373,7 @@ class AIError extends Error {
     }
 }
 
-function buildInworldSystemPrompt(character) {
+function buildInworldSystemPrompt(character, notes = []) {
     return [
         `You are ${character.name}.`,
         "Remain fully in character in every response.",
@@ -4302,6 +4384,7 @@ function buildInworldSystemPrompt(character) {
         character.systemPrompt,
         `Character lore: ${character.lore}`,
         `Speaking style: ${character.style}`,
+        ...notes,
     ].filter(Boolean).join("\n\n");
 }
 
@@ -4327,13 +4410,13 @@ function sleepMs(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callInworldChat(env, character, normalizedMessages) {
+async function callInworldChat(env, character, normalizedMessages, notes = []) {
     const apiKey = env.INWORLD_API_KEY;
     if (!apiKey) {
         throw new AIError(503, "INWORLD_API_KEY is not configured");
     }
 
-    const systemPrompt = buildInworldSystemPrompt(character);
+    const systemPrompt = buildInworldSystemPrompt(character, notes);
     const payload = {
         model: env.INWORLD_MODEL || "auto",
         messages: [{ role: "system", content: systemPrompt }, ...normalizedMessages],
@@ -4447,11 +4530,11 @@ async function cleanupInworldReply(env, rawReply, characterName) {
  * which is insert time for the whole request. requestId here matches
  * conversation_logs.id so a log line can be joined back to its row.
  */
-async function runInworldPipeline(env, character, clientMessages, requestId) {
+async function runInworldPipeline(env, character, clientMessages, requestId, notes = []) {
     const normalizedMessages = normalizeInworldMessages(clientMessages);
 
     const startedAt = Date.now();
-    const rawReply = await callInworldChat(env, character, normalizedMessages);
+    const rawReply = await callInworldChat(env, character, normalizedMessages, notes);
     const generatedAt = Date.now();
     const cleanedReply = await cleanupInworldReply(env, rawReply, character.name);
     const finishedAt = Date.now();

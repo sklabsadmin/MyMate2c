@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
 import 'package:ai_boyfriend_chat/src/features/wallet/coin_wallet.dart';
+import 'package:ai_boyfriend_chat/src/features/wallet/presentation/coins_sheet.dart';
 
 void main() {
   test('enabled:false parses as a disabled wallet, never as a zero balance', () {
@@ -59,12 +60,51 @@ void main() {
     expect(const CoinGrant('daily', 25).label, 'Dawn offering');
   });
 
-  test('the ♥ mapping covers exactly the tribute sizes the server prices', () {
-    // If a size is ever added server-side, the meter mapping must be extended
-    // in the same change — a missing entry silently scores zero.
-    expect(AppConfig.tributeHeartScore.keys.toSet(), {'small', 'medium', 'large'});
-    expect(AppConfig.tributeHeartScore['small'], 1);
-    expect(AppConfig.tributeHeartScore['medium'], 3);
-    expect(AppConfig.tributeHeartScore['large'], 10);
+  test('every gift in the catalogue has a ♥ value, and nothing else does', () {
+    // Two lists that must agree and live in different files: the catalogue the
+    // sheet draws, and the ♥ mapping the chat screen scores with. A gift added
+    // to one and not the other silently scores zero — this is the test that
+    // fails instead.
+    expect(
+      AppConfig.tributeHeartScore.keys.toSet(),
+      kTributeOptions.map((o) => o.item).toSet(),
+    );
+    expect(AppConfig.tributeHeartScore['roses'], 1);
+    expect(AppConfig.tributeHeartScore['ambrosia'], 3);
+    expect(AppConfig.tributeHeartScore['pendant'], 10);
+  });
+
+  test('the pendant is the only gift given once, and the sheet knows it', () {
+    // once:true is what makes the row read "Worn" instead of a price, and it
+    // must match the server's COINS.gifts — where the pendant's ledger id is
+    // derived from (user, character) precisely so it cannot be bought twice.
+    final once = kTributeOptions.where((o) => o.once).map((o) => o.item);
+    expect(once, ['pendant']);
+  });
+
+  test('worn pendants come back off the wire as character ids', () {
+    final state = CoinWalletState.fromResponse({
+      'enabled': true,
+      'wallet': {
+        'balance': 400,
+        'prices': {
+          'gift': {'roses': 50, 'ambrosia': 150, 'pendant': 500},
+        },
+        'pendants': ['odysseus', 'penelope'],
+      },
+    });
+    expect(state!.pendants, ['odysseus', 'penelope']);
+    expect(state.tributePrices['pendant'], 500);
+  });
+
+  test('a wallet that has never been read prices nothing, rather than zero', () {
+    // An empty price map means "not priced yet". The sheet must disable those
+    // rows — a row showing 0 would look free.
+    final state = CoinWalletState.fromResponse({
+      'enabled': true,
+      'wallet': {'balance': 100},
+    });
+    expect(state!.tributePrices, isEmpty);
+    expect(state.pendants, isEmpty);
   });
 }

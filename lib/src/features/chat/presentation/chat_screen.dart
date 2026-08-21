@@ -3413,6 +3413,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       context,
       ref: ref,
       characterName: _characterDisplayName,
+      // So the sheet can tell whether THIS character already wears a pendant.
+      characterId: widget.characterId,
       onTribute: _sendTribute,
     );
   }
@@ -3422,7 +3424,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// offered, so the reply is the reaction. Mirrors [_handleSend]'s preamble
   /// (gate, funnel, score) because to everything downstream it IS a message —
   /// only the composer text box was never involved.
-  Future<void> _sendTribute(String size, int price) async {
+  Future<void> _sendTribute(String item, int price) async {
     _stopScreenPing();
     _cancelIdleTimer();
     _idleNudges = 0;
@@ -3449,11 +3451,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     final option = kTributeOptions.firstWhere(
-      (o) => o.size == size,
+      (o) => o.item == item,
       orElse: () => kTributeOptions.first,
     );
+    // Reads as a stage direction in the transcript, which is what it is. The
+    // worker narrates the same gift to the character separately, in words the
+    // model is told to answer rather than echo.
     final text =
-        '*offers ${option.label.toLowerCase()} to $_characterDisplayName as a tribute*';
+        '*gives ${option.label.toLowerCase()} to $_characterDisplayName*';
 
     _addMessage(
       ChatMessage(
@@ -3472,9 +3477,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     final gift = <String, dynamic>{
       // Client-chosen so a retry replays the same id and cannot pay twice;
-      // shape must satisfy the worker's [A-Za-z0-9_-]{8,64} guard.
+      // shape must satisfy the worker's [A-Za-z0-9_-]{8,64} guard. A
+      // once-per-character gift ignores this and keys on (user, character)
+      // server-side, so a pendant cannot be bought twice however this id
+      // comes out.
       'id': 'tribute_${DateTime.now().millisecondsSinceEpoch}',
-      'size': size,
+      'item': item,
     };
     try {
       await _deliverReply(text, gift: gift);
@@ -3630,11 +3638,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         ai.lastSendSucceeded &&
         walletUpdate != null &&
         walletUpdate['gift'] is Map) {
+      final applied = walletUpdate['gift'] as Map;
       final giftId = gift['id'];
-      if (giftId is String && !_scoredTributeIds.contains(giftId)) {
+      // charged:false is the pendant they already wear — the reply is real,
+      // but nothing was spent, so nothing is scored either.
+      if (applied['charged'] != false &&
+          giftId is String &&
+          !_scoredTributeIds.contains(giftId)) {
         _scoredTributeIds.add(giftId);
         ref.read(userScoreProvider.notifier).add(
-              AppConfig.tributeHeartScore[gift['size']] ?? 0,
+              AppConfig.tributeHeartScore[gift['item']] ?? 0,
             );
       }
     }
@@ -4201,6 +4214,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   // Only offered where there is actually a portrait to send.
                   onPhoto: (widget.characterImage?.isNotEmpty ?? false)
                       ? () => _sendStarter(_photoPrompt)
+                      : null,
+                  onGift: (AppConfig.coinsUiEnabled &&
+                          (ref.watch(coinWalletProvider).value?.enabled ??
+                              false))
+                      ? _openCoinsSheet
                       : null,
                 ),
               _buildInputArea(theme),
@@ -4895,6 +4913,10 @@ class _StarterPrompts extends StatefulWidget {
   /// portrait to send.
   final VoidCallback? onPhoto;
 
+  /// Opens the gift catalogue. Null when coins are switched off, so a build
+  /// with no wallet shows no gift button at all.
+  final VoidCallback? onGift;
+
   /// Whether the strip still has to teach itself.
   ///
   /// The staggered entrance, the green pass down the rows and the flashing
@@ -4915,6 +4937,7 @@ class _StarterPrompts extends StatefulWidget {
     required this.onTap,
     required this.teach,
     this.onPhoto,
+    this.onGift,
   });
 
   @override
@@ -5336,8 +5359,15 @@ class _StarterPromptsState extends State<_StarterPrompts>
                               ),
                             ),
                           ),
+                          if (widget.onGift != null) ...[
+                            const SizedBox(width: 10),
+                            _GiftButton(
+                              characterName: widget.characterName,
+                              onTap: widget.onGift!,
+                            ),
+                          ],
                           if (widget.onPhoto != null) ...[
-                            const SizedBox(width: 14),
+                            const SizedBox(width: 10),
                             _PhotoRequestButton(
                               characterName: widget.characterName,
                               onTap: widget.onPhoto!,
@@ -5381,6 +5411,54 @@ class _StarterPromptsState extends State<_StarterPrompts>
 /// produces conversation — it resolves to the same canned portrait every time
 /// — so it should not look like an equal alternative to the character's real
 /// questions, and it certainly should not cost a full row to say so.
+/// "Gift" — the way into the catalogue from inside the conversation.
+///
+/// Sits beside the photo button because that is where an in-chat action
+/// already lives, and because the coin chip in the app bar was the only door
+/// before this: findable if you were looking for it, invisible if you were
+/// not. Gold rather than pink, like every other coin surface.
+class _GiftButton extends StatelessWidget {
+  final String characterName;
+  final VoidCallback onTap;
+
+  const _GiftButton({required this.characterName, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final gold = Theme.of(context).colorScheme.secondary;
+    return Semantics(
+      button: true,
+      label: 'Give $characterName a gift',
+      child: Material(
+        color: gold.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.card_giftcard, size: 14, color: gold),
+                const SizedBox(width: 5),
+                Text(
+                  'Gift',
+                  style: GoogleFonts.lato(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PhotoRequestButton extends StatelessWidget {
   final String characterName;
   final VoidCallback onTap;

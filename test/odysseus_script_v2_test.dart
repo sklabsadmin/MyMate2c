@@ -206,6 +206,7 @@ void main() {
   });
 
   _entryGateTests();
+  _giftSheetTests();
 
   testWidgets('plays all twelve turns, in order, into an empty chat',
       (tester) async {
@@ -1329,6 +1330,21 @@ const List<String> _idlePrompts = [
 /// A wallet the way an app-load sync leaves it for a fresh visitor: enabled,
 /// funded, with the welcome and dawn grants still waiting for their toast.
 /// No network — overriding build() replaces the real notifier's refresh.
+/// A funded wallet with the catalogue priced, for the gift-sheet tests. The
+/// pendant list is what makes a row read "Worn", so it is the knob these
+/// tests turn.
+class _RichWalletNotifier extends CoinWalletNotifier {
+  static List<String> pendants = const [];
+
+  @override
+  Future<CoinWalletState?> build() async => CoinWalletState(
+        enabled: true,
+        balance: 600,
+        tributePrices: const {'roses': 50, 'ambrosia': 150, 'pendant': 500},
+        pendants: pendants,
+      );
+}
+
 class _SeededWalletNotifier extends CoinWalletNotifier {
   @override
   Future<CoinWalletState?> build() async => const CoinWalletState(
@@ -1336,4 +1352,79 @@ class _SeededWalletNotifier extends CoinWalletNotifier {
         balance: 100,
         lastGranted: [CoinGrant('welcome', 80), CoinGrant('daily', 20)],
       );
+}
+
+
+void _giftSheetTests() {
+  Future<void> _mountFunded(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [coinWalletProvider.overrideWith(_RichWalletNotifier.new)],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    // No pending grants on this wallet, so the entry tap goes straight in.
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+  }
+
+  testWidgets('the gift button sits in the strip and opens the catalogue',
+      (tester) async {
+    // Before this button existed the only way to spend was the coin chip in
+    // the app bar — findable if you already knew, invisible if you did not.
+    _RichWalletNotifier.pendants = const [];
+    await _mountFunded(tester);
+
+    expect(find.text('Gift'), findsOneWidget,
+        reason: 'the way in has to be in the conversation, not just the bar');
+
+    await tester.tap(find.text('Gift'));
+    // Explicit pumps, not pumpAndSettle: the composer's glow never stops
+    // animating, so settling never happens on this screen.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // The catalogue, at the server's prices — the client never invents one.
+    expect(find.text('Roses'), findsOneWidget);
+    expect(find.text('Ambrosia'), findsOneWidget);
+    expect(find.text('Pendant'), findsOneWidget);
+    expect(find.text('50'), findsOneWidget);
+    expect(find.text('150'), findsOneWidget);
+    expect(find.text('500'), findsOneWidget);
+    expect(find.text('Worn'), findsNothing);
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a pendant already given reads Worn, and cannot be bought again',
+      (tester) async {
+    // 500 coins is a lot to spend twice on the same neck.
+    _RichWalletNotifier.pendants = const ['odysseus'];
+    await _mountFunded(tester);
+
+    await tester.tap(find.text('Gift'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Worn'), findsOneWidget);
+    expect(find.text('500'), findsNothing,
+        reason: 'a worn pendant shows no price, because it has no price left');
+    expect(find.text('Worn since you gave it.'), findsOneWidget);
+    // The other two are unaffected — they are consumable.
+    expect(find.text('50'), findsOneWidget);
+    expect(find.text('150'), findsOneWidget);
+
+    _RichWalletNotifier.pendants = const [];
+    await _teardown(tester);
+  });
 }
