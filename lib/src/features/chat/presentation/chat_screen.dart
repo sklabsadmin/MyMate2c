@@ -3466,6 +3466,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         text: text,
         isUser: true,
         timestamp: DateTime.now(),
+        // What was handed over, drawn in the bubble. Persisted with the
+        // message, so scrolling back weeks later still shows the roses.
+        giftAsset: option.asset,
       ),
       origin: DeliveryOrigin.user,
     );
@@ -5805,14 +5808,38 @@ class _ChatBubble extends StatelessWidget {
               bottomRight: Radius.circular(isUser ? 4 : 14),
             ),
           ),
-          child: Text(
-            message.text,
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: Colors.white.withOpacity(0.95),
-              fontSize: 16,
-              height: 1.25,
-            ),
-          ),
+          child: Builder(builder: (context) {
+            final label = Text(
+              message.text,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: Colors.white.withOpacity(0.95),
+                fontSize: 16,
+                height: 1.25,
+              ),
+            );
+            final gift = message.giftAsset;
+            if (gift == null) return label;
+            // A gift keeps its bubble and its stage direction, and puts the
+            // thing itself beside them. Not the portrait treatment above: that
+            // replaces the bubble with a cover-cropped square, which would cut
+            // the stem off a rose and lose the words entirely.
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: Image.asset(gift, fit: BoxFit.contain),
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(child: label),
+                ],
+              ),
+            );
+          }),
         ),
       ),
     );

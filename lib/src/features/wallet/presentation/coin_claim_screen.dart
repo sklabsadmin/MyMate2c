@@ -1,3 +1,5 @@
+import 'dart:ui' show FontFeature;
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -43,7 +45,10 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      // Long enough for the purse to visibly fill. The coins land across the
+      // middle of it; the button is on screen throughout, so nobody is ever
+      // waiting on the animation to leave.
+      duration: const Duration(milliseconds: 2200),
     );
     // Started in initState rather than on a post-frame callback: this screen is
     // put up by the same setState that hides the entry card, so the first frame
@@ -174,37 +179,24 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
     required bool still,
     required int total,
   }) {
-    final coin = _phase(0.0, 0.45, still: still);
-    final headline = _phase(0.25, 0.7, still: still);
-    final rows = _phase(0.45, 0.9, still: still);
+    final coin = _phase(0.0, 0.22, still: still);
+    final headline = _phase(0.18, 0.45, still: still);
+    final rows = _phase(0.62, 0.9, still: still);
+    // The purse fills while the coins are in the air, and the number counts
+    // with it — the figure and the picture must not disagree mid-animation.
+    final fill = _phase(0.12, 0.7, still: still);
+    final drop = still ? 1.0 : ((_controller.value - 0.1) / 0.62).clamp(0.0, 1.0);
+    final counted = (total * fill).round();
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
         Opacity(
           opacity: coin,
-          child: Transform.scale(
-            scale: 0.7 + (0.3 * coin),
-            child: Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: gold.withOpacity(0.12),
-                border: Border.all(color: gold, width: 2),
-                boxShadow: [
-                  BoxShadow(
-                    color: gold.withOpacity(0.35 * coin),
-                    blurRadius: 40,
-                    spreadRadius: 4,
-                  ),
-                ],
-              ),
-              child: Icon(Icons.paid, size: 48, color: gold),
-            ),
-          ),
+          child: _CoinPurse(fill: fill, drop: drop, gold: gold),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 14),
         Opacity(
           opacity: headline,
           child: Column(
@@ -221,12 +213,14 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
               ),
               const SizedBox(height: 6),
               Text(
-                '+$total',
+                '+$counted',
                 style: GoogleFonts.outfit(
                   color: gold,
                   fontSize: 50,
                   fontWeight: FontWeight.w700,
                   height: 1.0,
+                  // Tabular, or the whole line jitters as the count runs.
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ],
@@ -282,4 +276,336 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
       ],
     );
   }
+}
+
+/// A Greek drawstring purse, filling with coins.
+///
+/// Drawn rather than shipped: `assets/images/` is globbed into every deploy
+/// and this app has already had one payload emergency, so a picture of a purse
+/// would cost more than the whole coins feature. Everything here is paths and
+/// arithmetic — it costs nothing and scales to any screen.
+///
+/// [fill] runs 0 → 1 as the coins land: the purse plumps, its glow comes up,
+/// and the pile inside its mouth rises. [drop] is the same clock for the coins
+/// falling in, kept separate so a still (reduced-motion) render can show a
+/// full purse with nothing in mid-air.
+class _CoinPurse extends StatelessWidget {
+  final double fill;
+  final double drop;
+  final Color gold;
+  final int coinCount;
+
+  const _CoinPurse({
+    required this.fill,
+    required this.drop,
+    required this.gold,
+    this.coinCount = 7,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 190,
+      height: 206,
+      child: CustomPaint(
+        painter: _PursePainter(
+          fill: fill,
+          drop: drop,
+          gold: gold,
+          coinCount: coinCount,
+        ),
+      ),
+    );
+  }
+}
+
+class _PursePainter extends CustomPainter {
+  final double fill;
+  final double drop;
+  final Color gold;
+  final int coinCount;
+
+  _PursePainter({
+    required this.fill,
+    required this.drop,
+    required this.gold,
+    required this.coinCount,
+  });
+
+  // Authored in a 100 x 110 box and scaled, so the drawing reads the same on a
+  // 360pt phone and a desktop window.
+  //
+  // Shape notes, because the first attempt got this wrong: a round body with a
+  // band across its equator and a cap on top is a Christmas bauble, not a
+  // purse. What makes it a pouch is the silhouette — a narrow gathered neck,
+  // shoulders that flare below it, a heavy uneven bottom that looks like it is
+  // resting on something — plus the cord and the fabric folds. The Greek key
+  // sits low, as an embroidered hem, rather than ringing the middle.
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 100.0;
+    canvas.save();
+    canvas.translate(0, size.height - 110 * s);
+    canvas.scale(s);
+
+    // The purse gains weight as it fills — the point of the screen is that
+    // something arrived, so the object has to change.
+    final plump = 1.0 + 0.05 * fill;
+    canvas.save();
+    canvas.translate(50, 86);
+    canvas.scale(plump, 1.0 + 0.02 * fill);
+    canvas.translate(-50, -86);
+
+    _paintGlow(canvas);
+    _paintBody(canvas);
+    _paintHem(canvas);
+    _paintFolds(canvas);
+    _paintCord(canvas);
+    _paintNeck(canvas);
+
+    canvas.restore();
+    _paintFallingCoins(canvas);
+    canvas.restore();
+  }
+
+  void _paintGlow(Canvas canvas) {
+    if (fill <= 0) return;
+    canvas.drawCircle(
+      const Offset(50, 84),
+      42,
+      Paint()
+        ..color = gold.withOpacity(0.18 * fill)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 24),
+    );
+  }
+
+  /// A sack, and the shape is the whole argument: the widest point sits LOW
+  /// (around y 90, not halfway) and the base is broad and flat, because a
+  /// heavy bag settles onto what it rests on. Put the widest point in the
+  /// middle and give it a curved base and you have drawn a bauble — which is
+  /// exactly what the first version looked like.
+  Path _bodyPath() {
+    return Path()
+      ..moveTo(41, 39)
+      ..cubicTo(30, 48, 19, 66, 15, 84)
+      ..cubicTo(12, 97, 23, 107, 39, 107)
+      ..lineTo(61, 107)
+      ..cubicTo(77, 107, 88, 97, 85, 84)
+      ..cubicTo(81, 66, 70, 48, 59, 39)
+      ..close();
+  }
+
+  void _paintBody(Canvas canvas) {
+    final body = _bodyPath();
+    canvas.drawPath(
+      body,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF8A4260), Color(0xFF3A1A2D), Color(0xFF24101D)],
+          stops: [0.0, 0.55, 1.0],
+        ).createShader(const Rect.fromLTWH(8, 34, 84, 74)),
+    );
+    canvas.drawPath(
+      body,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = gold.withOpacity(0.5 + 0.4 * fill),
+    );
+  }
+
+  /// The fabric, gathered at the neck and falling away. Three creases, uneven,
+  /// because even folds read as a printed pattern.
+  void _paintFolds(Canvas canvas) {
+    final fold = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withOpacity(0.10);
+    canvas.save();
+    canvas.clipPath(_bodyPath());
+    canvas.drawPath(
+      Path()
+        ..moveTo(45, 41)
+        ..cubicTo(36, 58, 30, 74, 29, 94),
+      fold,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(52, 41)
+        ..cubicTo(50, 60, 52, 78, 55, 100),
+      fold,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(57, 41)
+        ..cubicTo(67, 56, 74, 72, 73, 92),
+      fold,
+    );
+    canvas.restore();
+  }
+
+  /// The Greek key, low on the body like embroidery on a hem — this is what
+  /// makes it a Greek purse rather than a moneybag, but ringing the middle
+  /// with it is what made it look like an ornament.
+  void _paintHem(Canvas canvas) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..strokeJoin = StrokeJoin.miter
+      ..color = gold.withOpacity(0.62);
+
+    canvas.save();
+    canvas.clipPath(_bodyPath());
+    const unit = 13.0;
+    for (double x = 8; x < 96; x += unit) {
+      canvas.drawPath(
+        Path()
+          ..moveTo(x, 98)
+          ..lineTo(x, 88)
+          ..lineTo(x + 9, 88)
+          ..lineTo(x + 9, 96)
+          ..lineTo(x + 4, 96)
+          ..lineTo(x + 4, 92),
+        paint,
+      );
+    }
+    for (final y in const [85.0, 100.0]) {
+      canvas.drawLine(Offset(4, y), Offset(96, y), paint);
+    }
+    canvas.restore();
+  }
+
+  /// The drawstring: wrapped twice at the cinch, with both ends hanging down
+  /// the left side and a knot on each. A pouch without a cord is a pot.
+  void _paintCord(Canvas canvas) {
+    final cord = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round
+      ..color = gold.withOpacity(0.85);
+    // Two turns around the gathered neck.
+    canvas.drawLine(const Offset(37, 39), const Offset(63, 39), cord);
+    canvas.drawLine(const Offset(38, 43), const Offset(62, 43), cord);
+    // The ends, falling away and forward.
+    canvas.drawPath(
+      Path()
+        ..moveTo(38, 43)
+        ..cubicTo(30, 50, 24, 56, 22, 65),
+      cord,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(40, 44)
+        ..cubicTo(34, 54, 31, 61, 31, 70),
+      cord,
+    );
+    canvas.drawCircle(const Offset(22, 66), 2.2, Paint()..color = gold);
+    canvas.drawCircle(const Offset(31, 71), 2.0, Paint()..color = gold);
+  }
+
+  /// The gathered top, and the coins heaped in it.
+  ///
+  /// Painted back to front — dark opening, far edge, heap, near edge — so the
+  /// coins sit INSIDE the purse. Clipping them into the opening instead (the
+  /// first attempt) sliced every coin in half and read as a progress bar.
+  void _paintNeck(Canvas canvas) {
+    final mouth = Rect.fromCenter(
+      center: const Offset(50, 34),
+      width: 30 + 3 * fill,
+      height: 12,
+    );
+    canvas.drawOval(mouth, Paint()..color = const Color(0xFF190A15));
+
+    final rim = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..color = gold.withOpacity(0.65 + 0.35 * fill);
+    canvas.drawArc(mouth, 3.14159, 3.14159, false, rim);
+
+    if (fill > 0) {
+      // A heap: overlapping, uneven, rising out of the neck as it fills, so a
+      // full purse is visibly fuller than an empty one in a still frame.
+      const seats = [
+        Offset(43, 33), Offset(57, 33), Offset(50, 31),
+        Offset(46, 27), Offset(55, 26.5),
+      ];
+      const radii = [5.0, 4.8, 5.4, 4.4, 4.0];
+      for (var i = 0; i < seats.length; i++) {
+        final t = ((fill - i * 0.16) / 0.36).clamp(0.0, 1.0);
+        if (t <= 0) continue;
+        _paintCoin(canvas, seats[i].translate(0, (1 - t) * 5), radii[i], t);
+      }
+    }
+
+    // Near edge last, so the heap is held inside the purse rather than
+    // floating on top of it.
+    canvas.drawArc(mouth, 0, 3.14159, false, rim);
+
+    // The frill of gathered fabric standing above the cord.
+    final frill = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round
+      ..color = gold.withOpacity(0.5);
+    canvas.drawPath(
+      Path()
+        ..moveTo(37, 39)
+        ..cubicTo(35, 32, 36, 28, 39, 26),
+      frill,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(63, 39)
+        ..cubicTo(65, 32, 64, 28, 61, 26),
+      frill,
+    );
+  }
+
+  void _paintFallingCoins(Canvas canvas) {
+    if (drop <= 0 || drop >= 1) return;
+    for (var i = 0; i < coinCount; i++) {
+      // Staggered so they arrive as a stream rather than a single clump.
+      final start = i / (coinCount + 2);
+      final t = ((drop - start) / 0.42).clamp(0.0, 1.0);
+      if (t <= 0 || t >= 1) continue;
+      final eased = t * t; // ease-in, because they are falling
+      final x = 50 + (i.isEven ? -1 : 1) * (3.0 + (i % 3) * 2.5) * (1 - eased);
+      final y = -16 + eased * 48;
+      // Fades through the opening rather than vanishing on the rim, which
+      // reads as landing rather than being deleted.
+      final opacity = t > 0.82 ? (1 - t) / 0.18 : 1.0;
+      _paintCoin(canvas, Offset(x, y), 5.2 - (i % 2) * 0.7, opacity);
+    }
+  }
+
+  void _paintCoin(Canvas canvas, Offset centre, double r, double opacity) {
+    if (opacity <= 0) return;
+    canvas.drawCircle(centre, r, Paint()..color = gold.withOpacity(0.95 * opacity));
+    canvas.drawCircle(
+      centre,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = const Color(0xFF8A6500).withOpacity(0.9 * opacity),
+    );
+    // The struck face — a tiny arc, enough to read as a coin and not a dot.
+    canvas.drawArc(
+      Rect.fromCircle(center: centre, radius: r * 0.45),
+      2.4,
+      3.0,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = const Color(0xFF8A6500).withOpacity(0.75 * opacity),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_PursePainter old) =>
+      old.fill != fill || old.drop != drop || old.gold != gold;
 }

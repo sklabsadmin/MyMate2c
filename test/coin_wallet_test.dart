@@ -3,6 +3,8 @@
 // here are treating "switched off" as "broke", treating "no wallet" as
 // "empty wallet", and letting the client invent a price.
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
@@ -72,6 +74,24 @@ void main() {
     expect(AppConfig.tributeHeartScore['roses'], 1);
     expect(AppConfig.tributeHeartScore['ambrosia'], 3);
     expect(AppConfig.tributeHeartScore['pendant'], 10);
+  });
+
+  test('every gift in the catalogue has artwork on disk, at a shippable size', () {
+    // A renamed or missing asset is a grey box in production and a green test
+    // suite everywhere else — Flutter resolves assets at runtime, so nothing
+    // else in this project would notice. The size ceiling is here because
+    // assets/images is globbed into every deploy: the source art for these
+    // three was 4.8MB, and unprepared it would have gone out with the app.
+    for (final option in kTributeOptions) {
+      final file = File(option.asset);
+      expect(file.existsSync(), isTrue,
+          reason: '${option.item} points at ${option.asset}, which is not there');
+      expect(file.lengthSync(), lessThan(60 * 1024),
+          reason: '${option.asset} is too heavy to glob into every deploy');
+      // The name has to be derivable from the item key, or the next gift gets
+      // wired to the wrong picture.
+      expect(option.asset, 'assets/images/gift_${option.item}.png');
+    }
   });
 
   test('the pendant is the only gift given once, and the sheet knows it', () {

@@ -13,7 +13,11 @@ class TributeOption {
   final String item;
   final String label;
   final String detail;
-  final IconData icon;
+
+  /// The painted gift. Prepared from the source art at 256px and quantised —
+  /// 50KB for all three — because `assets/images/` is globbed into every
+  /// deploy and this app has had a payload emergency before.
+  final String asset;
 
   /// Given once per character and worn from then on, rather than consumed.
   final bool once;
@@ -22,21 +26,20 @@ class TributeOption {
     this.item,
     this.label,
     this.detail,
-    this.icon, {
+    this.asset, {
     this.once = false,
   });
 }
 
-/// The MVP catalogue, in ascending price. Material glyphs rather than artwork:
-/// the icon font already ships in the bundle, and assets/images is globbed into
-/// every deploy.
+/// The MVP catalogue, in ascending price. The asset names match the item keys
+/// the worker prices, so the mapping is mechanical rather than remembered.
 const List<TributeOption> kTributeOptions = [
   TributeOption('roses', 'Roses', 'A small kindness — they will notice.',
-      Icons.local_florist),
+      'assets/images/gift_roses.png'),
   TributeOption('ambrosia', 'Ambrosia', 'Food of the gods, offered by hand.',
-      Icons.liquor),
+      'assets/images/gift_ambrosia.png'),
   TributeOption('pendant', 'Pendant', 'Theirs to wear. Given once.',
-      Icons.military_tech, once: true),
+      'assets/images/gift_pendant.png', once: true),
 ];
 
 /// "Your Coins": balance, tributes (in a chat), how to earn, recent history.
@@ -263,10 +266,18 @@ class _TributeRow extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(
-                  option.icon,
-                  size: 24,
-                  color: worn || enabled ? gold : Colors.white24,
+                // Fixed box, BoxFit.contain: the three pieces have different
+                // aspect ratios, and left to themselves the tall pendant would
+                // sit taller than the rose and unbalance the list. Dimmed
+                // rather than greyed when unaffordable — the art is the
+                // advertisement.
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Opacity(
+                    opacity: worn || enabled ? 1.0 : 0.35,
+                    child: Image.asset(option.asset, fit: BoxFit.contain),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(

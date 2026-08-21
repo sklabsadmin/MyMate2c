@@ -632,9 +632,15 @@ void _entryGateTests() {
         ProviderScope.containerOf(tester.element(find.byType(ChatScreen)));
     await tester.tap(find.text(_enterButton));
     await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: 'the screen is up on the very frame the card goes away');
+
+    // The purse fills over ~2.2s and the figure counts with it, so the total
+    // is only true once it has finished — asserting it on the first frame
+    // reads "+0" and would be pinning the animation's start, not the payout.
+    await tester.pump(const Duration(milliseconds: 2400));
 
     // What landed, itemised, with the total the headline promises.
-    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget);
     expect(find.text('+100'), findsOneWidget,
         reason: 'the headline is the sum the entry card promised');
     expect(find.text('Welcome gift'), findsOneWidget);

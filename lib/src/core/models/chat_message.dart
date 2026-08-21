@@ -11,6 +11,13 @@ class ChatMessage {
   /// strings (history, logging) has to know about images.
   final String? imageAsset;
 
+  /// Asset path for a gift this message *hands over* — distinct from
+  /// [imageAsset], which replaces the bubble with a photo. A gift keeps its
+  /// bubble and its words and puts the artwork beside them, because the point
+  /// is the gesture, not the picture. Persisted, so reopening a conversation
+  /// still shows what was given.
+  final String? giftAsset;
+
   ChatMessage({
     required this.id,
     required this.text,
@@ -18,6 +25,7 @@ class ChatMessage {
     required this.timestamp,
     this.isSystem = false,
     this.imageAsset,
+    this.giftAsset,
   });
 
   Map<String, dynamic> toJson() {
@@ -28,6 +36,7 @@ class ChatMessage {
       'timestamp': timestamp.toIso8601String(),
       'isSystem': isSystem,
       if (imageAsset != null) 'imageAsset': imageAsset,
+      if (giftAsset != null) 'giftAsset': giftAsset,
     };
   }
 
@@ -39,6 +48,7 @@ class ChatMessage {
       timestamp: DateTime.parse(json['timestamp'] as String),
       isSystem: json['isSystem'] ?? false,
       imageAsset: json['imageAsset'] as String?,
+      giftAsset: json['giftAsset'] as String?,
     );
   }
 }
