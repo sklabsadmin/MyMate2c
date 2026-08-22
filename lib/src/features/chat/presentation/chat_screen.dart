@@ -4307,6 +4307,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               imagePath: widget.characterImage,
               onEnter: () => _enterChat(),
               onOpenProfile: _openProfile,
+              // Same truth the chip and claim screen use: only promise coins
+              // when the server says the wallet is live.
+              coinsClaim: AppConfig.coinsUiEnabled &&
+                  (ref.watch(coinWalletProvider).value?.enabled ?? false),
               scrollController: _entryGateScrollController,
             ),
         ],
@@ -4552,8 +4556,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 /// only kind of attention a visitor mid-scroll has to give it.
 class _PulsingEnterButton extends StatefulWidget {
   final VoidCallback onPressed;
+  final String label;
 
-  const _PulsingEnterButton({required this.onPressed});
+  const _PulsingEnterButton({required this.onPressed, required this.label});
 
   @override
   State<_PulsingEnterButton> createState() => _PulsingEnterButtonState();
@@ -4615,13 +4620,7 @@ class _PulsingEnterButtonState extends State<_PulsingEnterButton>
         ),
       ),
       child: Text(
-        // Was 'Tap to Talk' through 1.7.2+76. Reworded 2026-08-20 to lead
-        // with the coins claim (the welcome/daily grants a first tap walks
-        // into). Note for whoever reads the funnel: entry_tap's meaning
-        // changes at this build — the ask is the same one tap, but the
-        // promise behind it is different, so compare rates across this
-        // boundary the way the segmented eval compares bundles.
-        'Tap to Claim Coins',
+        widget.label,
         style: GoogleFonts.outfit(
           fontSize: 19,
           fontWeight: FontWeight.w700,
@@ -4698,6 +4697,14 @@ class _EntryGate extends StatelessWidget {
   /// this widget only attaches it.
   final ScrollController? scrollController;
 
+  /// Whether to make the coins promise — "Tap to Claim Coins" and the claim
+  /// tagline — or fall back to the original "Tap to Talk" invitation. Gated on
+  /// the SAME wallet-enabled truth as the chip and the claim screen, so a dark
+  /// build (COIN_LEDGER off, wallet enabled:false) reverts to the pre-coins
+  /// card and never advertises a claim it cannot pay. The card, not just the
+  /// payoff, tracks the flag.
+  final bool coinsClaim;
+
   const _EntryGate({
     required this.name,
     required this.title,
@@ -4705,6 +4712,7 @@ class _EntryGate extends StatelessWidget {
     required this.imagePath,
     required this.onEnter,
     required this.onOpenProfile,
+    required this.coinsClaim,
     this.scrollController,
   });
 
@@ -4917,8 +4925,11 @@ class _EntryGate extends StatelessWidget {
                   // gone from characters.dart rather than sitting there
                   // uncalled.
                   Text(
-                    'Claim your coins for the Greek-themed\n'
-                    'Mythos Live interactive story adventure',
+                    coinsClaim
+                        ? 'Claim your coins for the Greek-themed\n'
+                            'Mythos Live interactive story adventure'
+                        : '$name would like to talk to you,\n'
+                            'and understand your journey',
                     textAlign: TextAlign.center,
                     style: GoogleFonts.outfit(
                       color: Colors.white.withOpacity(0.75),
@@ -4934,7 +4945,14 @@ class _EntryGate extends StatelessWidget {
                   // button that is obviously a button beats a bigger one that
                   // is not. Sized to its text instead, and pulsing, so it is
                   // the only moving thing on an otherwise still screen.
-                  _PulsingEnterButton(onPressed: onEnter),
+                  _PulsingEnterButton(
+                    onPressed: onEnter,
+                    // 'Tap to Claim Coins' only when coins are live; the
+                    // original 'Tap to Talk' otherwise, so a dark build does
+                    // not promise a claim. entry_tap's meaning changes when
+                    // this flips — compare funnel rates across the boundary.
+                    label: coinsClaim ? 'Tap to Claim Coins' : 'Tap to Talk',
+                  ),
                   ],
                 ),
               ),

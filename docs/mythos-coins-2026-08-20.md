@@ -29,18 +29,17 @@ is a single conditional `INSERT OR IGNORE ... WHERE balance >= cost`, and a
 `changes = 0` result is disambiguated by looking the key up.
 
 Faucets (all amounts live in `COINS` in worker.js, never in the client):
-welcome +80 once · dawn offering +20 on the day it arrives beside the welcome
-and +25 on every day after (≥20 h apart, per-date idempotency key) · +1 per
-completed reply capped 20/day · Google link +100 once, with the anonymous
+welcome +80 once · dawn offering a flat +20 every day (≥20 h apart, per-date
+idempotency key), riding beside the welcome on day one so the first claim is a
+round 100 · +8 per completed reply capped 20/day · Google link +100 once,
+with the anonymous
 wallet merged across as two `merge` rows inside `recordLinkedAccount`'s
 once-only guard · profile-with-a-name +200 once.
 
-The two daily rates are deliberate: 80 + 20 makes the first claim a round
-**100**, which is what the entry card promises, and the return is then worth
-more than the arrival because returning is the harder thing to ask for. The
-rate is chosen by "has this wallet ever had a dawn offering", not by "was the
-welcome granted in this same call", so a first sync whose daily failed still
-pays the arrival rate next time.
+The daily is a flat **20** (decided 2026-08-22): 80 + 20 makes the first
+claim a round **100**, which is what the entry card promises, and every return
+pays the same 20. An earlier build paid a higher return rate than the arrival;
+that split was dropped for simplicity.
 
 The one sink: **gifts**, three of them, and that is the whole MVP catalogue
 (`COINS.gifts`): **Roses 50**, **Ambrosia 150**, **Pendant 500**. A chat turn

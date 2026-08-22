@@ -2102,14 +2102,11 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
 
 const COINS = {
     welcome: 80,
-    // The dawn offering pays 20 on the day it arrives beside the welcome, so
-    // the first claim screen reads a round 100, and 25 on every day after —
-    // the return is worth more than the arrival because returning is the
-    // harder thing to get. firstDaily is chosen by "has this wallet ever had
-    // a daily", not by "was the welcome granted in this same call", so a
-    // first sync whose daily failed still pays the arrival rate next time.
-    firstDaily: 20,
-    daily: 25,
+    // The dawn offering: a flat 20 every day (decided 2026-08-22). On the
+    // first day it rides beside the +80 welcome, so the first claim screen
+    // reads a round 100; every return pays the same 20. (An earlier build
+    // paid a higher return rate; the split was dropped for simplicity.)
+    daily: 20,
     // Talking is the main faucet on purpose: the gifts are priced so that a
     // conversation is what affords the good one. 8 x the 20/day cap is 160,
     // which is roughly one Ambrosia a day for someone who really talks.
@@ -2301,13 +2298,7 @@ async function coinSync(db, { userId, localDate, visitId = null, appVersion = nu
 
     const dateOk = typeof localDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(localDate);
     if (dateOk) {
-        // Read after the welcome grant on purpose: that grant creates the
-        // wallet row but leaves last_daily_at NULL, which is exactly the
-        // "never had a dawn offering" the arrival rate is for.
-        const clock = await db.prepare(
-            `SELECT last_daily_at FROM coin_wallets WHERE user_id = ?`
-        ).bind(userId).first();
-        const dailyAmount = clock && clock.last_daily_at ? COINS.daily : COINS.firstDaily;
+        const dailyAmount = COINS.daily;
         // The 20-hour guard lives on the wallet row (last_daily_at is server
         // time), the once-per-date guard lives in the ledger id. Both in one
         // statement, so there is no read-then-write to race.
