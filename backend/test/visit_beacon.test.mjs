@@ -129,3 +129,36 @@ test('a Meta-sized query survives with its trailing utm params intact', async ()
     assert.ok(rowFor(db, 'v_meta').query.endsWith('utm_term=52613164274931'),
         'the last param must survive whole');
 });
+
+test('the claim screen events are stored as themselves, not counted as arrivals', async () => {
+    // ALLOWED_EVENTS coerces anything it does not recognise to 'arrive'. That
+    // is the trap this test exists for: a client shipping a new funnel event
+    // before the worker knows the name does not error, it silently inflates
+    // the arrival count — the denominator every rate on the visits page is
+    // built from. Both halves of the coin claim have to survive the round
+    // trip under their own names.
+    const { env, db } = testEnv();
+    await beacon(env, {
+        visitId: 'v_claim', event: 'claim_shown', path: '/c/odysseus',
+        detail: 'odysseus#40',
+    });
+    await beacon(env, {
+        visitId: 'v_claim', event: 'claim_tap', path: '/c/odysseus',
+        detail: 'odysseus#40',
+    });
+
+    const events = db.prepare(
+        'SELECT event, detail FROM site_visits WHERE visit_id = ? ORDER BY rowid'
+    ).all('v_claim');
+    assert.deepEqual(events.map((r) => r.event), ['claim_shown', 'claim_tap']);
+    // The '#' convention again: everything downstream groups on the part
+    // before it, so the amount claimed rides along without splitting the
+    // character into forty of itself.
+    assert.equal(events[0].detail, 'odysseus#40');
+    assert.equal(
+        db.prepare("SELECT COUNT(*) AS n FROM site_visits WHERE visit_id = ? AND event = 'arrive'")
+            .get('v_claim').n,
+        0,
+        'not one of them may land as an arrival',
+    );
+});

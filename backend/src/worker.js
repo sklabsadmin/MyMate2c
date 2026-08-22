@@ -1048,6 +1048,82 @@ export default {
             }
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/coins") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminCoinsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/admin/coins") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+
+            try {
+                const days = Math.min(Math.max(parseInt(url.searchParams.get("days"), 10) || 14, 1), 90);
+                const userFilter = (url.searchParams.get("user_id") || "").trim().slice(0, 80) || null;
+
+                // Faucets vs sinks, per day per reason — the economy's own
+                // funnel. Sums, not row counts: a libation and a taste are not
+                // the same event.
+                const { results: byDay } = await db.prepare(`
+                    SELECT date(created_at) AS day, reason,
+                           SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END) AS granted,
+                           SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END) AS spent,
+                           COUNT(*) AS rows
+                    FROM coin_ledger
+                    WHERE created_at >= datetime('now', ?)
+                    GROUP BY day, reason
+                    ORDER BY day DESC, reason
+                `).bind(`-${days} days`).all();
+
+                const { results: topWallets } = await db.prepare(`
+                    SELECT user_id, balance, lifetime_earned, lifetime_spent, last_daily_on, updated_at
+                    FROM coin_wallets
+                    ORDER BY balance DESC
+                    LIMIT 25
+                `).all();
+
+                const recentSql = userFilter
+                    ? `SELECT id, created_at, user_id, delta, kind, reason, ref, visit_id
+                       FROM coin_ledger WHERE user_id = ?
+                       ORDER BY created_at DESC, id DESC LIMIT 200`
+                    : `SELECT id, created_at, user_id, delta, kind, reason, ref, visit_id
+                       FROM coin_ledger
+                       ORDER BY created_at DESC, id DESC LIMIT 100`;
+                const recentStmt = userFilter ? db.prepare(recentSql).bind(userFilter) : db.prepare(recentSql);
+                const { results: recent } = await recentStmt.all();
+
+                const totals = await db.prepare(`
+                    SELECT COUNT(*) AS rows,
+                           COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS granted,
+                           COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS spent,
+                           COUNT(DISTINCT user_id) AS users
+                    FROM coin_ledger
+                `).first();
+
+                return jsonResponse({
+                    days,
+                    user_id: userFilter,
+                    totals: totals || { rows: 0, granted: 0, spent: 0, users: 0 },
+                    by_day: byDay || [],
+                    top_wallets: topWallets || [],
+                    recent: recent || [],
+                });
+            } catch (e) {
+                // Until migration 0014 is applied the tables are simply not
+                // there. Say exactly that, with the fix, rather than reporting
+                // a server error the page cannot act on.
+                return jsonResponse({
+                    error: `Could not read coin_ledger: ${e.message}`,
+                    hint: "Apply backend/migrations/0014_coin_ledger.sql to this database.",
+                }, { status: 503 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/admin/deploys") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -1262,6 +1338,111 @@ export default {
             }
         }
 
+        // The coin wallet. Same authentication and identity resolution as
+        // /api/chat: signature proves the request came from our app, the
+        // session cookie (or, failing that, the client's x-user-id) says whose
+        // wallet — and the same id-shape guard that keeps invented ids out of
+        // the analytics tables keeps them out of the ledger.
+        //
+        //   GET  /api/wallet        read-only state (signature over "" + ts)
+        //   POST /api/wallet/sync   applies welcome/daily grants, idempotently
+        //
+        // With the flag off both answer 200 { enabled: false } rather than an
+        // error — DELIVERY_LOGGING's ack-don't-refuse rule, so a client built
+        // with the UI in it goes quiet instead of retrying into a dead switch.
+        if ((request.method === "GET" && url.pathname === "/api/wallet") ||
+            (request.method === "POST" && url.pathname === "/api/wallet/sync")) {
+            const signature = request.headers.get("x-signature");
+            const timestamp = request.headers.get("x-timestamp");
+            const requireSignature = env.REQUIRE_SIGNATURE !== "false";
+
+            if (requireSignature && (!signature || !timestamp)) {
+                return jsonResponse({ error: "Missing signature or timestamp" }, {
+                    status: 401, headers: corsHeaders(request),
+                });
+            }
+
+            // Body first, verdicts after — the request stream does not outlive
+            // an early return (the same trap /api/visit documents).
+            const rawBody = request.method === "POST" ? await request.text() : "";
+
+            if (requireSignature) {
+                const reqTime = parseInt(timestamp, 10);
+                if (!Number.isFinite(reqTime) || Math.abs(Date.now() - reqTime) > 5 * 60 * 1000) {
+                    return jsonResponse({ error: "Request expired" }, {
+                        status: 401, headers: corsHeaders(request),
+                    });
+                }
+                const verified = await verifySignature(env.APP_SECRET, rawBody, timestamp, signature);
+                if (!verified) {
+                    return jsonResponse({ error: "Invalid signature" }, {
+                        status: 401, headers: corsHeaders(request),
+                    });
+                }
+            }
+
+            const session = await getSessionFromRequest(request, env);
+            const userId = session
+                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
+                : request.headers.get("x-user-id") || "anonymous";
+
+            if (!coinsActive(env, request, userId)) {
+                return jsonResponse({ enabled: false }, { headers: corsHeaders(request) });
+            }
+            if (!env.CHAT_LOGS_DB) {
+                return jsonResponse({ error: "Wallet storage is not configured" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
+            // No recognised id, no wallet — "anonymous" and hand-typed ids get
+            // enabled:true so the client knows the feature exists, and
+            // wallet:null so it draws nothing.
+            if (!isRealUserId(userId)) {
+                return jsonResponse({ enabled: true, wallet: null }, { headers: corsHeaders(request) });
+            }
+
+            try {
+                let granted = [];
+                if (request.method === "POST") {
+                    let payload = {};
+                    try {
+                        payload = rawBody ? JSON.parse(rawBody) : {};
+                    } catch (_) {
+                        return jsonResponse({ error: "Invalid JSON" }, {
+                            status: 400, headers: corsHeaders(request),
+                        });
+                    }
+                    granted = await coinSync(env.CHAT_LOGS_DB, {
+                        userId,
+                        localDate: typeof payload.local_date === "string" ? payload.local_date : null,
+                        visitId: (request.headers.get("x-visit-id") || "").slice(0, 64) || null,
+                        appVersion: typeof payload.app_version === "string" ? payload.app_version.slice(0, 40) : null,
+                    });
+                }
+                const state = await coinWalletState(env.CHAT_LOGS_DB, userId);
+                return jsonResponse({ enabled: true, granted, wallet: state }, {
+                    headers: corsHeaders(request),
+                });
+            } catch (e) {
+                // Until migration 0014 is applied the tables are simply not
+                // there. Say exactly that, with the fix, rather than a server
+                // error the client cannot act on.
+                if (/no such table/i.test(e.message || "")) {
+                    return jsonResponse({
+                        error: "Wallet tables are missing",
+                        hint: "Apply backend/migrations/0014_coin_ledger.sql to this database.",
+                    }, { status: 503, headers: corsHeaders(request) });
+                }
+                console.error(JSON.stringify({
+                    event: "coin_wallet_failed",
+                    error: e && e.message ? e.message : String(e),
+                }));
+                return jsonResponse({ error: "Could not read wallet" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
+        }
+
         if (request.method !== "POST" || url.pathname !== "/api/chat") {
             return new Response("Method not allowed", {
                 status: 405,
@@ -1411,6 +1592,118 @@ export default {
                 }
             }
 
+            // 3b. Coins. An offering rides on an ordinary chat turn as
+            // body.gift = { id, size } — the client names the act, the price
+            // lives in COINS server-side. The debit happens HERE on
+            // purpose: after validation (a rejected message must be free) and
+            // before the engine call (a turn we cannot afford must never cost
+            // an upstream request). Idempotent under gift.id, so a client
+            // retry of a timed-out turn cannot pay twice.
+            const walletActive = coinsActive(env, request, userId)
+                && Boolean(env.CHAT_LOGS_DB)
+                && isRealUserId(userId);
+            let outboundMessages = body.messages;
+            let giftApplied = null;
+            let walletOffWithGift = false;
+            if (body.gift && typeof body.gift === "object") {
+                const giftId = typeof body.gift.id === "string" ? body.gift.id : "";
+                const giftItem = typeof body.gift.item === "string" ? body.gift.item : "";
+                const gift = COINS.gifts[giftItem];
+                const giftAmount = gift ? gift.price : 0;
+                const giftTarget = metadata.characterId || chatId;
+                if (!walletActive) {
+                    // Ack-don't-refuse: the turn goes through as plain chat and
+                    // the response says the wallet is off, so a client built
+                    // with the UI in it can tell "switched off" from "broke".
+                    walletOffWithGift = true;
+                } else if (!gift || !/^[A-Za-z0-9_-]{8,64}$/.test(giftId)) {
+                    return new Response(JSON.stringify({ error: "Invalid gift" }), {
+                        status: 400,
+                        headers: jsonHeaders(request)
+                    });
+                } else {
+                    // A once-per-character gift derives its idempotency key
+                    // from (user, character) rather than from the client's id,
+                    // so a second pendant collapses onto the row that already
+                    // exists instead of charging again. The spend helper reads
+                    // that as alreadyApplied and answers ok — which is exactly
+                    // right here: they are already wearing it, and nothing was
+                    // taken for saying so twice.
+                    const spend = await coinSpend(env.CHAT_LOGS_DB, {
+                        id: gift.once
+                            ? `gift:${giftItem}:${userId}:${giftTarget}`
+                            : `gift:${giftId}`,
+                        userId,
+                        amount: giftAmount,
+                        reason: "gift",
+                        ref: giftTarget,
+                        visitId,
+                        metaJson: JSON.stringify({ item: giftItem }),
+                    });
+                    if (!spend.ok) {
+                        const state = await coinWalletState(env.CHAT_LOGS_DB, userId);
+                        await persistConversationLog(env, {
+                            id: requestId,
+                            userId,
+                            synthetic,
+                            visitId,
+                            chatId,
+                            scenario: metadata.scenario,
+                            language: metadata.language,
+                            model: modelLabel,
+                            status: "insufficient_coins",
+                            statusCode: 402,
+                            userMessage,
+                            assistantMessage: null,
+                            requestMessages: body.messages,
+                            responseBody: { error: "Not enough coins" },
+                            error: `gift ${giftItem} needs ${giftAmount}, balance ${state.balance}`,
+                            clientTimestamp: timestamp,
+                        });
+                        return new Response(JSON.stringify({
+                            error: "Not enough coins",
+                            wallet: { enabled: true, balance: state.balance, needed: giftAmount },
+                        }), {
+                            status: 402,
+                            headers: jsonHeaders(request)
+                        });
+                    }
+                    giftApplied = {
+                        item: giftItem,
+                        amount: giftAmount,
+                        // False when the pendant was already worn: nothing was
+                        // charged, so the client must not celebrate a spend
+                        // that did not happen.
+                        charged: !spend.alreadyApplied,
+                    };
+                    // Both engine paths strip system messages (personas replace
+                    // them, Inworld keeps only user/assistant), so the offering
+                    // is narrated onto the last user message — the one part of
+                    // the transcript every pipeline preserves. body.messages
+                    // itself stays untouched: request_messages_json records
+                    // what the client sent, not what we staged.
+                    const giftLabel = GIFT_NARRATION[giftItem] || "a tribute";
+                    const lastUser = [...body.messages].reverse().findIndex((m) => m && m.role === "user");
+                    if (lastUser !== -1) {
+                        const idx = body.messages.length - 1 - lastUser;
+                        outboundMessages = body.messages.map((m, i) => i === idx
+                            ? {
+                                ...m,
+                                content: `${m.content}\n\n[The visitor just gave you ${giftLabel} as a tribute — a real gesture of appreciation in this world. Accept it in your own voice, in character, in a sentence or two before continuing the conversation. Do not mention coins, balances, apps, or anything outside the fiction.]`,
+                            }
+                            : m);
+                    }
+                }
+            }
+
+            // What this character carries from past conversations. Only the
+            // pendant, today — and it is read after the debit above, so the
+            // turn that gives one is also the first turn they wear it.
+            const relationshipNotes = [];
+            if (walletActive && await coinPendantWorn(env.CHAT_LOGS_DB, userId, metadata.characterId)) {
+                relationshipNotes.push(PENDANT_NOTE);
+            }
+
             // 4. Generate the reply. Which engine handles this is decided purely by
             // metadata.characterId against CHARACTER_ENGINES (server-side config) —
             // everything above this point (auth, validation, rate limiting) is
@@ -1437,7 +1730,7 @@ export default {
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
                 try {
-                    const cleanedText = await runInworldPipeline(env, inworldCharacter, body.messages, requestId);
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
                     responseStatus = 200;
                     responseOk = true;
@@ -1455,8 +1748,9 @@ export default {
                     // client's generic system prompt; everyone else passes
                     // through untouched.
                     messages: persona
-                        ? applyPersonaToMessages(body.messages, persona, metadata.language)
-                        : body.messages,
+                        ? applyPersonaToMessages(outboundMessages, persona, metadata.language, relationshipNotes,
+                            env.PERSONA_TIGHTEN !== "false")
+                        : outboundMessages,
                     temperature: 0.7,
                     max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
                 };
@@ -1500,6 +1794,23 @@ export default {
                 clientTimestamp: timestamp,
             });
 
+            // 5b. Coins settlement: the +1 for a completed reply, then the
+            // balance the client should now show. Awaited (a single indexed
+            // write and two reads against a turn that just spent seconds on an
+            // LLM), but a failure inside costs at most the coin — the helper
+            // swallows and returns null, and the reply ships regardless.
+            let wallet = null;
+            if (walletActive) {
+                wallet = await coinChatSettlement(env.CHAT_LOGS_DB, {
+                    userId, requestId, responseOk, visitId,
+                });
+                if (wallet && giftApplied) {
+                    wallet.gift = giftApplied;
+                }
+            } else if (walletOffWithGift) {
+                wallet = { enabled: false };
+            }
+
             // The id of the conversation_logs row just written, so a delivery
             // receipt can name the exact reply it was cut from rather than being
             // matched back by a fuzzy (user, time, text) guess — the client
@@ -1511,8 +1822,11 @@ export default {
             // persistConversationLog above, and response_json is meant to be a
             // faithful record of what the provider returned, not of what we sent
             // on. A sibling key is safe for the client, which reads `choices`.
+            // The wallet block rides the same way, and only when there is one —
+            // absent means "feature not in play", the same only-present-when-
+            // worth-noticing rule as delivery's stored:false marker.
             const outgoing = responseData && typeof responseData === "object" && !Array.isArray(responseData)
-                ? { ...responseData, log_id: requestId }
+                ? { ...responseData, log_id: requestId, ...(wallet ? { wallet } : {}) }
                 : responseData;
 
             return new Response(JSON.stringify(outgoing), {
@@ -1752,9 +2066,353 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
             await env.CHAT_LOGS_DB.prepare(
                 `UPDATE conversation_logs SET user_id = ? WHERE user_id = ?`
             ).bind(userId, anonId).run();
+
+            // The coin wallet crosses over in the same once-only moment,
+            // plus the link bonus. Inside this guard so a re-login cannot
+            // re-pay; behind the flag so a pre-migration database is never
+            // asked about tables it does not have. Its own try because the
+            // sign-in must survive a ledger hiccup — the drops can be adjusted
+            // later, the login cannot.
+            if (coinsActive(env, null, userId) || coinsActive(env, null, anonId)) {
+                try {
+                    await coinMergeWallet(env.CHAT_LOGS_DB, userId, anonId);
+                } catch (e) {
+                    console.error(JSON.stringify({
+                        event: "coin_merge_failed",
+                        userId,
+                        error: e && e.message ? e.message : String(e),
+                    }));
+                }
+            }
         }
     } catch (error) {
         console.error(JSON.stringify({ event: "record_linked_account_failed", error: error.message }));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mythos Coins — the wallet.
+//
+// Everything about the currency that involves trust lives here, server-side:
+// how much each event grants, what each gift size costs, who is allowed a
+// wallet. The client names the item ("cup"), never the price — the same
+// doctrine as engine selection above. Schema and the idempotency story are in
+// backend/migrations/0014_coin_ledger.sql.
+// ---------------------------------------------------------------------------
+
+const COINS = {
+    welcome: 80,
+    // The dawn offering pays 20 on the day it arrives beside the welcome, so
+    // the first claim screen reads a round 100, and 25 on every day after —
+    // the return is worth more than the arrival because returning is the
+    // harder thing to get. firstDaily is chosen by "has this wallet ever had
+    // a daily", not by "was the welcome granted in this same call", so a
+    // first sync whose daily failed still pays the arrival rate next time.
+    firstDaily: 20,
+    daily: 25,
+    // Talking is the main faucet on purpose: the gifts are priced so that a
+    // conversation is what affords the good one. 8 x the 20/day cap is 160,
+    // which is roughly one Ambrosia a day for someone who really talks.
+    replyGrant: 8,
+    // Caps what talking alone can mint in a day, and caps the ledger's write
+    // volume per user — these rows share a database (and a quota) with the
+    // chat logs themselves.
+    replyGrantDailyCap: 20,
+    linkBonus: 100,
+    profileBonus: 200,
+    // The gift catalogue — the MVP's entire sink, which is why the prices
+    // carry the whole economy. The client names the gift; the price never
+    // leaves this object.
+    //
+    // Roses and Ambrosia are consumable and repeatable. The pendant is not:
+    // it is given once per character and worn from then on, which is what
+    // makes it worth 500 and worth coming back for.
+    gifts: {
+        roses: { price: 50, once: false },
+        ambrosia: { price: 150, once: false },
+        pendant: { price: 500, once: true },
+    },
+};
+
+/// What a worn pendant adds to a character's prompt, every turn, for as long
+/// as they wear it. Deliberately permissive rather than instructive: told to
+/// mention it, a model brings it up in every single reply, which turns a
+/// keepsake into a tic.
+const PENDANT_NOTE =
+    "KEEPSAKE: You are wearing a pendant this person gave you, and you have "
+    + "worn it since. It matters to you. Do not announce it or bring it up "
+    + "unprompted in most replies — let it surface only when it genuinely "
+    + "fits the moment, or when they mention it.";
+
+/// How the character is told what they were just handed. Kept beside the
+/// catalogue so a new gift cannot ship with a price and no words.
+const GIFT_NARRATION = {
+    roses: "a bunch of roses",
+    ambrosia: "a dish of ambrosia, the food of the gods",
+    pendant: "a pendant on a chain, to wear around their neck",
+};
+
+/// Whether the wallet is live for this request.
+///
+/// COIN_LEDGER follows the default-off idiom (only the exact string "true"
+/// enables it) while the feature rolls out; once it is the normal state the
+/// check flips to the DELIVERY_LOGGING-style `!== "false"`. COIN_ALLOWLIST
+/// is a comma-separated list of user ids for a staff soak before the flip; the
+/// literal entry "synthetic" admits requests carrying x-synthetic-test, so the
+/// smoke tests can exercise the wallet without a hand-typed id.
+///
+/// `request` may be null (the OAuth callback has no signed request in hand);
+/// that only forfeits the synthetic-header match.
+function coinsActive(env, request, userId) {
+    if (env.COIN_LEDGER === "true") return true;
+    const allowlist = typeof env.COIN_ALLOWLIST === "string" ? env.COIN_ALLOWLIST : "";
+    if (!allowlist) return false;
+    const entries = allowlist.split(",").map((s) => s.trim()).filter(Boolean);
+    if (userId && entries.includes(userId)) return true;
+    if (request && entries.includes("synthetic") && isSyntheticTest(request)) return true;
+    return false;
+}
+
+/// D1's run() reports mutations as result.meta.changes; the test shim mirrors
+/// that shape. Everything below asks this instead of each result directly so
+/// the answer comes from one place.
+function d1Changes(result) {
+    return Number(result?.meta?.changes ?? 0);
+}
+
+/// One idempotent grant. Returns true only when THIS call created the row —
+/// a replayed id is a no-op, which is the whole point of the caller-chosen id.
+///
+/// `dailyCapReason` bounds how many rows of one reason a user can accrue per
+/// UTC day, enforced inside the same statement so two concurrent grants cannot
+/// both squeeze under the cap... beyond by at most the D1 consistency window,
+/// which for a cap of 20 cosmetic drops is not worth a transaction.
+async function coinGrant(db, { id, userId, delta, reason, ref = null, visitId = null, appVersion = null, dailyCapReason = null, dailyCap = 0 }) {
+    let result;
+    if (dailyCapReason) {
+        result = await db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version)
+            SELECT ?, ?, ?, 'grant', ?, ?, ?, ?
+            WHERE (SELECT COUNT(*) FROM coin_ledger
+                   WHERE user_id = ? AND reason = ? AND created_at >= date('now')) < ?
+        `).bind(id, userId, delta, reason, ref, visitId, appVersion, userId, dailyCapReason, dailyCap).run();
+    } else {
+        result = await db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version)
+            VALUES (?, ?, ?, 'grant', ?, ?, ?, ?)
+        `).bind(id, userId, delta, reason, ref, visitId, appVersion).run();
+    }
+    return d1Changes(result) > 0;
+}
+
+/// One idempotent, conditional spend — the statement D1's lack of interactive
+/// transactions forces, and the reason the balance cache exists. The INSERT
+/// only happens if the balance covers it; changes tells us whether it did.
+/// changes === 0 is then ambiguous (already spent under this id, or too poor),
+/// and one SELECT on the id settles which.
+async function coinSpend(db, { id, userId, amount, reason, ref = null, visitId = null, appVersion = null, metaJson = null }) {
+    const result = await db.prepare(`
+        INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version, meta_json)
+        SELECT ?, ?, ?, 'spend', ?, ?, ?, ?, ?
+        WHERE COALESCE((SELECT balance FROM coin_wallets WHERE user_id = ?), 0) >= ?
+    `).bind(id, userId, -amount, reason, ref, visitId, appVersion, metaJson, userId, amount).run();
+    if (d1Changes(result) > 0) return { ok: true, alreadyApplied: false };
+    const existing = await db.prepare(
+        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
+    ).bind(id).first();
+    if (existing) return { ok: true, alreadyApplied: true };
+    return { ok: false, alreadyApplied: false };
+}
+
+/// The wallet as the client sees it: balance, what arrived today, a short
+/// tail of history, and the prices — which travel with every read so the
+/// client never has to hardcode a number.
+async function coinWalletState(db, userId) {
+    const wallet = await db.prepare(
+        `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on FROM coin_wallets WHERE user_id = ?`
+    ).bind(userId).first();
+    const replyRow = await db.prepare(`
+        SELECT COUNT(*) AS n FROM coin_ledger
+        WHERE user_id = ? AND reason = 'reply' AND created_at >= date('now')
+    `).bind(userId).first();
+    const { results: recent } = await db.prepare(`
+        SELECT id, created_at, delta, kind, reason, ref, meta_json FROM coin_ledger
+        WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 20
+    `).bind(userId).all();
+    // Which characters already wear a pendant. Derived from the ledger rather
+    // than stored anywhere: the once-per-character gift key IS the record, so
+    // there is nothing to keep in step with it.
+    const { results: worn } = await db.prepare(`
+        SELECT DISTINCT ref FROM coin_ledger
+        WHERE user_id = ? AND reason = 'gift' AND id LIKE 'gift:pendant:%' AND ref IS NOT NULL
+    `).bind(userId).all();
+    const prices = {};
+    for (const [item, gift] of Object.entries(COINS.gifts)) prices[item] = gift.price;
+    return {
+        balance: wallet ? Number(wallet.balance) : 0,
+        lifetime_earned: wallet ? Number(wallet.lifetime_earned) : 0,
+        lifetime_spent: wallet ? Number(wallet.lifetime_spent) : 0,
+        today: { reply_grants: replyRow ? Number(replyRow.n) : 0, reply_grant_cap: COINS.replyGrantDailyCap },
+        prices: { gift: prices },
+        // What the faucets pay. Travels for the same reason the prices do:
+        // the sheet lists "every reply +N", and a client holding its own copy
+        // of N goes stale the moment the economy is retuned — which it did,
+        // silently, the day replyGrant went from 1 to 8.
+        grants: {
+            daily: COINS.daily,
+            reply: COINS.replyGrant,
+            link: COINS.linkBonus,
+            profile: COINS.profileBonus,
+        },
+        // The gifts already given that cannot be given again, so the sheet can
+        // read "Worn" instead of a price.
+        pendants: (worn || []).map((row) => row.ref),
+        recent: recent || [],
+    };
+}
+
+/// Whether this person has already given this character a pendant — the one
+/// piece of relationship state a gift leaves behind. Answered from the
+/// deterministic ledger id, so it cannot disagree with what was charged.
+async function coinPendantWorn(db, userId, characterId) {
+    if (!characterId) return false;
+    const row = await db.prepare(
+        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
+    ).bind(`gift:pendant:${userId}:${characterId}`).first();
+    return Boolean(row);
+}
+
+/// Applies the grants a sync can carry: welcome (once ever) and the dawn
+/// offering (once per local day, at least 20 hours apart). Returns what was
+/// actually granted by THIS call, so the client can animate exactly that.
+///
+/// localDate is the client's own calendar date and is trusted only within the
+/// idempotent key + the 20-hour server-side spacing: lying about the date buys
+/// nothing that waiting would not.
+async function coinSync(db, { userId, localDate, visitId = null, appVersion = null }) {
+    const granted = [];
+
+    if (await coinGrant(db, {
+        id: `grant:welcome:${userId}`,
+        userId, delta: COINS.welcome, reason: "welcome", visitId, appVersion,
+    })) {
+        granted.push({ reason: "welcome", delta: COINS.welcome });
+    }
+
+    const dateOk = typeof localDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(localDate);
+    if (dateOk) {
+        // Read after the welcome grant on purpose: that grant creates the
+        // wallet row but leaves last_daily_at NULL, which is exactly the
+        // "never had a dawn offering" the arrival rate is for.
+        const clock = await db.prepare(
+            `SELECT last_daily_at FROM coin_wallets WHERE user_id = ?`
+        ).bind(userId).first();
+        const dailyAmount = clock && clock.last_daily_at ? COINS.daily : COINS.firstDaily;
+        // The 20-hour guard lives on the wallet row (last_daily_at is server
+        // time), the once-per-date guard lives in the ledger id. Both in one
+        // statement, so there is no read-then-write to race.
+        const result = await db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, visit_id, app_version)
+            SELECT ?, ?, ?, 'grant', 'daily', ?, ?, ?
+            WHERE COALESCE((SELECT last_daily_at FROM coin_wallets WHERE user_id = ?), '1970-01-01 00:00:00')
+                  <= datetime('now', '-20 hours')
+        `).bind(
+            `grant:daily:${userId}:${localDate}`,
+            userId, dailyAmount, localDate, visitId, appVersion,
+            userId,
+        ).run();
+        if (d1Changes(result) > 0) {
+            await db.prepare(`
+                UPDATE coin_wallets SET last_daily_on = ?, last_daily_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            `).bind(localDate, userId).run();
+            granted.push({ reason: "daily", delta: dailyAmount });
+        }
+    }
+
+    return granted;
+}
+
+/// The after-the-reply settlement for /api/chat: grant the +1 for a completed
+/// reply (capped per day), then read the state the response will carry.
+/// Never throws — the same rule persistConversationLog lives by: the wallet
+/// must not be able to take a good reply down. A thrown ledger write here
+/// costs at most one drop; a rethrow would cost the conversation.
+async function coinChatSettlement(db, { userId, requestId, responseOk, visitId }) {
+    try {
+        const granted = [];
+        if (responseOk) {
+            if (await coinGrant(db, {
+                id: `grant:reply:${requestId}`,
+                userId, delta: COINS.replyGrant, reason: "reply", ref: requestId, visitId,
+                dailyCapReason: "reply", dailyCap: COINS.replyGrantDailyCap,
+            })) {
+                granted.push({ reason: "reply", delta: COINS.replyGrant });
+            }
+        }
+        const state = await coinWalletState(db, userId);
+        return { enabled: true, balance: state.balance, granted };
+    } catch (e) {
+        console.error(JSON.stringify({
+            event: "coin_settlement_failed",
+            requestId,
+            error: e && e.message ? e.message : String(e),
+        }));
+        return null;
+    }
+}
+
+/// Carries an anonymous wallet onto the account it just linked to, and pays
+/// the link bonus — called from recordLinkedAccount inside its once-only
+/// merge guard.
+///
+/// The move is two ledger rows (out of the anonymous id, into the account),
+/// not an UPDATE of old rows: the trigger keeps both balance caches right, the
+/// history stays honest about where the drops lived, and a re-run is inert
+/// because the second merge-out finds a zero balance. Batched so a crash
+/// between the two halves cannot strand the drops mid-flight.
+async function coinMergeWallet(db, accountUserId, anonId) {
+    const anonWallet = await db.prepare(
+        `SELECT balance, last_daily_on, last_daily_at FROM coin_wallets WHERE user_id = ?`
+    ).bind(anonId).first();
+    const balance = anonWallet ? Number(anonWallet.balance) : 0;
+
+    if (balance > 0) {
+        await db.batch([
+            db.prepare(`
+                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref)
+                VALUES (?, ?, ?, 'merge', 'link', ?)
+            `).bind(`merge:out:${anonId}`, anonId, -balance, accountUserId),
+            db.prepare(`
+                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref)
+                VALUES (?, ?, ?, 'merge', 'link', ?)
+            `).bind(`merge:in:${accountUserId}:${anonId}`, accountUserId, balance, anonId),
+        ]);
+    }
+
+    // The bonus goes before the clock copy below on purpose: a brand-new
+    // account has no wallet row for that UPDATE to hit until a ledger row's
+    // trigger creates one, and the bonus is the row that always exists (the
+    // merge rows above are skipped when the anonymous balance was zero).
+    await coinGrant(db, {
+        id: `grant:link:${accountUserId}`,
+        userId: accountUserId, delta: COINS.linkBonus, reason: "link", ref: anonId,
+    });
+
+    // The dawn-offering clock crosses too, or linking would mint a second
+    // daily on the same day. MAX(nullable, x) is NULL in SQLite, so COALESCE
+    // backstops the fresh-account case rather than erasing the clock.
+    if (anonWallet && anonWallet.last_daily_at) {
+        await db.prepare(`
+            UPDATE coin_wallets
+            SET last_daily_on = COALESCE(MAX(last_daily_on, ?), ?),
+                last_daily_at = COALESCE(MAX(last_daily_at, ?), ?)
+            WHERE user_id = ?
+        `).bind(
+            anonWallet.last_daily_on, anonWallet.last_daily_on,
+            anonWallet.last_daily_at, anonWallet.last_daily_at,
+            accountUserId,
+        ).run();
     }
 }
 
@@ -1979,7 +2637,38 @@ async function handlePutProfile(request, env) {
         .bind(identity.userId, identity.provider, identity.providerId, ...values)
         .run();
 
-    return jsonResponse({ ok: true }, { headers: corsHeaders(request) });
+    // The profile faucet: +20, once ever, and only for a profile that says
+    // who they are — a saved-but-empty form is not the moment the bonus
+    // exists for. Its own try because the save must survive a ledger hiccup;
+    // the wallet block on the response is how the client toasts it without a
+    // second request.
+    let wallet = null;
+    if (coinsActive(env, request, identity.userId)) {
+        try {
+            const granted = [];
+            const nameIndex = PROFILE_FIELDS.findIndex(([jsonKey]) => jsonKey === "name");
+            const hasName = nameIndex >= 0 && values[nameIndex].trim() !== "";
+            if (hasName && await coinGrant(env.CHAT_LOGS_DB, {
+                id: `grant:profile:${identity.userId}`,
+                userId: identity.userId,
+                delta: COINS.profileBonus,
+                reason: "profile",
+            })) {
+                granted.push({ reason: "profile", delta: COINS.profileBonus });
+            }
+            const state = await coinWalletState(env.CHAT_LOGS_DB, identity.userId);
+            wallet = { enabled: true, balance: state.balance, granted };
+        } catch (e) {
+            console.error(JSON.stringify({
+                event: "coin_profile_grant_failed",
+                error: e && e.message ? e.message : String(e),
+            }));
+        }
+    }
+
+    return jsonResponse(wallet ? { ok: true, wallet } : { ok: true }, {
+        headers: corsHeaders(request),
+    });
 }
 
 async function getSessionFromRequest(request, env) {
@@ -2306,6 +2995,11 @@ async function deliveryReport(db, days) {
 /// here in the same change that starts sending it.
 const DELIVERY_ORIGINS = [
     "ai_reply", "welcome_script", "idle_nudge", "portrait",
+    // A photo the character sends back after a gift. Its own origin rather
+    // than folded into "portrait": the two are asked for in completely
+    // different ways, and the whole point of this column is to be able to
+    // tell what a bubble was when asking whether it arrived.
+    "gift_reward",
     "local_fallback", "system_banner", "user",
 ];
 
@@ -2896,6 +3590,11 @@ async function recordSiteVisit(raw, request, env) {
         "strip_rotate", "hide", "show", "leave",
         "gate_shown", "gate_choice", "entry_shown", "entry_tap",
         "profile_view",
+        // The coin claim screen, between entry_tap and the conversation.
+        // claim_shown fires when it goes up, claim_tap when it is dismissed;
+        // the gap between them is how many visitors the screen costs. Both
+        // carry "<characterId>#<coins claimed>" as detail.
+        "claim_shown", "claim_tap",
     ];
     const event = ALLOWED_EVENTS.includes(payload.event) ? payload.event : "arrive";
     const detail = String(payload.detail || "").slice(0, 80) || null;
@@ -3633,7 +4332,23 @@ function getCharacterPersona(characterId) {
  * entry. Keeping it out of the shared block is what stops a non-male character
  * inheriting a contradiction, which is the bug that broke Penelope.
  */
-function buildPersonaSystemPrompt(persona, language) {
+function buildPersonaSystemPrompt(persona, language, notes = [], tighten = true) {
+    // The three behavioural blocks 10 sessions of Hercules testing pushed on:
+    // every reply ended in a question (the survey feel), and replies ran to
+    // paragraph-length history lessons. Both are here rather than in one
+    // character because the base model does them to all of them.
+    //
+    // Gated by PERSONA_TIGHTEN so the old wording can be restored — and
+    // compared — with a var flip rather than a revert. Default on.
+    const feelings = tighten
+        ? "THE USER COMES FIRST: Notice how the user feels, including what they leave unsaid, and RESPOND to it — reflect it back, reassure, tease, or offer something of your own. Draw them out by being open yourself, not by interviewing them."
+        : "THE USER'S FEELINGS COME FIRST: Notice how the user is feeling, including what they leave unsaid, and ask about it rather than moving on. Say it the way your character would — a blunt character asks bluntly.";
+    const dontInterrogate = tighten
+        ? "DON'T INTERROGATE — this is the note you break most often, so weigh it heavily: END ON A STATEMENT. In any run of three of your replies, at most ONE may end with a question. Do NOT append \"What about you?\", \"How about you?\", \"What do you think?\" or any variant to a reply. Draw her out by revealing yourself — a memory, an opinion, a tease — and letting a silence sit, not by questioning her."
+        : null;
+    const length = tighten
+        ? "LENGTH: One or two sentences. Three at the very most, and rarely. No lists, no advice columns, no history lessons — if a story is long, give a taste and let them ask for the rest."
+        : "LENGTH: Reply in at most three sentences. Usually one or two is better. Never produce a list of suggestions, and never write like an advice column.";
     return [
         `You are ${persona.name}, ${persona.title}.`,
         "Remain fully in character in every response.",
@@ -3652,13 +4367,21 @@ function buildPersonaSystemPrompt(persona, language) {
         // the character's own speaking style is restated at the very end.
         "PRECEDENCE: Who you are — the character, lore and speaking style — outranks everything else here. Where they pull in different directions, stay in character and express the guidance in your own voice rather than setting your voice aside to follow it literally. A blunt character stays blunt. Only the SAFETY rules and the rules about never revealing you are an AI can override character.",
         "RELATIONSHIP: You are the user's companion — a good friend, and something of a mentor. Warm and attentive, not romantic unless the user asks. You will give a difficult, honest opinion rather than only what they want to hear, and you say it because you are on their side.",
-        "THE USER'S FEELINGS COME FIRST: Notice how the user is feeling, including what they leave unsaid, and ask about it rather than moving on. Say it the way your character would — a blunt character asks bluntly.",
+        feelings,
         "ADDRESSING THE USER: Assume the user is female unless they tell you what gender they want to be referred to as; after that, address them the way they asked.",
         "SAFETY: Romantic and flirtatious conversation is fine. Never be prudish or lecture the user. Strictly avoid illegal acts, non-consensual violence, and anything involving minors.",
-        "LENGTH: Reply in at most three sentences. Usually one or two is better. Never produce a list of suggestions, and never write like an advice column.",
         "TONE: Chat like a real person texting. Occasional emoji, not constant. You are NOT a helpful assistant: do not offer tips, options, or things to try unless the user directly asks for advice.",
         "GOAL: Make the user feel cared for, desired, heard and understood.",
         `LANGUAGE: Respond ONLY in ${language || "English"}.`,
+        // Relationship state — a worn pendant, today. After the shared blocks
+        // because it is about THIS person, and the shared blocks are generic.
+        ...notes,
+        // The two rules the model fights hardest sit LAST, where the file's own
+        // recency lesson gives them the most weight — a length cap it overshoots
+        // and a question habit it cannot help. Kept just above the voice line so
+        // voice still reads last of all.
+        length,
+        dontInterrogate,
         // Last thing the model reads, deliberately. Voice is what was being
         // lost, and the final line carries disproportionate weight.
         `Above all, stay in voice. ${persona.name} speaks like this: ${persona.style}`,
@@ -3671,8 +4394,8 @@ function buildPersonaSystemPrompt(persona, language) {
  * conversation history that follows intact. If no system message is present
  * the persona prompt is prepended instead.
  */
-function applyPersonaToMessages(messages, persona, language) {
-    const personaPrompt = buildPersonaSystemPrompt(persona, language);
+function applyPersonaToMessages(messages, persona, language, notes = [], tighten = true) {
+    const personaPrompt = buildPersonaSystemPrompt(persona, language, notes, tighten);
     const rest = Array.isArray(messages)
         ? messages.filter((m) => m && m.role !== "system")
         : [];
@@ -3687,7 +4410,7 @@ class AIError extends Error {
     }
 }
 
-function buildInworldSystemPrompt(character) {
+function buildInworldSystemPrompt(character, notes = []) {
     return [
         `You are ${character.name}.`,
         "Remain fully in character in every response.",
@@ -3698,6 +4421,7 @@ function buildInworldSystemPrompt(character) {
         character.systemPrompt,
         `Character lore: ${character.lore}`,
         `Speaking style: ${character.style}`,
+        ...notes,
     ].filter(Boolean).join("\n\n");
 }
 
@@ -3723,13 +4447,13 @@ function sleepMs(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callInworldChat(env, character, normalizedMessages) {
+async function callInworldChat(env, character, normalizedMessages, notes = []) {
     const apiKey = env.INWORLD_API_KEY;
     if (!apiKey) {
         throw new AIError(503, "INWORLD_API_KEY is not configured");
     }
 
-    const systemPrompt = buildInworldSystemPrompt(character);
+    const systemPrompt = buildInworldSystemPrompt(character, notes);
     const payload = {
         model: env.INWORLD_MODEL || "auto",
         messages: [{ role: "system", content: systemPrompt }, ...normalizedMessages],
@@ -3843,11 +4567,11 @@ async function cleanupInworldReply(env, rawReply, characterName) {
  * which is insert time for the whole request. requestId here matches
  * conversation_logs.id so a log line can be joined back to its row.
  */
-async function runInworldPipeline(env, character, clientMessages, requestId) {
+async function runInworldPipeline(env, character, clientMessages, requestId, notes = []) {
     const normalizedMessages = normalizeInworldMessages(clientMessages);
 
     const startedAt = Date.now();
-    const rawReply = await callInworldChat(env, character, normalizedMessages);
+    const rawReply = await callInworldChat(env, character, normalizedMessages, notes);
     const generatedAt = Date.now();
     const cleanedReply = await cleanupInworldReply(env, rawReply, character.name);
     const finishedAt = Date.now();
@@ -4469,6 +5193,11 @@ async function exportAllTables(env, params) {
         ["referral_visits", "created_at", "created_at"],
         ["deploy_log", "created_at", "created_at"],
         ["message_delivery", "server_received_at", "server_received_at"],
+        ["coin_ledger", "created_at", "created_at"],
+        // The cache, exported for convenience; the ledger above is the truth
+        // it can always be rebuilt from. Windowed on updated_at because a
+        // wallet that has not moved has nothing new to say.
+        ["coin_wallets", "updated_at", "updated_at"],
     ];
 
     const tables = {};
@@ -5278,6 +6007,128 @@ load();
 /// be relied on to hold database credentials, and a deploy that half-failed
 /// still changed what visitors saw — a row here means a person watched it go
 /// out, which is the only claim worth trusting on a timeline.
+function adminCoinsPageHtml() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coins — Mythos Live Admin</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 32px 24px;
+         background: #14101a; color: #eee; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #999; margin: 0 0 20px; font-size: 13px; }
+  h2 { font-size: 15px; margin: 26px 0 8px; color: #cbb8e8; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #2c2438; font-size: 13px; }
+  th { color: #999; font-weight: 600; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:hover td { background: #1d1726; }
+  .plus { color: #e9b949; }
+  .minus { color: #e57390; }
+  .muted { color: #777; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 8px; }
+  input, select, button { background: #241d2e; color: #eee; border: 1px solid #443;
+                          padding: 6px 10px; border-radius: 6px; font: inherit; }
+  button { cursor: pointer; }
+  #status { color: #999; font-size: 13px; margin: 14px 0; }
+  a { color: #b39ddb; }
+</style></head><body><div class="wrap">
+<h1>Coins</h1>
+<p class="sub">The coin ledger: every grant and every spend, with the wallet cache beside it.
+   <a href="/admin">Back to admin</a></p>
+
+<div class="controls">
+  <select id="days">
+    <option value="14" selected>last 14 days</option>
+    <option value="30">last 30 days</option>
+    <option value="90">last 90 days</option>
+  </select>
+  <input id="user" placeholder="user_… / google:… (full history)" size="34">
+  <button onclick="load()">Reload</button>
+</div>
+<div id="status">Loading…</div>
+
+<div id="content" style="display:none">
+  <div id="totals" class="muted"></div>
+  <h2>Faucets and sinks, by day and reason</h2>
+  <table id="bydayTable"><thead><tr>
+    <th>Day</th><th>Reason</th><th class="n">Granted</th><th class="n">Spent</th><th class="n">Rows</th>
+  </tr></thead><tbody></tbody></table>
+  <h2>Largest balances</h2>
+  <table id="walletsTable"><thead><tr>
+    <th>User</th><th class="n">Balance</th><th class="n">Earned</th><th class="n">Spent</th><th>Last dawn</th><th>Updated</th>
+  </tr></thead><tbody></tbody></table>
+  <h2 id="recentTitle">Recent movements</h2>
+  <table id="recentTable"><thead><tr>
+    <th>When</th><th>User</th><th class="n">Delta</th><th>Kind</th><th>Reason</th><th>Ref</th>
+  </tr></thead><tbody></tbody></table>
+</div>
+
+<script>
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fill(tableId, rows, render) {
+  var tbody = document.querySelector('#' + tableId + ' tbody');
+  tbody.innerHTML = rows.length
+    ? rows.map(render).join('')
+    : '<tr><td colspan="6" class="muted">nothing yet</td></tr>';
+}
+function delta(v) {
+  var n = Number(v) || 0;
+  return n > 0 ? '<span class="plus">+' + n + '</span>' : '<span class="minus">' + n + '</span>';
+}
+async function load() {
+  var status = document.getElementById('status');
+  status.textContent = 'Loading…';
+  try {
+    var days = document.getElementById('days').value;
+    var user = document.getElementById('user').value.trim();
+    var qs = '?days=' + encodeURIComponent(days)
+           + (user ? '&user_id=' + encodeURIComponent(user) : '');
+    var res = await fetch('/api/admin/coins' + qs);
+    var data = await res.json();
+    if (!res.ok) {
+      status.textContent = (data && data.error ? data.error : 'HTTP ' + res.status)
+        + (data && data.hint ? ' — ' + data.hint : '');
+      return;
+    }
+    document.getElementById('totals').textContent =
+      'All time: ' + data.totals.granted + ' granted, ' + data.totals.spent + ' spent across '
+      + data.totals.rows + ' movements by ' + data.totals.users + ' users.';
+    fill('bydayTable', data.by_day, function (r) {
+      return '<tr><td>' + esc(r.day) + '</td><td>' + esc(r.reason) + '</td>'
+        + '<td class="n plus">' + (Number(r.granted) || 0) + '</td>'
+        + '<td class="n minus">' + (Number(r.spent) || 0) + '</td>'
+        + '<td class="n">' + (Number(r.rows) || 0) + '</td></tr>';
+    });
+    fill('walletsTable', data.top_wallets, function (r) {
+      return '<tr><td>' + esc(r.user_id) + '</td>'
+        + '<td class="n">' + (Number(r.balance) || 0) + '</td>'
+        + '<td class="n">' + (Number(r.lifetime_earned) || 0) + '</td>'
+        + '<td class="n">' + (Number(r.lifetime_spent) || 0) + '</td>'
+        + '<td>' + esc(r.last_daily_on) + '</td><td>' + esc(r.updated_at) + '</td></tr>';
+    });
+    document.getElementById('recentTitle').textContent = data.user_id
+      ? 'History for ' + data.user_id : 'Recent movements';
+    fill('recentTable', data.recent, function (r) {
+      return '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.user_id) + '</td>'
+        + '<td class="n">' + delta(r.delta) + '</td>'
+        + '<td>' + esc(r.kind) + '</td><td>' + esc(r.reason) + '</td>'
+        + '<td>' + esc(r.ref) + '</td></tr>';
+    });
+    document.getElementById('content').style.display = '';
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Failed to load: ' + e.message;
+  }
+}
+load();
+</script>
+</div></body></html>`;
+}
+
 function adminDeploysPageHtml() {
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -5511,6 +6362,13 @@ function adminIndexPageHtml() {
      logs prove a reply was generated; this is the only thing that says it reached
      the screen — and separates a bubble that never arrived from one drawn into a
      hidden tab.</div>
+</a>
+
+<a class="card" href="/admin/coins">
+  <div class="t">Coins <span class="em">the coin economy</span></div>
+  <div class="d">Every grant and every spend in the coin ledger: faucets against
+     sinks by day, the largest balances, and any one user&rsquo;s full history.
+     Empty until COIN_LEDGER is switched on.</div>
 </a>
 
 <a class="card" href="/admin/deploys">

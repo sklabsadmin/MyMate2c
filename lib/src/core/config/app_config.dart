@@ -150,6 +150,26 @@ class AppConfig {
   /// not count. Signing in removes the limit entirely.
   static const int freeRepliesPerCharacter = 20;
 
+  /// Mythos Coins, client half.
+  ///
+  /// The worker's COIN_LEDGER var is the real switch (off there, the server
+  /// answers enabled:false and this UI hides on its own). This constant is
+  /// the second, independent off switch: FALSE builds a client with no coin
+  /// surface at all — no chip, no sheet, no wallet requests — restoring the
+  /// header exactly as it was. One constant, so the way back is a redeploy
+  /// rather than an unpick across the release.
+  static const bool coinsUiEnabled = true;
+
+  /// How far a tribute moves the ♥ meter, by the server's size key. Coin
+  /// PRICES are never a client concern — they arrive with every wallet
+  /// read — but the meter is a client-side keepsake, so its mapping lives
+  /// beside the other client constants.
+  static const Map<String, int> tributeHeartScore = {
+    'roses': 1,
+    'ambrosia': 3,
+    'pendant': 10,
+  };
+
   /// The app is designed as a portrait, phone-shaped experience — two card
   /// columns, one chat column. Left unconstrained, a desktop window stretches
   /// the header and nav bar to the full width while the grid stays centred at
@@ -202,11 +222,15 @@ class AppConfig {
 
   /// Where delivery receipts go — what the client actually drew on screen.
   ///
-  /// Signed with the same HMAC as chatUrl() where a secret exists, which on web
-  /// is nowhere: appSecret is deliberately empty there, so REQUIRE_SIGNATURE is
-  /// off in production and this endpoint is as unauthenticated as /api/visit
-  /// already is. What keeps the table clean is the worker's user-id guard and
-  /// its batch cap, not the signature.
+  /// Signed with the same HMAC as chatUrl(), web included: tool/build_web.sh
+  /// bakes APP_SECRET into every web build as a --dart-define and refuses to
+  /// build without it, and the worker runs with REQUIRE_SIGNATURE=true
+  /// (wrangler.jsonc), so an unsigned post gets a 401. The empty-secret branch
+  /// in appSecret is only reachable from a bare `flutter build web` without
+  /// the define — the chat-is-dead build that script exists to prevent. The
+  /// signature is still not what keeps this table clean, though: the secret
+  /// ships inside public JavaScript, so the durable guards are the worker's
+  /// user-id guard and its batch cap.
   static String deliveryUrl() => apiUrl('/api/delivery');
 
   /// How long the client waits after a receipt changes before flushing, so the

@@ -20,6 +20,10 @@ import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
+import '../../wallet/coin_wallet.dart';
+import '../../wallet/presentation/coin_chip.dart';
+import '../../wallet/presentation/coin_claim_screen.dart';
+import '../../wallet/presentation/coins_sheet.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
 /// for what each field does and why there is more than one set of them.
@@ -369,6 +373,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// cannot send the same opener a second time.
   bool _openerSent = false;
 
+  /// The claim screen: what it is showing, and what the entry tap deferred
+  /// until it is dismissed.
+  ///
+  /// Non-empty [_claimedGrants] is what puts the screen up — it is filled from
+  /// takeGrants, which is consume-once, so the screen cannot reappear for the
+  /// same coins. [_claimResumeOpening] carries the decision _enterChat had
+  /// already made about whether the opening should play, so dismissing the
+  /// screen resumes exactly what the tap would have done.
+  List<CoinGrant> _claimedGrants = const [];
+  int _claimBalance = 0;
+  bool _claimResumeOpening = false;
+
+  /// Tribute ids whose ♥ bonus has already been credited. The server charges
+  /// once per id (that is the whole idempotency design), so the meter follows
+  /// the same rule: a retried tribute that finally lands scores once.
+  final Set<String> _scoredTributeIds = {};
+
+  /// Gift rewards already sent in this conversation, keyed "<character>:<item>".
+  /// Sent once rather than every time: the photograph is the same photograph,
+  /// and receiving it twice in a row reads as the app repeating itself rather
+  /// than the character being pleased.
+  final Set<String> _sentGiftRewards = {};
+
+  /// A reward photograph waiting for the current reply to finish speaking.
+  String? _pendingGiftReward;
+
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
@@ -590,6 +620,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // could hit the cap on its first tick.
     _screenPingTicks = 0;
     _openerSent = false;
+    _scoredTributeIds.clear();
+    _sentGiftRewards.clear();
+    // Per-conversation, like everything else here: one State is reused across
+    // characters, and a claim left standing would cover the next one's chat.
+    _claimedGrants = const [];
+    _claimResumeOpening = false;
   }
 
   /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
@@ -906,9 +942,59 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Nothing to start over a monologue that is already on screen — see
     // _entryGateStartsOpening. The visitor was still gated and still counted;
     // they simply resume the conversation from where the old bundle left it.
-    if (!startOpening || !_entryGateStartsOpening) return;
+    final shouldOpen = startOpening && _entryGateStartsOpening;
+
+    // The button says "Tap to Claim Coins", so this tap is where the claim
+    // has to land — and on a campaign arrival it is the only place it can:
+    // the dashboard, whose listener normally toasts a grant, was never built.
+    // takeGrants is consume-once, so a visitor who already saw that toast
+    // gets no second payout, and a returning visitor with nothing pending
+    // never sees this screen at all.
+    if (AppConfig.coinsUiEnabled) {
+      final claimed = ref.read(coinWalletProvider.notifier).takeGrants();
+      if (claimed.isNotEmpty) {
+        setState(() {
+          _claimedGrants = claimed;
+          _claimBalance = ref.read(coinWalletProvider).value?.balance ?? 0;
+          _claimResumeOpening = shouldOpen;
+        });
+        logFunnelEvent(
+          'claim_shown',
+          detail: '${widget.characterId}#'
+              '${claimed.fold<int>(0, (sum, g) => sum + g.delta)}',
+          appUserId: _appUserId,
+        );
+        // Deliberately no _raiseGate/_triggerWelcomeSequence here: the claim
+        // screen covers the conversation, and the same rule the entry card is
+        // built on applies to it — not a line is spoken to a screen nobody is
+        // looking at. _dismissCoinClaim resumes both.
+        return;
+      }
+    }
+
+    if (!shouldOpen) return;
     // Only now does the character have an audience, so only now is anything
     // declared to the delivery log or spoken.
+    _raiseGate();
+    _triggerWelcomeSequence();
+  }
+
+  /// Leaves the claim screen and starts the conversation the entry tap
+  /// deferred.
+  void _dismissCoinClaim() {
+    if (_claimedGrants.isEmpty) return;
+    logFunnelEvent(
+      'claim_tap',
+      detail: '${widget.characterId}#'
+          '${_claimedGrants.fold<int>(0, (sum, g) => sum + g.delta)}',
+      appUserId: _appUserId,
+    );
+    final resume = _claimResumeOpening;
+    setState(() {
+      _claimedGrants = const [];
+      _claimResumeOpening = false;
+    });
+    if (!resume) return;
     _raiseGate();
     _triggerWelcomeSequence();
   }
@@ -3332,6 +3418,92 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
   }
 
+  void _openCoinsSheet() {
+    showCoinsSheet(
+      context,
+      ref: ref,
+      characterName: _characterDisplayName,
+      // So the sheet can tell whether THIS character already wears a pendant.
+      characterId: widget.characterId,
+      onTribute: _sendTribute,
+    );
+  }
+
+  /// A tribute is an ordinary chat turn with a coin debit attached: the
+  /// worker charges before calling the model and tells the character what was
+  /// offered, so the reply is the reaction. Mirrors [_handleSend]'s preamble
+  /// (gate, funnel, score) because to everything downstream it IS a message —
+  /// only the composer text box was never involved.
+  Future<void> _sendTribute(String item, int price) async {
+    _stopScreenPing();
+    _cancelIdleTimer();
+    _idleNudges = 0;
+
+    final authed = ref.read(authProvider).value?.authenticated ?? false;
+    if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+      logFunnelEvent(
+        'login_gate',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
+      _showLoginGate();
+      return;
+    }
+
+    _welcomeAbandoned = true;
+    if (!_sentFirstMessage) {
+      _sentFirstMessage = true;
+      logFunnelEvent(
+        'first_message',
+        detail: widget.characterId,
+        appUserId: _appUserId,
+      );
+    }
+
+    final option = kTributeOptions.firstWhere(
+      (o) => o.item == item,
+      orElse: () => kTributeOptions.first,
+    );
+    // Reads as a stage direction in the transcript, which is what it is. The
+    // worker narrates the same gift to the character separately, in words the
+    // model is told to answer rather than echo.
+    final text =
+        '*gives ${option.label.toLowerCase()} to $_characterDisplayName*';
+
+    _addMessage(
+      ChatMessage(
+        id: DateTime.now().toString(),
+        text: text,
+        isUser: true,
+        timestamp: DateTime.now(),
+        // What was handed over, drawn in the bubble. Persisted with the
+        // message, so scrolling back weeks later still shows the roses.
+        giftAsset: option.asset,
+      ),
+      origin: DeliveryOrigin.user,
+    );
+    setState(() {
+      _isTyping = true;
+      _userHasSent = true;
+    });
+    ref.read(userScoreProvider.notifier).increment();
+
+    final gift = <String, dynamic>{
+      // Client-chosen so a retry replays the same id and cannot pay twice;
+      // shape must satisfy the worker's [A-Za-z0-9_-]{8,64} guard. A
+      // once-per-character gift ignores this and keys on (user, character)
+      // server-side, so a pendant cannot be bought twice however this id
+      // comes out.
+      'id': 'tribute_${DateTime.now().millisecondsSinceEpoch}',
+      'item': item,
+    };
+    try {
+      await _deliverReply(text, gift: gift);
+    } finally {
+      if (mounted && _isTyping) setState(() => _isTyping = false);
+    }
+  }
+
   Future<void> _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -3420,7 +3592,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   ///
   /// Split out of [_handleSend] so that one `finally` there covers every way
   /// out of it, the indicator included.
-  Future<void> _deliverReply(String text) async {
+  Future<void> _deliverReply(String text, {Map<String, dynamic>? gift}) async {
     // A photo is a canned reply, not an AI one — the portrait used to be sent
     // automatically at the start of every chat, which gave it away before the
     // visitor had any reason to want it. Now it is a payoff for asking. Still
@@ -3454,9 +3626,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // the indicator.
     if (ai == null) return;
 
-    final responseText = await ai.sendMessage(text);
+    final responseText = await ai.sendMessage(text, gift: gift);
 
     if (!mounted) return;
+
+    // The wallet block riding on the response, whatever the outcome: the chip
+    // should move with the conversation, not on the next app start.
+    final walletUpdate = ai.lastWallet;
+    if (AppConfig.coinsUiEnabled && walletUpdate != null) {
+      ref.read(coinWalletProvider.notifier).applyFromChat(walletUpdate);
+    }
+    if (ai.lastFailureReason == 'insufficient_coins') {
+      // Nothing was charged and nothing went upstream. Say so plainly rather
+      // than letting the silence read as the character ignoring the gift —
+      // the sheet disables unaffordable tributes, so this is the rare race,
+      // not the normal path.
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text('Not enough coins for that tribute.'),
+      ));
+      return;
+    }
+    if (gift != null &&
+        ai.lastSendSucceeded &&
+        walletUpdate != null &&
+        walletUpdate['gift'] is Map) {
+      final applied = walletUpdate['gift'] as Map;
+      final giftId = gift['id'];
+      // charged:false is the pendant they already wear — the reply is real,
+      // but nothing was spent, so nothing is scored either.
+      if (applied['charged'] != false &&
+          giftId is String &&
+          !_scoredTributeIds.contains(giftId)) {
+        _scoredTributeIds.add(giftId);
+        ref.read(userScoreProvider.notifier).add(
+              AppConfig.tributeHeartScore[gift['item']] ?? 0,
+            );
+      }
+      // Some characters answer a gift with a photograph as well as words.
+      // Queued here and sent after the reply's bubbles below, so it arrives
+      // as the last thing in the turn rather than interrupting the sentence
+      // it belongs to.
+      final item = gift['item'];
+      if (applied['charged'] != false && item is String) {
+        final reward = giftRewardAsset(widget.characterId, item);
+        final key = '${widget.characterId}:$item';
+        if (reward != null && !_sentGiftRewards.contains(key)) {
+          _sentGiftRewards.add(key);
+          _pendingGiftReward = reward;
+        }
+      }
+    }
 
     // Count this toward the free allowance only if a real reply came back
     // (not a rate-limit/"trouble thinking" fallback), and only while the
@@ -3552,6 +3772,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       );
     }
 
+    // A gift's reward photograph, if this turn earned one — after the words,
+    // never instead of them: the character answers the gesture in their own
+    // voice first, and the photo is the flourish on the end.
+    final reward = _pendingGiftReward;
+    if (reward != null) {
+      _pendingGiftReward = null;
+      await _sendGiftReward(reward);
+      if (!mounted) return;
+    }
+
     // Reply finished — this is a pause point in the same sense the script's
     // are, so move the strip on to the next set of questions. Done here rather
     // than when the message is sent so the questions change with her answer
@@ -3583,6 +3813,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// automatically. Paced like a real reply — a typing beat, then the image —
   /// rather than appearing instantly, which would look like it was already
   /// sitting there waiting.
+  /// The photograph a character sends back for a gift. Paced like the
+  /// portrait — a typing beat, then the image — so it reads as them choosing
+  /// to send it rather than an attachment the app stapled on.
+  Future<void> _sendGiftReward(String asset) async {
+    if (!mounted) return;
+    setState(() => _isTyping = true);
+    await Future.delayed(const Duration(milliseconds: 1100));
+    if (!mounted) return;
+    setState(() => _isTyping = false);
+    _addMessage(
+      ChatMessage(
+        id: 'giftreward_${DateTime.now().millisecondsSinceEpoch}',
+        text: 'A photo from $_characterDisplayName',
+        isUser: false,
+        timestamp: DateTime.now(),
+        imageAsset: asset,
+      ),
+      origin: DeliveryOrigin.giftReward,
+    );
+  }
+
   Future<void> _sendPortrait(String portrait) async {
     await Future.delayed(const Duration(milliseconds: 900));
     if (!mounted) return;
@@ -3653,6 +3904,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   height: 1.4,
                 ),
               ),
+              // Only when the wallet is live: a promise about coins must not
+              // appear in a build where coins do not exist.
+              if (AppConfig.coinsUiEnabled &&
+                  (ref.read(coinWalletProvider).value?.enabled ?? false)) ...[
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.paid,
+                        size: 14, color: theme.colorScheme.secondary),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        'Your coins come with you — signing in adds +100.',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.lato(
+                          color: theme.colorScheme.secondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -3833,6 +4109,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           tooltip: 'Back',
         ),
         actions: [
+          // The coin balance, in the slot the premium diamond was drawn for.
+          // Tapping it opens the wallet sheet, which in a chat also offers
+          // the tribute sizes for this character.
+          if (AppConfig.coinsUiEnabled &&
+              (ref.watch(coinWalletProvider).value?.enabled ?? false))
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(
+                child: CoinChip(
+                  compact: true,
+                  balance: ref.watch(coinWalletProvider).value?.balance ?? 0,
+                  onTap: _openCoinsSheet,
+                ),
+              ),
+            ),
           if (!AppConfig.isFreeTier)
             IconButton(
               icon: const Icon(Icons.diamond_outlined),
@@ -3981,6 +4272,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   onPhoto: (widget.characterImage?.isNotEmpty ?? false)
                       ? () => _sendStarter(_photoPrompt)
                       : null,
+                  onGift: (AppConfig.coinsUiEnabled &&
+                          (ref.watch(coinWalletProvider).value?.enabled ??
+                              false))
+                      ? _openCoinsSheet
+                      : null,
                 ),
               _buildInputArea(theme),
             ],
@@ -3994,6 +4290,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           // come in must be able to leave in the ordinary way — a card they
           // cannot escape would turn a measurement into a trap, and "left
           // rather than tap" is a result we want recorded, not prevented.
+          // Above the entry card in the stack because it replaces it: the
+          // card is already hidden by the time this is up, and if both were
+          // ever active the claim is the one the visitor just asked for.
+          if (_claimedGrants.isNotEmpty)
+            CoinClaimScreen(
+              grants: _claimedGrants,
+              balance: _claimBalance,
+              onCollect: _dismissCoinClaim,
+            ),
           if (_entryGateActive)
             _EntryGate(
               name: _characterDisplayName,
@@ -4310,7 +4615,13 @@ class _PulsingEnterButtonState extends State<_PulsingEnterButton>
         ),
       ),
       child: Text(
-        'Tap to Talk',
+        // Was 'Tap to Talk' through 1.7.2+76. Reworded 2026-08-20 to lead
+        // with the coins claim (the welcome/daily grants a first tap walks
+        // into). Note for whoever reads the funnel: entry_tap's meaning
+        // changes at this build — the ask is the same one tap, but the
+        // promise behind it is different, so compare rates across this
+        // boundary the way the segmented eval compares bundles.
+        'Tap to Claim Coins',
         style: GoogleFonts.outfit(
           fontSize: 19,
           fontWeight: FontWeight.w700,
@@ -4606,8 +4917,8 @@ class _EntryGate extends StatelessWidget {
                   // gone from characters.dart rather than sitting there
                   // uncalled.
                   Text(
-                    '$name would like to talk to you,\n'
-                    'and understand your journey',
+                    'Claim your coins for the Greek-themed\n'
+                    'Mythos Live interactive story adventure',
                     textAlign: TextAlign.center,
                     style: GoogleFonts.outfit(
                       color: Colors.white.withOpacity(0.75),
@@ -4659,6 +4970,10 @@ class _StarterPrompts extends StatefulWidget {
   /// portrait to send.
   final VoidCallback? onPhoto;
 
+  /// Opens the gift catalogue. Null when coins are switched off, so a build
+  /// with no wallet shows no gift button at all.
+  final VoidCallback? onGift;
+
   /// Whether the strip still has to teach itself.
   ///
   /// The staggered entrance, the green pass down the rows and the flashing
@@ -4679,6 +4994,7 @@ class _StarterPrompts extends StatefulWidget {
     required this.onTap,
     required this.teach,
     this.onPhoto,
+    this.onGift,
   });
 
   @override
@@ -5100,8 +5416,15 @@ class _StarterPromptsState extends State<_StarterPrompts>
                               ),
                             ),
                           ),
+                          if (widget.onGift != null) ...[
+                            const SizedBox(width: 10),
+                            _GiftButton(
+                              characterName: widget.characterName,
+                              onTap: widget.onGift!,
+                            ),
+                          ],
                           if (widget.onPhoto != null) ...[
-                            const SizedBox(width: 14),
+                            const SizedBox(width: 10),
                             _PhotoRequestButton(
                               characterName: widget.characterName,
                               onTap: widget.onPhoto!,
@@ -5145,6 +5468,54 @@ class _StarterPromptsState extends State<_StarterPrompts>
 /// produces conversation — it resolves to the same canned portrait every time
 /// — so it should not look like an equal alternative to the character's real
 /// questions, and it certainly should not cost a full row to say so.
+/// "Gift" — the way into the catalogue from inside the conversation.
+///
+/// Sits beside the photo button because that is where an in-chat action
+/// already lives, and because the coin chip in the app bar was the only door
+/// before this: findable if you were looking for it, invisible if you were
+/// not. Gold rather than pink, like every other coin surface.
+class _GiftButton extends StatelessWidget {
+  final String characterName;
+  final VoidCallback onTap;
+
+  const _GiftButton({required this.characterName, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final gold = Theme.of(context).colorScheme.secondary;
+    return Semantics(
+      button: true,
+      label: 'Give $characterName a gift',
+      child: Material(
+        color: gold.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.card_giftcard, size: 14, color: gold),
+                const SizedBox(width: 5),
+                Text(
+                  'Gift',
+                  style: GoogleFonts.lato(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PhotoRequestButton extends StatelessWidget {
   final String characterName;
   final VoidCallback onTap;
@@ -5453,6 +5824,37 @@ class _ChatBubble extends StatelessWidget {
             child: AspectRatio(
               aspectRatio: 1,
               child: Image.asset(imageAsset, fit: BoxFit.cover),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // A gift is shown as the thing itself, with no bubble and no words.
+    //
+    // message.text still carries the stage direction, and deliberately so: it
+    // is what the model is answering, and _loadHistory rebuilds the model's
+    // view of the conversation from these stored messages — blank it and
+    // reopening the chat loses the fact that anything was ever given. It is
+    // also the accessibility label. It simply is not drawn, because the
+    // picture says it better than "*gives roses to Odysseus*" did.
+    //
+    // No frame, unlike the portrait above: the art is a cut-out with its own
+    // glow, and a rounded box around it reads as a photo of a gift rather
+    // than a gift.
+    final giftAsset = message.giftAsset;
+    if (giftAsset != null) {
+      return Align(
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          margin: EdgeInsets.only(bottom: gap),
+          child: Semantics(
+            label: message.text,
+            image: true,
+            child: SizedBox(
+              width: 104,
+              height: 104,
+              child: Image.asset(giftAsset, fit: BoxFit.contain),
             ),
           ),
         ),

@@ -35,6 +35,16 @@ class UserScoreNotifier extends Notifier<int> {
     state = state + 1;
     await prefs.setInt(_kUserScoreKey, state);
   }
+
+  /// [increment] counts messages; this credits bigger moments (a tribute's
+  /// ♥ bonus, AppConfig.tributeHeartScore). Same key, same rules, so the
+  /// meter has exactly two writers and both live here.
+  Future<void> add(int amount) async {
+    if (amount <= 0) return;
+    final prefs = await SharedPreferences.getInstance();
+    state = state + amount;
+    await prefs.setInt(_kUserScoreKey, state);
+  }
 }
 
 final customCharactersProvider = NotifierProvider<CustomCharactersNotifier, List<Map<String, dynamic>>>(CustomCharactersNotifier.new);
