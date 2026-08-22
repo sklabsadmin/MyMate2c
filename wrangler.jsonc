@@ -106,7 +106,7 @@
     // COIN_ALLOWLIST (optional, comma-separated user ids; the entry
     // "synthetic" admits x-synthetic-test requests) turns it on for named
     // users while this stays "false" — the staff soak before the flip.
-    "COIN_LEDGER": "false",
+    "COIN_LEDGER": "true",
     // Persona prompt tuning (2026-08-22, from 10 sessions of Hercules
     // testing): shorter replies, and stop ending every turn on a question.
     // Default-on; set to the exact string "false" to restore the previous
