@@ -107,6 +107,11 @@
     // "synthetic" admits x-synthetic-test requests) turns it on for named
     // users while this stays "false" — the staff soak before the flip.
     "COIN_LEDGER": "false",
+    // Persona prompt tuning (2026-08-22, from 10 sessions of Hercules
+    // testing): shorter replies, and stop ending every turn on a question.
+    // Default-on; set to the exact string "false" to restore the previous
+    // wording for comparison. Affects every OpenAI-backed character.
+    "PERSONA_TIGHTEN": "true",
     // Fallback landing origin after an Instagram/Google auth round trip, used
     // only when the caller did not supply returnTo — which the app always does,
     // so this rarely fires. Not load-bearing for chat or logging.

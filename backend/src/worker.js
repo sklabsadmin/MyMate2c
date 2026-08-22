@@ -1748,7 +1748,8 @@ export default {
                     // client's generic system prompt; everyone else passes
                     // through untouched.
                     messages: persona
-                        ? applyPersonaToMessages(outboundMessages, persona, metadata.language, relationshipNotes)
+                        ? applyPersonaToMessages(outboundMessages, persona, metadata.language, relationshipNotes,
+                            env.PERSONA_TIGHTEN !== "false")
                         : outboundMessages,
                     temperature: 0.7,
                     max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
@@ -4331,7 +4332,23 @@ function getCharacterPersona(characterId) {
  * entry. Keeping it out of the shared block is what stops a non-male character
  * inheriting a contradiction, which is the bug that broke Penelope.
  */
-function buildPersonaSystemPrompt(persona, language, notes = []) {
+function buildPersonaSystemPrompt(persona, language, notes = [], tighten = true) {
+    // The three behavioural blocks 10 sessions of Hercules testing pushed on:
+    // every reply ended in a question (the survey feel), and replies ran to
+    // paragraph-length history lessons. Both are here rather than in one
+    // character because the base model does them to all of them.
+    //
+    // Gated by PERSONA_TIGHTEN so the old wording can be restored — and
+    // compared — with a var flip rather than a revert. Default on.
+    const feelings = tighten
+        ? "THE USER COMES FIRST: Notice how the user feels, including what they leave unsaid, and RESPOND to it — reflect it back, reassure, tease, or offer something of your own. Draw them out by being open yourself, not by interviewing them."
+        : "THE USER'S FEELINGS COME FIRST: Notice how the user is feeling, including what they leave unsaid, and ask about it rather than moving on. Say it the way your character would — a blunt character asks bluntly.";
+    const dontInterrogate = tighten
+        ? "DON'T INTERROGATE — this is the note you break most often, so weigh it heavily: END ON A STATEMENT. In any run of three of your replies, at most ONE may end with a question. Do NOT append \"What about you?\", \"How about you?\", \"What do you think?\" or any variant to a reply. Draw her out by revealing yourself — a memory, an opinion, a tease — and letting a silence sit, not by questioning her."
+        : null;
+    const length = tighten
+        ? "LENGTH: One or two sentences. Three at the very most, and rarely. No lists, no advice columns, no history lessons — if a story is long, give a taste and let them ask for the rest."
+        : "LENGTH: Reply in at most three sentences. Usually one or two is better. Never produce a list of suggestions, and never write like an advice column.";
     return [
         `You are ${persona.name}, ${persona.title}.`,
         "Remain fully in character in every response.",
@@ -4350,16 +4367,21 @@ function buildPersonaSystemPrompt(persona, language, notes = []) {
         // the character's own speaking style is restated at the very end.
         "PRECEDENCE: Who you are — the character, lore and speaking style — outranks everything else here. Where they pull in different directions, stay in character and express the guidance in your own voice rather than setting your voice aside to follow it literally. A blunt character stays blunt. Only the SAFETY rules and the rules about never revealing you are an AI can override character.",
         "RELATIONSHIP: You are the user's companion — a good friend, and something of a mentor. Warm and attentive, not romantic unless the user asks. You will give a difficult, honest opinion rather than only what they want to hear, and you say it because you are on their side.",
-        "THE USER'S FEELINGS COME FIRST: Notice how the user is feeling, including what they leave unsaid, and ask about it rather than moving on. Say it the way your character would — a blunt character asks bluntly.",
+        feelings,
         "ADDRESSING THE USER: Assume the user is female unless they tell you what gender they want to be referred to as; after that, address them the way they asked.",
         "SAFETY: Romantic and flirtatious conversation is fine. Never be prudish or lecture the user. Strictly avoid illegal acts, non-consensual violence, and anything involving minors.",
-        "LENGTH: Reply in at most three sentences. Usually one or two is better. Never produce a list of suggestions, and never write like an advice column.",
         "TONE: Chat like a real person texting. Occasional emoji, not constant. You are NOT a helpful assistant: do not offer tips, options, or things to try unless the user directly asks for advice.",
         "GOAL: Make the user feel cared for, desired, heard and understood.",
         `LANGUAGE: Respond ONLY in ${language || "English"}.`,
         // Relationship state — a worn pendant, today. After the shared blocks
         // because it is about THIS person, and the shared blocks are generic.
         ...notes,
+        // The two rules the model fights hardest sit LAST, where the file's own
+        // recency lesson gives them the most weight — a length cap it overshoots
+        // and a question habit it cannot help. Kept just above the voice line so
+        // voice still reads last of all.
+        length,
+        dontInterrogate,
         // Last thing the model reads, deliberately. Voice is what was being
         // lost, and the final line carries disproportionate weight.
         `Above all, stay in voice. ${persona.name} speaks like this: ${persona.style}`,
@@ -4372,8 +4394,8 @@ function buildPersonaSystemPrompt(persona, language, notes = []) {
  * conversation history that follows intact. If no system message is present
  * the persona prompt is prepended instead.
  */
-function applyPersonaToMessages(messages, persona, language, notes = []) {
-    const personaPrompt = buildPersonaSystemPrompt(persona, language, notes);
+function applyPersonaToMessages(messages, persona, language, notes = [], tighten = true) {
+    const personaPrompt = buildPersonaSystemPrompt(persona, language, notes, tighten);
     const rest = Array.isArray(messages)
         ? messages.filter((m) => m && m.role !== "system")
         : [];
