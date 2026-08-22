@@ -133,11 +133,12 @@ test('a dawn offering cannot be claimed twice by moving the clock', async () => 
     assert.equal(rowCount(db, "reason = 'daily'"), 1);
 });
 
-test('the second day pays the return rate, not the arrival rate', async () => {
-    // Two numbers, one grant: 20 arrives beside the welcome so the first
-    // claim is a round 100, and every day after is worth 25 because coming
-    // back is the harder thing to ask for. Getting these the wrong way round
-    // is invisible until someone reads a week of ledger rows.
+test('every day pays the same flat daily, first day and after', async () => {
+    // A flat 20 (decided 2026-08-22). It rides beside the +80 welcome on day
+    // one so the first claim is a round 100, and every return pays the same
+    // 20. This test exists because the amount used to differ by day, and a
+    // regression to that split would be invisible until someone read a week
+    // of ledger rows.
     const { env, db } = coinsEnv();
     const first = await callSync(env, { localDate: '2026-08-20' });
     assert.deepEqual(first.json.granted, [
@@ -152,8 +153,8 @@ test('the second day pays the return rate, not the arrival rate', async () => {
     ).run(USER);
 
     const nextDay = await callSync(env, { localDate: '2026-08-21' });
-    assert.deepEqual(nextDay.json.granted, [{ reason: 'daily', delta: 25 }]);
-    assert.equal(nextDay.json.wallet.balance, 125);
+    assert.deepEqual(nextDay.json.granted, [{ reason: 'daily', delta: 20 }]);
+    assert.equal(nextDay.json.wallet.balance, 120);
     assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
 });
 

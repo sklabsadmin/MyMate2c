@@ -43,7 +43,11 @@ const String _p12Question = 'Where should we begin?';
 
 /// The entry card's button, and the title it is built from — restated here
 /// rather than read from the widget for the same reason as the script lines.
-const String _enterButton = 'Tap to Claim Coins';
+// The card's button is gated on coins being live: 'Tap to Talk' in a dark
+// build (the default in tests, which enable no wallet), 'Tap to Claim Coins'
+// only when a test seeds an enabled wallet.
+const String _enterButton = 'Tap to Talk';
+const String _enterButtonCoins = 'Tap to Claim Coins';
 const String _characterTitle = 'King of Ithaca';
 
 /// Quick replies for the first two pauses, and one of the cold-safe sets the
@@ -630,7 +634,7 @@ void _entryGateTests() {
 
     final container =
         ProviderScope.containerOf(tester.element(find.byType(ChatScreen)));
-    await tester.tap(find.text(_enterButton));
+    await tester.tap(find.text(_enterButtonCoins));
     await tester.pump();
     expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
         reason: 'the screen is up on the very frame the card goes away');
@@ -693,7 +697,7 @@ void _entryGateTests() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
-    await tester.tap(find.text(_enterButton), warnIfMissed: false);
+    await tester.tap(find.text(_enterButtonCoins), warnIfMissed: false);
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
 
@@ -1236,11 +1240,12 @@ void _entryGateTests() {
         findsOneWidget);
     expect(find.byIcon(Icons.touch_app_outlined), findsWidgets);
 
-    // The claim line (replaced the per-character invitation 2026-08-20 when
-    // the button began leading with the coins), and the button.
+    // No wallet is enabled here, so the card is in its dark-build form: the
+    // original per-character invitation and 'Tap to Talk'. The coins copy is
+    // covered by the claim-payout test, which seeds an enabled wallet.
     expect(
-      find.text(
-          'Claim your coins for the Greek-themed\nMythos Live interactive story adventure'),
+      find.text('Hercules would like to talk to you,\n'
+          'and understand your journey'),
       findsOneWidget,
     );
     expect(find.text(_enterButton), findsOneWidget);
@@ -1379,7 +1384,7 @@ void _giftSheetTests() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
     // No pending grants on this wallet, so the entry tap goes straight in.
-    await tester.tap(find.text(_enterButton));
+    await tester.tap(find.text(_enterButtonCoins));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
   }
