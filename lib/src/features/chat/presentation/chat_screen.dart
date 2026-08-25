@@ -950,9 +950,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final shouldOpen = startOpening && _entryGateStartsOpening;
 
     // THE GRANT HAPPENS HERE, on the tap — never at app load. Gated on the
-    // SAME wallet-enabled truth as the button label, so this only claims when
-    // the button actually said "Tap to Claim Coins"; when it said "Tap to
-    // Talk" (coins off, or the wallet not yet read) the tap grants nothing.
+    // wallet-enabled truth, deliberately NOT on what the button said: in a
+    // dark build (coins off, or the wallet not yet read) the tap grants
+    // nothing, but entry-cta arm b — whose button reads "Tap to Talk" while
+    // coins are live — claims exactly like arm a. The experiment varies the
+    // promise, never the coins; arm b's claim screen is a surprise.
     // claim() calls POST /api/wallet/sync now — app start only ever did a
     // read-only fetch. A fresh visitor gets their coins and the claim screen;
     // a returning visitor with nothing pending gets an empty list and drops
@@ -4332,9 +4334,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               onEnter: () => _enterChat(),
               onOpenProfile: _openProfile,
               // Same truth the chip and claim screen use: only promise coins
-              // when the server says the wallet is live.
+              // when the server says the wallet is live — and not to arm b of
+              // the entry-cta experiment, which gets the original card while
+              // the tap still grants (the promise is the variable, never the
+              // coins; _enterChat deliberately does not consult the arm).
               coinsClaim: AppConfig.coinsUiEnabled &&
-                  (ref.watch(coinWalletProvider).value?.enabled ?? false),
+                  (ref.watch(coinWalletProvider).value?.enabled ?? false) &&
+                  !AppConfig.coinsPromiseHeldBack(currentVariant()),
               scrollController: _entryGateScrollController,
             ),
         ],

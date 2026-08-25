@@ -6,6 +6,9 @@ external JSFunction? get _beacon;
 @JS('mythosVisitId')
 external String? get _visitId;
 
+@JS('mythosVariant')
+external String? get _variant;
+
 /// Fires one funnel event, tagging it with the app's own user id where known
 /// so a visit can be joined to its chat transcripts. The splash beacon cannot
 /// supply that id — it runs before Flutter exists — which is why only the
@@ -47,6 +50,19 @@ void logFunnelEvent(
 String? currentVisitId() {
   try {
     return _visitId;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// This device's A/B assignment as "experiment:arm", or null when no
+/// experiment is running (or on an index.html predating the rig). Drawn once
+/// per device by the page script and kept in localStorage; the same string
+/// rides every funnel beacon, which is what makes the arm the UI branches on
+/// and the arm the admin split reports provably the same coin flip.
+String? currentVariant() {
+  try {
+    return _variant;
   } catch (_) {
     return null;
   }

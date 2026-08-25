@@ -673,6 +673,58 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('entry-cta arm b hides the promise but never the coins',
+      (tester) async {
+    // The experiment varies ONLY the first-screen ask: arm b gets the
+    // original invitation with no coins word on it, and the tap must still
+    // grant and still raise the claim screen — as a surprise. The bug this
+    // catches: gating the claim on the button's copy instead of the wallet,
+    // which would quietly turn arm b into a no-coins arm and make the test
+    // answer a different question than the one that was decided.
+    AppConfig.debugVariantOverride = '${AppConfig.entryCtaExperiment}:b';
+    addTearDown(() => AppConfig.debugVariantOverride = null);
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    // The card is the pre-coins one, wallet live or not.
+    expect(find.text(_enterButton), findsOneWidget,
+        reason: 'arm b is shown the original invitation');
+    expect(find.text(_enterButtonCoins), findsNothing,
+        reason: 'no coins word may reach arm b before the tap');
+    expect(find.textContaining('Claim your coins'), findsNothing);
+    expect(find.textContaining('would like to talk to you'), findsOneWidget);
+
+    // But the tap pays exactly like arm a.
+    await tester.tap(find.text(_enterButton));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: "arm b's coins arrive as a surprise, not not at all");
+    await tester.pump(const Duration(milliseconds: 2400));
+    expect(find.text('+100'), findsOneWidget,
+        reason: 'the payout is identical across arms — copy is the variable');
+
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+
+    await _teardown(tester);
+  });
+
   testWidgets('the claim screen fits the shortest viewport that reaches us',
       (tester) async {
     // 360x560 is the small end of the in-app browser band the entry card

@@ -160,6 +160,32 @@ class AppConfig {
   /// rather than an unpick across the release.
   static const bool coinsUiEnabled = true;
 
+  /// The entry-card copy A/B. The arm is drawn once per device by the page
+  /// script (web/index.html, whose source of truth is tool/patch_splash.py) —
+  /// this string must match the EXPERIMENT constant there, and a test holds
+  /// the three copies together, because a drift means the page tags events
+  /// with an experiment the app is not actually running.
+  ///
+  /// Arm a: the coins promise — "Tap to Claim Coins" and the claim tagline.
+  /// Arm b: the original "Tap to Talk" invitation. ONLY the copy differs:
+  /// arm b still grants on the tap and still gets the claim screen, as a
+  /// surprise rather than a promise. The wallet, chip, gifts and streak are
+  /// identical in both arms.
+  static const String entryCtaExperiment = 'entry-cta-20260825';
+
+  /// Widget tests run off the web, where the page assigns no arm; this lets
+  /// them put a visitor in arm b. Never set outside a test.
+  @visibleForTesting
+  static String? debugVariantOverride;
+
+  /// Whether this visitor is in the arm that holds the coins promise back.
+  /// Null (no experiment running, off the web, an old cached index.html) and
+  /// every unrecognised value mean arm a — the promise shows — so retiring
+  /// the experiment or wiping EXPERIMENT reverts everyone to the coins card
+  /// without touching this code.
+  static bool coinsPromiseHeldBack(String? variant) =>
+      (debugVariantOverride ?? variant) == '$entryCtaExperiment:b';
+
   /// How far a tribute moves the ♥ meter, by the server's size key. Coin
   /// PRICES are never a client concern — they arrive with every wallet
   /// read — but the meter is a client-side keepsake, so its mapping lives

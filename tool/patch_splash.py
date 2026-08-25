@@ -390,14 +390,19 @@ BEACON = r'''  <!-- Arrival/exit beacon.
       else localStorage.setItem('mythos_seen', String(Date.now()));
     } catch (e) {}
 
-    // A/B plumbing, dormant until an experiment is named here. To run one:
-    // set EXPERIMENT (e.g. 'card-copy-oct'), ship, and read the split on the
-    // visits page. Each device draws an arm once and keeps it across visits;
-    // every event then carries "name:arm". The app branches its UI on
-    // window.mythosVariant. Dormant sends nothing, so no column fills with a
-    // constant. At ~245 cards shown/day only bold variants are readable:
-    // 1.5%->3% needs ~13 days with two arms, 1.5%->2% ~97.
-    var EXPERIMENT = '';
+    // A/B plumbing. To run an experiment: name it here, ship, and read the
+    // split on the visits page. Each device draws an arm once and keeps it
+    // across visits; every event then carries "name:arm". The app branches
+    // its UI on window.mythosVariant. Empty sends nothing, so no column
+    // fills with a constant. At ~245 cards shown/day only bold variants are
+    // readable: 1.5%->3% needs ~13 days with two arms, 1.5%->2% ~97.
+    //
+    // LIVE since 2026-08-25: entry-cta — arm b gets the original "Tap to
+    // Talk" card instead of the coins promise; the tap still grants either
+    // way. AppConfig.entryCtaExperiment must equal this string (a Flutter
+    // test holds the copies together). To retire: empty this out everywhere
+    // this block exists — every device reverts to the coins card.
+    var EXPERIMENT = 'entry-cta-20260825';
     var VARIANT = '';
     try {
       if (EXPERIMENT) {
