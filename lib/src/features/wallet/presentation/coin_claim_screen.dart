@@ -22,6 +22,12 @@ class CoinClaimScreen extends StatefulWidget {
   /// The balance after the grants, for the line under the total.
   final int balance;
 
+  /// Days in a row the dawn offering has been claimed, server-counted. Only
+  /// drawn from 2 up, and only when this claim actually contains a daily —
+  /// a streak line on a claim with no dawn offering in it would be praising
+  /// yesterday.
+  final int streakDays;
+
   /// Dismisses this screen and lets the conversation begin.
   final VoidCallback onCollect;
 
@@ -30,6 +36,7 @@ class CoinClaimScreen extends StatefulWidget {
     required this.grants,
     required this.balance,
     required this.onCollect,
+    this.streakDays = 0,
   });
 
   @override
@@ -174,6 +181,20 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
     );
   }
 
+  /// 1st, 2nd, 3rd, 4th… — with the 11th/12th/13th exceptions, which every
+  /// hand-rolled ordinal forgets first.
+  static String _ordinal(int n) {
+    if (n % 100 >= 11 && n % 100 <= 13) return '${n}th';
+    switch (n % 10) {
+      case 1: return '${n}st';
+      case 2: return '${n}nd';
+      case 3: return '${n}rd';
+      default: return '${n}th';
+    }
+  }
+
+  int get streakDays => widget.streakDays;
+
   Widget _celebration({
     required Color gold,
     required bool still,
@@ -259,6 +280,29 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                     ],
                   ),
                 ),
+              // The streak, for the returner this tap paid a daily to: the
+              // reason to come back tomorrow is seeing today counted. Absent
+              // for first-timers (a "1st dawn in a row" is not a streak) and
+              // for claims that carry no daily.
+              if (streakDays >= 2 &&
+                  widget.grants.any((g) => g.reason == 'daily')) ...[
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.wb_twilight, size: 16, color: gold),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${_ordinal(streakDays)} dawn in a row',
+                      style: GoogleFonts.lato(
+                        color: gold,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 8),
               Text(
                 'Spend them on tributes your companions will answer for.',

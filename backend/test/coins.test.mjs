@@ -475,3 +475,30 @@ test('reading the wallet grants nothing and creates no wallet row', async () => 
     assert.deepEqual(claim.json.granted.map((g) => g.reason).sort(), ['daily', 'welcome']);
     assert.equal(claim.json.wallet.balance, 100);
 });
+
+test('a missed day resets the streak — three claims are not three in a row', async () => {
+    // The streak counts consecutive user-local dates back from the newest
+    // daily claim. Its refs ARE the dates (the grant's idempotency key), so
+    // the test writes them directly: 20th, 21st, then a gap, then the 23rd.
+    // A count would say 3; in a row it is 1.
+    const { env, db } = coinsEnv();
+    const grant = db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason, ref) VALUES (?, ?, 20, 'grant', 'daily', ?)"
+    );
+    grant.run('s1', USER, '2026-08-20');
+    grant.run('s2', USER, '2026-08-21');
+    grant.run('s3', USER, '2026-08-23');
+
+    const gapped = await callGet(env);
+    assert.equal(gapped.json.wallet.streak_days, 1,
+        'the gap on the 22nd broke the run; only the 23rd counts');
+
+    // Fill the gap and the whole run connects.
+    grant.run('s4', USER, '2026-08-22');
+    const filled = await callGet(env);
+    assert.equal(filled.json.wallet.streak_days, 4);
+
+    // A brand-new wallet has no streak, not a streak of zero-with-a-line.
+    const fresh = await callGet(env, { userId: 'user_1700000000999' });
+    assert.equal(fresh.json.wallet.streak_days, 0);
+});

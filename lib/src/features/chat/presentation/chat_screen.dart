@@ -4317,6 +4317,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             CoinClaimScreen(
               grants: _claimedGrants,
               balance: _claimBalance,
+              // The server recounts the streak on every claim, so the state
+              // the claim() just wrote already carries today's run.
+              streakDays:
+                  ref.read(coinWalletProvider).value?.streakDays ?? 0,
               onCollect: _dismissCoinClaim,
             ),
           if (_entryGateActive)

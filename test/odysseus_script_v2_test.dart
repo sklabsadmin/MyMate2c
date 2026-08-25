@@ -718,6 +718,55 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('the streak line appears for a returner, never for a first dawn',
+      (tester) async {
+    // "3rd dawn in a row" is the reason to come back tomorrow — but only when
+    // it is true. A first-timer shown "1st dawn in a row" is being told a
+    // streak exists when it does not, so below 2 the line must not render.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    Future<void> mountAndClaim(WidgetTester t) async {
+      await t.pumpWidget(
+        ProviderScope(
+          overrides: [
+            coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+          ),
+        ),
+      );
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 1));
+      await t.tap(find.text(_enterButtonCoins));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 2400));
+    }
+
+    // A first dawn: no streak line.
+    _SeededWalletNotifier.streakDays = 1;
+    await mountAndClaim(tester);
+    expect(find.textContaining('dawn in a row'), findsNothing,
+        reason: 'one day is not a streak');
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump(const Duration(seconds: 5));
+    await _teardown(tester);
+
+    // The third day running: the line appears, correctly ordinal.
+    _SeededWalletNotifier.streakDays = 3;
+    SharedPreferences.setMockInitialValues({});
+    await mountAndClaim(tester);
+    expect(find.text('3rd dawn in a row'), findsOneWidget);
+
+    _SeededWalletNotifier.streakDays = 0;
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump(const Duration(seconds: 5));
+    await _teardown(tester);
+  });
+
   testWidgets('a visitor with nothing to claim goes straight into the story',
       (tester) async {
     // The returning visitor, and the reason takeGrants is consume-once: a
@@ -1366,6 +1415,10 @@ class _RichWalletNotifier extends CoinWalletNotifier {
 /// triggers, and the only place the 100 is minted — mirroring the real
 /// grant-on-claim flow.
 class _SeededWalletNotifier extends CoinWalletNotifier {
+  /// The server-counted streak the claim writes into state — the knob the
+  /// streak-line tests turn. 0 for the fresh visitor.
+  static int streakDays = 0;
+
   @override
   Future<CoinWalletState?> build() async =>
       const CoinWalletState(enabled: true, balance: 0);
@@ -1375,7 +1428,8 @@ class _SeededWalletNotifier extends CoinWalletNotifier {
     const granted = [CoinGrant('welcome', 80), CoinGrant('daily', 20)];
     // Consumed at the tap: state carries the new balance but no pending
     // grants, so a rebuild cannot pay it a second time.
-    state = const AsyncData(CoinWalletState(enabled: true, balance: 100));
+    state = AsyncData(CoinWalletState(
+        enabled: true, balance: 100, streakDays: streakDays));
     return granted;
   }
 }

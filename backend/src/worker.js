@@ -2264,8 +2264,38 @@ async function coinWalletState(db, userId) {
         // The gifts already given that cannot be given again, so the sheet can
         // read "Worn" instead of a price.
         pendants: (worn || []).map((row) => row.ref),
+        // Days in a row the dawn offering has been claimed, for the claim
+        // screen's streak line. Counted from the ledger every read, so it can
+        // never disagree with what was actually claimed.
+        streak_days: await coinStreakDays(db, userId),
         recent: recent || [],
     };
+}
+
+/// How many days IN A ROW this person has claimed the dawn offering, counting
+/// back from their most recent claim. The daily grant's ref column holds the
+/// user's own local date (that is its idempotency key), so consecutive means
+/// consecutive calendar days as the user lived them — not server midnights.
+/// Computed here rather than in SQL because SQLite has no easy gaps-and-
+/// islands, and a person has at most one row per day: sixty rows covers two
+/// months of perfect attendance.
+async function coinStreakDays(db, userId) {
+    const { results } = await db.prepare(
+        `SELECT DISTINCT ref FROM coin_ledger
+         WHERE user_id = ? AND reason = 'daily' AND ref IS NOT NULL
+         ORDER BY ref DESC LIMIT 60`
+    ).bind(userId).all();
+    const dates = (results || []).map((r) => r.ref)
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    if (!dates.length) return 0;
+    let streak = 1;
+    for (let i = 1; i < dates.length; i++) {
+        const gap = Date.parse(dates[i - 1] + "T00:00:00Z")
+            - Date.parse(dates[i] + "T00:00:00Z");
+        if (gap === 86400000) streak += 1;
+        else break;
+    }
+    return streak;
 }
 
 /// Whether this person has already given this character a pendant — the one

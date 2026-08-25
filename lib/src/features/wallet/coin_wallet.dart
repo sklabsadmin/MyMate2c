@@ -64,6 +64,10 @@ class CoinWalletState {
   /// means "not read yet", and the earn list simply shows no figures.
   final Map<String, int> grantValues;
 
+  /// Days in a row the dawn offering has been claimed, counted by the server
+  /// from the ledger. 0 or 1 draws nothing; 2+ is a streak worth saying.
+  final int streakDays;
+
   /// What the latest sync or chat turn granted — consumed once by the UI for
   /// a toast (see [CoinWalletNotifier.takeGrants]), never persisted.
   final List<CoinGrant> lastGranted;
@@ -79,6 +83,7 @@ class CoinWalletState {
     this.recent = const [],
     this.pendants = const [],
     this.grantValues = const {},
+    this.streakDays = 0,
     this.lastGranted = const [],
   });
 
@@ -99,6 +104,7 @@ class CoinWalletState {
       recent: recent ?? this.recent,
       pendants: pendants ?? this.pendants,
       grantValues: grantValues,
+      streakDays: streakDays,
       lastGranted: lastGranted ?? this.lastGranted,
     );
   }
@@ -136,6 +142,7 @@ class CoinWalletState {
           ? (wallet['grants'] as Map)
               .map((k, v) => MapEntry(k.toString(), _asInt(v)))
           : const {},
+      streakDays: _asInt(wallet['streak_days']),
       lastGranted: parseGrants(data['granted']),
     );
   }
