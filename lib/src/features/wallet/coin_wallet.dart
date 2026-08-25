@@ -158,6 +158,46 @@ class CoinWalletState {
 class CoinWalletService {
   final Dio _dio = Dio();
 
+  /// Reads the wallet WITHOUT granting anything — GET /api/wallet, which the
+  /// worker answers with the current balance and creates no wallet row. This
+  /// is what runs at app start, so a passive visitor who never taps "Claim
+  /// Coins" is never granted the welcome/daily and never gets a wallet.
+  ///
+  /// The granting path is [sync] (POST /api/wallet/sync), and it fires only on
+  /// the claim tap — see CoinWalletNotifier.claim.
+  Future<CoinWalletState?> fetch() async {
+    final url = AppConfig.apiUrl('/api/wallet');
+    if (url.isEmpty) return null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = DeliveryLog.ensureUserId(prefs);
+      // GET signs over the empty body, the same shape the worker verifies.
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await _dio.get(
+        url,
+        options: Options(
+          headers: {
+            'x-signature': _sign('', timestamp),
+            'x-timestamp': timestamp,
+            'x-user-id': userId,
+          },
+          extra: {'withCredentials': true},
+          validateStatus: (status) => status != null && status < 500,
+        ),
+      );
+      final data = res.data;
+      if (res.statusCode != 200 || data is! Map) return null;
+      return CoinWalletState.fromResponse(Map<String, dynamic>.from(data));
+    } catch (e) {
+      if (kDebugMode) debugPrint('Coin fetch failed: $e');
+      return null;
+    }
+  }
+
+  /// GRANTS the welcome/daily and returns the new state — POST
+  /// /api/wallet/sync. Call this ONLY when the user has asked for their coins
+  /// (the claim tap); calling it at app load is what handed every passive
+  /// arrival a 100-coin wallet.
   Future<CoinWalletState?> sync() async {
     final url = AppConfig.apiUrl('/api/wallet/sync');
     if (url.isEmpty) return null;
@@ -252,20 +292,38 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
     if (!AppConfig.coinsUiEnabled) return null;
     final cached = await _readCache();
     // Deliberately un-awaited: the cached paint must not wait on the network.
+    // READ-ONLY: app start reads the wallet, it does not grant. Granting only
+    // happens when the visitor taps "Claim Coins" — see [claim].
     _refresh();
     return cached;
   }
 
+  /// Reads the current wallet without granting anything. Used at app start and
+  /// wherever the balance just needs refreshing (e.g. after a profile save).
   Future<void> _refresh() async {
-    final fresh = await ref.read(coinWalletServiceProvider).sync();
+    final fresh = await ref.read(coinWalletServiceProvider).fetch();
     if (fresh == null) return; // keep whatever we had
     state = AsyncData(fresh);
     await _writeCache(fresh);
   }
 
   /// Public nudge for moments identity changes under us (returning from
-  /// Google sign-in) or the user asks to see the latest.
+  /// Google sign-in) or the user asks to see the latest. Read-only.
   Future<void> refresh() => _refresh();
+
+  /// Grants the welcome/daily NOW and returns what landed — the claim tap, and
+  /// the only place granting happens. A returning visitor with nothing pending
+  /// gets an empty list (and no claim screen); a fresh visitor gets their
+  /// welcome + daily. Never throws: on a network failure it returns empty and
+  /// the visitor simply enters the chat without a claim screen, to try again
+  /// next time rather than be stranded on the card.
+  Future<List<CoinGrant>> claim() async {
+    final fresh = await ref.read(coinWalletServiceProvider).sync();
+    if (fresh == null || !fresh.enabled) return const [];
+    state = AsyncData(fresh);
+    await _writeCache(fresh);
+    return fresh.lastGranted;
+  }
 
   /// Applies the `wallet` block that rides on every /api/chat response, so
   /// the chip moves with the conversation without a second request.

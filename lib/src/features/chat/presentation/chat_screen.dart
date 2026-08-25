@@ -399,6 +399,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// A reward photograph waiting for the current reply to finish speaking.
   String? _pendingGiftReward;
 
+  /// True while the claim grant is in flight, so a second tap on the entry
+  /// card during the round trip cannot fire a second entry_tap or a second
+  /// (idempotent, but wasteful) grant.
+  bool _claimInFlight = false;
+
   /// Successful AI replies this signed-out user has received from this
   /// character (persisted, per character). Drives the free-reply gate.
   int _replyCount = 0;
@@ -626,6 +631,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // characters, and a claim left standing would cover the next one's chat.
     _claimedGrants = const [];
     _claimResumeOpening = false;
+    _claimInFlight = false;
   }
 
   /// Sends [ChatScreen.initialMessage]: the opener tapped on a profile card's
@@ -931,9 +937,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// would have the character introduce himself after being asked something
   /// specific, and would declare a turn's worth of bubbles to the delivery log
   /// that the send is about to abandon anyway.
-  void _enterChat({String source = 'button', bool startOpening = true}) {
-    if (!_entryGateActive) return;
-    setState(() => _entryGateActive = false);
+  Future<void> _enterChat({String source = 'button', bool startOpening = true}) async {
+    if (!_entryGateActive || _claimInFlight) return;
     logFunnelEvent(
       'entry_tap',
       detail: '${widget.characterId}#$source',
@@ -944,16 +949,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // they simply resume the conversation from where the old bundle left it.
     final shouldOpen = startOpening && _entryGateStartsOpening;
 
-    // The button says "Tap to Claim Coins", so this tap is where the claim
-    // has to land — and on a campaign arrival it is the only place it can:
-    // the dashboard, whose listener normally toasts a grant, was never built.
-    // takeGrants is consume-once, so a visitor who already saw that toast
-    // gets no second payout, and a returning visitor with nothing pending
-    // never sees this screen at all.
-    if (AppConfig.coinsUiEnabled) {
-      final claimed = ref.read(coinWalletProvider.notifier).takeGrants();
+    // THE GRANT HAPPENS HERE, on the tap — never at app load. Gated on the
+    // SAME wallet-enabled truth as the button label, so this only claims when
+    // the button actually said "Tap to Claim Coins"; when it said "Tap to
+    // Talk" (coins off, or the wallet not yet read) the tap grants nothing.
+    // claim() calls POST /api/wallet/sync now — app start only ever did a
+    // read-only fetch. A fresh visitor gets their coins and the claim screen;
+    // a returning visitor with nothing pending gets an empty list and drops
+    // straight into the conversation. Awaited so the grant is real before we
+    // decide whether to raise the claim screen; the entry card stays up for
+    // the brief round trip rather than flashing an empty screen.
+    if (AppConfig.coinsUiEnabled &&
+        (ref.read(coinWalletProvider).value?.enabled ?? false)) {
+      _claimInFlight = true;
+      List<CoinGrant> claimed;
+      try {
+        claimed = await ref.read(coinWalletProvider.notifier).claim();
+      } finally {
+        _claimInFlight = false;
+      }
+      if (!mounted) return;
       if (claimed.isNotEmpty) {
         setState(() {
+          _entryGateActive = false;
           _claimedGrants = claimed;
           _claimBalance = ref.read(coinWalletProvider).value?.balance ?? 0;
           _claimResumeOpening = shouldOpen;
@@ -972,6 +990,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       }
     }
 
+    if (!mounted) return;
+    setState(() => _entryGateActive = false);
     if (!shouldOpen) return;
     // Only now does the character have an audience, so only now is anything
     // declared to the delivery log or spoken.

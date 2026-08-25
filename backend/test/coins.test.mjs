@@ -80,6 +80,16 @@ async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.'
     return { status: res.status, json: JSON.parse(text) };
 }
 
+async function callGet(env, { userId = USER } = {}) {
+    const worker = await loadWorker();
+    const request = new Request('https://mythos.test/api/wallet', {
+        method: 'GET',
+        headers: { 'x-user-id': userId },
+    });
+    const res = await worker.fetch(request, env, { waitUntil() {}, passThroughOnException() {} });
+    return { status: res.status, json: JSON.parse(await res.text()) };
+}
+
 async function callSync(env, { userId = USER, localDate } = {}) {
     const worker = await loadWorker();
     const request = new Request('https://mythos.test/api/wallet/sync', {
@@ -441,4 +451,27 @@ test('a gift the catalogue does not sell is refused, not silently free', async (
     assert.equal(res.status, 400);
     assert.equal(rowCount(db, "reason = 'gift'"), 0);
     assert.equal(upstreamCalls.length, 0);
+});
+
+test('reading the wallet grants nothing and creates no wallet row', async () => {
+    // The bug this fixes: the client used to POST /api/wallet/sync at app load,
+    // which minted the welcome+daily for every passive arrival. The read-only
+    // GET the client now uses at startup must NOT grant, and must not even
+    // create a wallet row for someone who has done nothing but load the app.
+    const { env, db } = coinsEnv();
+    const res = await callGet(env);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.enabled, true);
+    assert.deepEqual(res.json.granted, []);
+    assert.equal(res.json.wallet.balance, 0);
+    assert.equal(rowCount(db, '1=1'), 0, 'no ledger row for a mere read');
+    assert.equal(
+        db.prepare('SELECT COUNT(*) AS n FROM coin_wallets').get().n, 0,
+        'no wallet row for a mere read',
+    );
+
+    // And the granting path still works when the tap does call it.
+    const claim = await callSync(env, { localDate: '2026-08-22' });
+    assert.deepEqual(claim.json.granted.map((g) => g.reason).sort(), ['daily', 'welcome']);
+    assert.equal(claim.json.wallet.balance, 100);
 });

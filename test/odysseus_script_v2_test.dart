@@ -1354,15 +1354,30 @@ class _RichWalletNotifier extends CoinWalletNotifier {
         tributePrices: const {'roses': 50, 'ambrosia': 150, 'pendant': 500},
         pendants: pendants,
       );
+
+  // A funded, returning wallet has nothing left to claim, so the tap goes
+  // straight into the story.
+  @override
+  Future<List<CoinGrant>> claim() async => const [];
 }
 
+/// A fresh visitor: enabled, but empty until they TAP. build() is the
+/// read-only app-load state (balance 0, no grants); claim() is what the tap
+/// triggers, and the only place the 100 is minted — mirroring the real
+/// grant-on-claim flow.
 class _SeededWalletNotifier extends CoinWalletNotifier {
   @override
-  Future<CoinWalletState?> build() async => const CoinWalletState(
-        enabled: true,
-        balance: 100,
-        lastGranted: [CoinGrant('welcome', 80), CoinGrant('daily', 20)],
-      );
+  Future<CoinWalletState?> build() async =>
+      const CoinWalletState(enabled: true, balance: 0);
+
+  @override
+  Future<List<CoinGrant>> claim() async {
+    const granted = [CoinGrant('welcome', 80), CoinGrant('daily', 20)];
+    // Consumed at the tap: state carries the new balance but no pending
+    // grants, so a rebuild cannot pay it a second time.
+    state = const AsyncData(CoinWalletState(enabled: true, balance: 100));
+    return granted;
+  }
 }
 
 
