@@ -11,6 +11,7 @@ import '../../../core/models/user_profile.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/profile_sync_service.dart';
 import '../../../core/services/storage_service.dart';
+import '../../wallet/coin_wallet.dart';
 
 /// "My Profile" — the player's own details, reached from the bottom nav.
 ///
@@ -227,6 +228,11 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     // Signed in: push to the worker, keyed server-side to the Google account.
     final synced = await ref.read(profileSyncServiceProvider).push(_current);
     if (!mounted) return;
+    if (synced && AppConfig.coinsUiEnabled) {
+      // The save may have just paid the profile bonus; the refresh is how the
+      // chip and the grant toast find out without a page reload.
+      ref.read(coinWalletProvider.notifier).refresh();
+    }
     _toast(synced
         ? 'Profile saved to your account'
         : 'Saved on this device — could not reach your account');

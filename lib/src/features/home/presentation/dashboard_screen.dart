@@ -9,6 +9,9 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
+import '../../wallet/coin_wallet.dart';
+import '../../wallet/presentation/coin_chip.dart';
+import '../../wallet/presentation/coins_sheet.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -182,6 +185,29 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final theme = Theme.of(context);
     final score = ref.watch(userScoreProvider);
     final level = 1 + (score ~/ 10);
+    // Coins, when the server says they exist. While the flag is off (or the
+    // wallet is still unknown) coinsLive stays false and the header keeps the
+    // ♥ Level column it has always had — the chip replaces it, never crowds
+    // it, because this row already overflowed at 360-375pt once.
+    final coinWallet = AppConfig.coinsUiEnabled
+        ? ref.watch(coinWalletProvider).value
+        : null;
+    final coinsLive = coinWallet != null && coinWallet.enabled;
+    // The "+30 Welcome gift · +10 Dawn offering" moment, consumed exactly
+    // once — takeGrants clears the pending list so a rebuild cannot repeat it.
+    ref.listen(coinWalletProvider, (previous, next) {
+      if ((next.value?.lastGranted ?? const []).isEmpty) return;
+      final taken = ref.read(coinWalletProvider.notifier).takeGrants();
+      if (taken.isEmpty || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF2D1035),
+        content: Text(
+          taken.map((g) => '+${g.delta} ${g.label}').join('  ·  '),
+          style: const TextStyle(color: Colors.white),
+        ),
+      ));
+    });
 
     return Scaffold(
       // Wraps the entire page, not just the grid, so the wheel works over the
@@ -244,7 +270,21 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Column(
+                            // The coin chip REPLACES the ♥ Level column
+                            // (decision 2026-08-20): Level was a message
+                            // counter with a mock bar, and this row cannot
+                            // afford both. The column below survives as the
+                            // fallback whenever coins are off or unknown, so
+                            // flipping COIN_LEDGER off restores the header
+                            // exactly as it was.
+                            if (coinsLive)
+                              CoinChip(
+                                balance: coinWallet!.balance,
+                                onTap: () =>
+                                    showCoinsSheet(context, ref: ref),
+                              )
+                            else
+                              Column(
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Row(

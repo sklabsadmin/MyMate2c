@@ -137,6 +137,48 @@ test('a retried receipt completes the row and never moves a time already set', a
     assert.equal(count, 1);
 });
 
+test('client context is filled in by a later flush and never overwritten', async () => {
+    const { env, db } = envWith();
+
+    // The session's first flush, sent before the client knew its own version —
+    // which is what most first flushes looked like live: 56% of rows had no
+    // app_version because PackageInfo had not resolved when the opening's
+    // intent went out, and the insert was the only write that set it.
+    await flush(env, [receipt({ appVersion: undefined, locale: undefined })]);
+    let row = rowFor(db, 'b1');
+    assert.equal(row.app_version, null);
+    assert.equal(row.locale, null);
+
+    // The render stamp for the same bubble, now carrying the environment.
+    await flush(env, [receipt({
+        renderedAt: '2026-08-13T09:00:01.000Z',
+        appVersion: '1.7.1+68',
+        locale: 'pt-PT',
+        connectionType: '4g',
+        viewportW: 390,
+        viewportH: 744,
+    })]);
+    row = rowFor(db, 'b1');
+    assert.equal(row.app_version, '1.7.1+68');
+    assert.equal(row.locale, 'pt-PT');
+    assert.equal(row.connection_type, '4g');
+    assert.equal(row.viewport_w, 390);
+    assert.equal(row.viewport_h, 744);
+
+    // A third flush claiming a different context does not move what is set:
+    // the first answer is the one nearest the moment the bubble was shown.
+    await flush(env, [receipt({
+        seenAt: '2026-08-13T09:00:02.000Z',
+        appVersion: '9.9.9+999',
+        locale: 'xx',
+        viewportH: 1,
+    })]);
+    row = rowFor(db, 'b1');
+    assert.equal(row.app_version, '1.7.1+68');
+    assert.equal(row.locale, 'pt-PT');
+    assert.equal(row.viewport_h, 744);
+});
+
 test('the worst queue delay survives a later, faster flush', async () => {
     const { env, db } = envWith();
 

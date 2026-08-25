@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../wallet/coin_wallet.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
 import '../../../core/services/storage_service.dart';
 
@@ -297,6 +298,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   'Keep the same companion identity across browsers',
                   'Protect your message history if browser storage is cleared',
                   'Make future premium access easier to recognize',
+                  if (AppConfig.coinsUiEnabled &&
+                      (ref.read(coinWalletProvider).value?.enabled ?? false))
+                    'Carry your Coins with you (+100 when you link)',
                 ]),
 
               const SizedBox(height: 30),

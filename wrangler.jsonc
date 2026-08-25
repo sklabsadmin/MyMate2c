@@ -95,6 +95,23 @@
     // entries. Acking discards on purpose; the endpoint's 503 still means a
     // write that failed and must be retried.
     "DELIVERY_LOGGING": "true",
+    // Mythos Coins (the wallet: /api/wallet*, the gift debit and reply
+    // grant inside /api/chat, and the anon->account wallet merge on sign-in).
+    // Default-off idiom — ONLY the exact string "true" enables it — because
+    // the feature is rolling out; once it is the normal state this flips to
+    // the DELIVERY_LOGGING-style exact-"false" off switch.
+    //
+    // Off does not refuse: /api/wallet* answers { enabled: false } and a chat
+    // turn carrying a gift goes through as plain chat, marked the same way.
+    // COIN_ALLOWLIST (optional, comma-separated user ids; the entry
+    // "synthetic" admits x-synthetic-test requests) turns it on for named
+    // users while this stays "false" — the staff soak before the flip.
+    "COIN_LEDGER": "true",
+    // Persona prompt tuning (2026-08-22, from 10 sessions of Hercules
+    // testing): shorter replies, and stop ending every turn on a question.
+    // Default-on; set to the exact string "false" to restore the previous
+    // wording for comparison. Affects every OpenAI-backed character.
+    "PERSONA_TIGHTEN": "true",
     // Fallback landing origin after an Instagram/Google auth round trip, used
     // only when the caller did not supply returnTo — which the app always does,
     // so this rarely fires. Not load-bearing for chat or logging.

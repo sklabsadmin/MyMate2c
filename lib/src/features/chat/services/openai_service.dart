@@ -29,6 +29,12 @@ class OpenAIService {
   /// so matching on content afterwards would be guesswork.
   String? lastLogId;
 
+  /// The `wallet` block the worker attached to the most recent response, or
+  /// null when there was none (feature off never sends one to draw; a network
+  /// failure sends nothing at all). Read by the chat screen and forwarded to
+  /// the coin provider — this service stays a courier, not a wallet.
+  Map<String, dynamic>? lastWallet;
+
   /// Why the most recent [sendMessage] failed, or null if it succeeded.
   ///
   /// "network" is the important one: the request never reached the worker, so
@@ -102,10 +108,11 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
     _conversationHistory.add({"role": "assistant", "content": trimmed});
   }
 
-  Future<String> sendMessage(String message) async {
+  Future<String> sendMessage(String message, {Map<String, dynamic>? gift}) async {
     lastSendSucceeded = false;
     lastFailureReason = null;
     lastLogId = null;
+    lastWallet = null;
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
@@ -125,6 +132,9 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       final requestBody = jsonEncode({
         "messages": _conversationHistory,
         // Model and params are enforced by Backend, but we send structure
+        // A tribute rides on an ordinary turn; the worker prices it (the
+        // client only ever names the size) and debits before calling anyone.
+        if (gift != null) "gift": gift,
       });
 
       // Generate HMAC Headers
@@ -178,6 +188,9 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         if (data is Map<String, dynamic> && data['log_id'] is String) {
           lastLogId = data['log_id'] as String;
         }
+        if (data is Map<String, dynamic> && data['wallet'] is Map) {
+          lastWallet = Map<String, dynamic>.from(data['wallet'] as Map);
+        }
         final choices = data is Map<String, dynamic> ? data['choices'] : null;
         if (choices is! List || choices.isEmpty) {
           lastFailureReason = 'empty_response';
@@ -216,6 +229,21 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       } else if (response.statusCode == 429) {
         lastFailureReason = 'rate_limited';
         return "I need a moment, darling. We've been talking so fast!";
+      } else if (response.statusCode == 402) {
+        // The tribute could not be afforded: the worker debited nothing and
+        // called nobody. Not a reply and not the character's fault — the UI
+        // reads lastWallet and explains. The user turn is rolled back out of
+        // the model's history because, upstream, it never happened.
+        lastFailureReason = 'insufficient_coins';
+        final data = response.data;
+        if (data is Map<String, dynamic> && data['wallet'] is Map) {
+          lastWallet = Map<String, dynamic>.from(data['wallet'] as Map);
+        }
+        if (_conversationHistory.isNotEmpty &&
+            _conversationHistory.last['role'] == 'user') {
+          _conversationHistory.removeLast();
+        }
+        return "";
       } else {
         lastFailureReason = 'http_${response.statusCode}';
         return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(response.data));

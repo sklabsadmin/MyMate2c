@@ -19,6 +19,7 @@ import 'dart:convert';
 
 import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
 import 'package:ai_boyfriend_chat/src/features/chat/presentation/chat_screen.dart';
+import 'package:ai_boyfriend_chat/src/features/wallet/coin_wallet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -42,7 +43,11 @@ const String _p12Question = 'Where should we begin?';
 
 /// The entry card's button, and the title it is built from — restated here
 /// rather than read from the widget for the same reason as the script lines.
+// The card's button is gated on coins being live: 'Tap to Talk' in a dark
+// build (the default in tests, which enable no wallet), 'Tap to Claim Coins'
+// only when a test seeds an enabled wallet.
 const String _enterButton = 'Tap to Talk';
+const String _enterButtonCoins = 'Tap to Claim Coins';
 const String _characterTitle = 'King of Ithaca';
 
 /// Quick replies for the first two pauses, and one of the cold-safe sets the
@@ -205,6 +210,7 @@ void main() {
   });
 
   _entryGateTests();
+  _giftSheetTests();
 
   testWidgets('plays all twelve turns, in order, into an empty chat',
       (tester) async {
@@ -598,6 +604,134 @@ void main() {
 /// The 1.7.1 entry gate — the card over the chat with one button on it.
 
 void _entryGateTests() {
+  testWidgets('the claim screen pays out once, and holds the story until it is collected',
+      (tester) async {
+    // The button says "Tap to Claim Coins", so the tap owes the visitor a
+    // payout — and on a campaign arrival this screen is the only place it can
+    // be made: the dashboard, whose listener normally toasts a grant, is never
+    // built. The wallet is seeded the way an app-load sync leaves a fresh
+    // visitor, with the grants still pending.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing,
+        reason: 'nothing is claimed before the tap that claims it');
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(ChatScreen)));
+    await tester.tap(find.text(_enterButtonCoins));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: 'the screen is up on the very frame the card goes away');
+
+    // The purse fills over ~2.2s and the figure counts with it, so the total
+    // is only true once it has finished — asserting it on the first frame
+    // reads "+0" and would be pinning the animation's start, not the payout.
+    await tester.pump(const Duration(milliseconds: 2400));
+
+    // What landed, itemised, with the total the headline promises.
+    expect(find.text('+100'), findsOneWidget,
+        reason: 'the headline is the sum the entry card promised');
+    expect(find.text('Welcome gift'), findsOneWidget);
+    expect(find.text('Dawn offering'), findsOneWidget);
+    expect(container.read(coinWalletProvider).value?.lastGranted, isEmpty,
+        reason: 'consumed at the tap — a rebuild cannot pay it a second time');
+
+    // Two minutes of virtual time with the claim up. The same rule the entry
+    // card is built on: not one line may be said to a screen nobody is
+    // looking at. Without the deferral in _enterChat the whole opening plays
+    // out behind this and is gone by the time it is dismissed.
+    await _play(tester, limit: const Duration(seconds: 120));
+    expect(await _delivered(), isEmpty,
+        reason: 'the opening must wait behind the claim screen');
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: 'and nothing dismisses it but the button');
+
+    // Collecting resumes exactly what the entry tap deferred.
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty,
+        reason: 'the conversation begins when the coins are collected');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('the claim screen fits the shortest viewport that reaches us',
+      (tester) async {
+    // 360x560 is the small end of the in-app browser band the entry card
+    // already has a #fold=below flag for. This screen is one Column of fixed
+    // content, so it cannot scroll out of trouble the way that card can: if
+    // it overflows, the button goes off the bottom and the visitor is stuck
+    // on a screen whose only exit is the one control they cannot reach.
+    tester.view.physicalSize = const Size(360, 560) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_SeededWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.tap(find.text(_enterButtonCoins), warnIfMissed: false);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget);
+    expect(tester.takeException(), isNull,
+        reason: 'a RenderFlex overflow here is a screen with no way out');
+
+    // The button is not merely in the tree — it is on the glass, above the
+    // bottom edge, which is the part an overflow would break.
+    final button = tester.getRect(find.text('Collect and begin'));
+    expect(button.bottom, lessThanOrEqualTo(560));
+    expect(button.top, greaterThanOrEqualTo(0));
+
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a visitor with nothing to claim goes straight into the story',
+      (tester) async {
+    // The returning visitor, and the reason takeGrants is consume-once: a
+    // claim screen showing "+0" would be worse than no screen at all.
+    await _mountChat(tester);
+
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing);
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty,
+        reason: 'nothing should have been deferred');
+
+    await _teardown(tester);
+  });
+
   testWidgets('holds the whole conversation behind one button', (tester) async {
     await _mountChat(tester, enterChat: false);
 
@@ -1106,9 +1240,12 @@ void _entryGateTests() {
         findsOneWidget);
     expect(find.byIcon(Icons.touch_app_outlined), findsWidgets);
 
-    // The invitation, split at its comma, and the button.
+    // No wallet is enabled here, so the card is in its dark-build form: the
+    // original per-character invitation and 'Tap to Talk'. The coins copy is
+    // covered by the claim-payout test, which seeds an enabled wallet.
     expect(
-      find.text('Hercules would like to talk to you,\nand understand your journey'),
+      find.text('Hercules would like to talk to you,\n'
+          'and understand your journey'),
       findsOneWidget,
     );
     expect(find.text(_enterButton), findsOneWidget);
@@ -1199,3 +1336,144 @@ const List<String> _idlePrompts = [
   "No rush. Say something whenever you're ready.",
   "Where did you get to?",
 ];
+
+
+/// A wallet the way an app-load sync leaves it for a fresh visitor: enabled,
+/// funded, with the welcome and dawn grants still waiting for their toast.
+/// No network — overriding build() replaces the real notifier's refresh.
+/// A funded wallet with the catalogue priced, for the gift-sheet tests. The
+/// pendant list is what makes a row read "Worn", so it is the knob these
+/// tests turn.
+class _RichWalletNotifier extends CoinWalletNotifier {
+  static List<String> pendants = const [];
+
+  @override
+  Future<CoinWalletState?> build() async => CoinWalletState(
+        enabled: true,
+        balance: 600,
+        tributePrices: const {'roses': 50, 'ambrosia': 150, 'pendant': 500},
+        pendants: pendants,
+      );
+}
+
+class _SeededWalletNotifier extends CoinWalletNotifier {
+  @override
+  Future<CoinWalletState?> build() async => const CoinWalletState(
+        enabled: true,
+        balance: 100,
+        lastGranted: [CoinGrant('welcome', 80), CoinGrant('daily', 20)],
+      );
+}
+
+
+void _giftSheetTests() {
+  Future<void> _mountFunded(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [coinWalletProvider.overrideWith(_RichWalletNotifier.new)],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    // No pending grants on this wallet, so the entry tap goes straight in.
+    await tester.tap(find.text(_enterButtonCoins));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+  }
+
+  testWidgets('the gift button sits in the strip and opens the catalogue',
+      (tester) async {
+    // Before this button existed the only way to spend was the coin chip in
+    // the app bar — findable if you already knew, invisible if you did not.
+    _RichWalletNotifier.pendants = const [];
+    await _mountFunded(tester);
+
+    expect(find.text('Gift'), findsOneWidget,
+        reason: 'the way in has to be in the conversation, not just the bar');
+
+    await tester.tap(find.text('Gift'));
+    // Explicit pumps, not pumpAndSettle: the composer's glow never stops
+    // animating, so settling never happens on this screen.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // The catalogue, at the server's prices — the client never invents one.
+    expect(find.text('Roses'), findsOneWidget);
+    expect(find.text('Ambrosia'), findsOneWidget);
+    expect(find.text('Pendant'), findsOneWidget);
+    expect(find.text('50'), findsOneWidget);
+    expect(find.text('150'), findsOneWidget);
+    expect(find.text('500'), findsOneWidget);
+    expect(find.text('Worn'), findsNothing);
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a given gift is the picture alone — the words go to the model only',
+      (tester) async {
+    // Two things have to be true at once, and they pull in opposite
+    // directions: the stage direction must still travel (it is what the
+    // character is answering, and _loadHistory rebuilds the model's view of
+    // the conversation out of these stored messages), but it must not be
+    // drawn. Deleting the text to hide it would silently cost the model the
+    // fact that anything was given.
+    _RichWalletNotifier.pendants = const [];
+    await _mountFunded(tester);
+
+    await tester.tap(find.text('Gift'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Roses'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.image(const AssetImage('assets/images/gift_roses.png')),
+        findsWidgets, reason: 'the roses themselves are the message');
+    expect(find.textContaining('gives roses'), findsNothing,
+        reason: 'the stage direction is for the model, not the screen');
+
+    // …and it is still on the message, which is what the model and a reopened
+    // conversation both read.
+    final stored = await SharedPreferences.getInstance();
+    final raw = stored.getStringList(_historyKey) ?? const [];
+    final gifts = raw
+        .map((s) => jsonDecode(s) as Map<String, dynamic>)
+        .where((m) => m['giftAsset'] != null)
+        .toList();
+    expect(gifts, hasLength(1));
+    expect(gifts.single['text'], contains('gives roses'));
+    expect(gifts.single['giftAsset'], 'assets/images/gift_roses.png');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a pendant already given reads Worn, and cannot be bought again',
+      (tester) async {
+    // 500 coins is a lot to spend twice on the same neck.
+    _RichWalletNotifier.pendants = const ['odysseus'];
+    await _mountFunded(tester);
+
+    await tester.tap(find.text('Gift'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Worn'), findsOneWidget);
+    expect(find.text('500'), findsNothing,
+        reason: 'a worn pendant shows no price, because it has no price left');
+    expect(find.text('Worn since you gave it.'), findsOneWidget);
+    // The other two are unaffected — they are consumable.
+    expect(find.text('50'), findsOneWidget);
+    expect(find.text('150'), findsOneWidget);
+
+    _RichWalletNotifier.pendants = const [];
+    await _teardown(tester);
+  });
+}

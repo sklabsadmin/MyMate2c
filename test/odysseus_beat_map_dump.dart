@@ -79,7 +79,7 @@ void main() {
     // Everything below is therefore measured from the tap, not from mount. That
     // is the honest zero now: the visitor asked for this.
     if (AppConfig.requireTapToEnter) {
-      final enter = find.text('Tap to Talk');
+      final enter = find.text('Tap to Claim Coins');
       expect(enter, findsOneWidget,
           reason: 'the entry card should be up on a fresh conversation');
       await tester.tap(enter);
