@@ -105,7 +105,10 @@ for (const r of rows) {
 }
 
 // TH is the developer's own country, excluded the same way the admin pages do.
-const all = [...visits.values()].filter((v) => v.ev.get('arrive')?.[0]?.country !== 'TH');
+// TH is the developer's home; is_dev is the developer anywhere else —
+// the ?dev=1 marker rides every event, so one flagged row damns the visit.
+const all = [...visits.values()].filter((v) => v.ev.get('arrive')?.[0]?.country !== 'TH'
+    && ![...v.ev.values()].flat().some((r) => r.is_dev === 1));
 const has = (v, e) => v.ev.has(e);
 for (const v of all) {
     const arrive = v.ev.get('arrive')?.[0];

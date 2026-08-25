@@ -113,8 +113,10 @@ for (const r of sv.rows) {
     list.push(r);
 }
 
-// TH is the developer's own country, excluded the same way prod_eval does.
-const all = [...visits.values()].filter((v) => v.ev.get('arrive')?.[0]?.country !== 'TH');
+// TH is the developer's home; is_dev is the developer anywhere else —
+// the ?dev=1 marker rides every event, so one flagged row damns the visit.
+const all = [...visits.values()].filter((v) => v.ev.get('arrive')?.[0]?.country !== 'TH'
+    && ![...v.ev.values()].flat().some((r) => r.is_dev === 1));
 const has = (v, e) => v.ev.has(e);
 for (const v of all) {
     const arrive = v.ev.get('arrive')?.[0];

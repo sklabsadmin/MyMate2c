@@ -352,6 +352,24 @@
       else localStorage.setItem('mythos_seen', String(Date.now()));
     } catch (e) {}
 
+    // The developer's own visits, marked so no funnel counts them again.
+    // Open any page once with ?dev=1 and this device is marked for good
+    // (?dev=0 unmarks); the bit rides every event as isDev. Country-based
+    // exclusion missed exactly the visits that mattered — testing through a
+    // VPN or from a desktop reads as a real foreign visitor, and one such
+    // Mac session spent a day being read as the coins card's first paid
+    // acceptor. The fallback keeps the CURRENT visit marked even where
+    // localStorage throws (private mode): better one honest visit than none.
+    var IS_DEV = 0;
+    try {
+      var devParam = new URLSearchParams(location.search).get('dev');
+      if (devParam === '1') localStorage.setItem('mythos_dev', '1');
+      if (devParam === '0') localStorage.removeItem('mythos_dev');
+      if (devParam === '1' || localStorage.getItem('mythos_dev')) IS_DEV = 1;
+    } catch (e) {
+      if (/[?&]dev=1(&|$)/.test(location.search)) IS_DEV = 1;
+    }
+
     // A/B plumbing, dormant until an experiment is named here. To run one:
     // set EXPERIMENT (e.g. 'card-copy-oct'), ship, and read the split on the
     // visits page. Each device draws an arm once and keeps it across visits;
@@ -384,6 +402,7 @@
         visibleMs: currentVisibleMs(),
         touchCount: touchCount,
         isReturn: IS_RETURN,
+        isDev: IS_DEV || undefined,
         variant: EXPERIMENT && VARIANT ? EXPERIMENT + ':' + VARIANT : undefined
       }, extra || {}));
       try {

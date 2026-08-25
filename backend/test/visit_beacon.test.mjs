@@ -162,3 +162,39 @@ test('the claim screen events are stored as themselves, not counted as arrivals'
         'not one of them may land as an arrival',
     );
 });
+
+test('the dev marker lands, and junk does not fake it', async () => {
+    const { env, db } = testEnv();
+    await beacon(env, { visitId: 'v_dev', event: 'arrive', path: '/', isDev: 1 });
+    assert.equal(rowFor(db, 'v_dev').is_dev, 1);
+    await beacon(env, { visitId: 'v_notdev', event: 'arrive', path: '/' });
+    assert.equal(rowFor(db, 'v_notdev').is_dev, null);
+    // Unauthenticated endpoint: only the exact bit counts as the developer.
+    await beacon(env, { visitId: 'v_devjunk', event: 'arrive', path: '/', isDev: 'yes' });
+    assert.equal(rowFor(db, 'v_devjunk').is_dev, null);
+});
+
+test('dev visits vanish from every aggregate but stay in the raw export', async () => {
+    const { env } = testEnv();
+    // One real visit, one dev visit, both shown the card; only the real one
+    // may reach any funnel. The dev visit taps, which would otherwise be the
+    // most analysed row in the table — a Mac test session once spent a day
+    // being read as the coins card's first paid acceptor.
+    for (const [vid, dev] of [['v_real9', undefined], ['v_dev9', 1]]) {
+        await beacon(env, { visitId: vid, event: 'arrive', path: '/c/zeus', isDev: dev });
+        await beacon(env, { visitId: vid, event: 'entry_shown', path: '/c/zeus', detail: 'zeus#fold=fit', isDev: dev });
+    }
+    await beacon(env, { visitId: 'v_dev9', event: 'entry_tap', path: '/c/zeus', detail: 'zeus#button', isDev: 1 });
+
+    const { adminFetch } = await import('./harness.mjs');
+    const visits = await adminFetch(env, '/api/admin/visits?days=30');
+    assert.ok(!visits.json.recent.some((r) => r.visit_id === 'v_dev9'),
+        'the dev visit must not appear in recent arrivals');
+    assert.ok(visits.json.recent.some((r) => r.visit_id === 'v_real9'));
+    const funnelTapped = visits.json.funnel.reduce((n, r) => n + (r.entry_tap || 0), 0);
+    assert.equal(funnelTapped, 0, 'the dev tap must not reach the funnel');
+
+    // The raw dump keeps everything: it is the record, not a report.
+    const dump = await adminFetch(env, '/api/admin/export-all?hours=24');
+    assert.ok(dump.json.tables.site_visits.rows.some((r) => r.visit_id === 'v_dev9'));
+});
