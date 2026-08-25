@@ -64,3 +64,35 @@ test('the daily coins funnel tags the developer\'s own traffic as test, not real
   assert.equal(test.reduce((s, r) => s + r.opened, 0), 2, 'TH and direct are test');
   assert.equal(test.reduce((s, r) => s + r.collected, 0), 1, 'the TH Collect is test');
 });
+
+test('the campaign funnel groups on utm_campaign and buckets the developer as test', async () => {
+  const db = freshDb();
+  const env = { CHAT_LOGS_DB: d1(db), ADMIN_TOKEN };
+  const ins = db.prepare(
+    "INSERT INTO site_visits (id, visit_id, event, created_at, path, query, source, country) VALUES (?, ?, ?, datetime('now'), '/c/hercules', ?, ?, ?)"
+  );
+  let n = 0;
+  const visit = (vid, query, source, country, events) => {
+    for (const e of events) ins.run(`q${n++}`, vid, e, query, source, country);
+  };
+  const camp = '?utm_source=ig&utm_medium=paid_social&utm_campaign=hercules-20260824&utm_content=coins-launch&fbclid=XyZ123';
+  // Two real campaign visitors, one of whom collected.
+  visit('v_c1', camp, 'ig', 'US', ['arrive', 'app_ready', 'entry_tap', 'claim_shown', 'claim_tap']);
+  visit('v_c2', camp, 'ig', 'PT', ['arrive', 'app_ready']);
+  // The developer clicking their own campaign link from Thailand — test bucket,
+  // or every ad run reads one collect better than it earned.
+  visit('v_me', camp, 'ig', 'TH', ['arrive', 'app_ready', 'entry_tap', 'claim_shown', 'claim_tap']);
+  // An untagged organic arrival shares the (untagged) row.
+  visit('v_org', '', 'ig', 'US', ['arrive', 'app_ready']);
+
+  const res = await adminFetch(env, '/api/admin/visits?days=1');
+  assert.equal(res.status, 200);
+  const rows = res.json.coinsByCampaign;
+  const real = rows.find((r) => r.campaign === 'hercules-20260824' && r.bucket === 'real');
+  const test_ = rows.find((r) => r.campaign === 'hercules-20260824' && r.bucket === 'test');
+  const untagged = rows.find((r) => r.campaign === '(untagged)');
+  assert.equal(real.arrived, 2);
+  assert.equal(real.collected, 1, 'the real collect belongs to the campaign');
+  assert.equal(test_.collected, 1, 'the developer\'s collect stays in the test bucket');
+  assert.equal(untagged.arrived, 1);
+});
