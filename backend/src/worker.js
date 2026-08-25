@@ -567,7 +567,32 @@ export default {
                 byVariant = v.results || [];
             } catch (_) { /* migration 0013 not applied yet */ }
 
+            // The coins funnel, one row per (day, source), split real vs test.
+            // "test" is the developer's own traffic: country TH (the analytics
+            // docs already treat TH as the developer) plus untagged direct
+            // hits (a typed URL, not a campaign click). The page hides these by
+            // default and can toggle them back. claim_shown/claim_tap are the
+            // two coin buttons; app_ready is "opened the app".
+            const coinsDaily = await db.prepare(`
+                SELECT substr(a.created_at,1,10) AS day,
+                       a.source AS source,
+                       CASE WHEN a.country='TH' OR a.source='direct'
+                            THEN 'test' ELSE 'real' END AS bucket,
+                       COUNT(DISTINCT a.visit_id) AS arrived,
+                       COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS opened,
+                       COUNT(DISTINCT CASE WHEN e.event='entry_tap'     THEN e.visit_id END) AS claim_tap,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_shown'   THEN e.visit_id END) AS coins_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_tap'     THEN e.visit_id END) AS collected,
+                       COUNT(DISTINCT CASE WHEN e.event='first_message' THEN e.visit_id END) AS messaged
+                FROM site_visits a
+                LEFT JOIN site_visits e ON e.visit_id = a.visit_id
+                WHERE a.event='arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY day, a.source, bucket
+                ORDER BY day DESC, a.source
+            `).bind(since).all();
+
             return jsonResponse({
+                coinsDaily: coinsDaily.results || [],
                 bySource: bySource.results || [],
                 byDay: byDay.results || [],
                 recent: recent.results || [],
@@ -7212,6 +7237,10 @@ ${sortableTableCss()}
   <option value="30">Last 30 days</option>
   <option value="90">Last 90 days</option>
 </select>
+<label style="margin-left:14px; color:#bbb; font-size:13px; cursor:pointer">
+  <input type="checkbox" id="incltest" onchange="load()"> include my test traffic
+  <span class="muted" style="color:#777">(Thailand + direct)</span>
+</label>
 <div id="out">Loading…</div>
 <script>
 ${sortableTableJs()}
@@ -7263,12 +7292,67 @@ function load() {
       esc(err && err.message ? err.message : err) + '</p>';
   });
 }
+// The coins funnel, by day, and the lead view of this page: of the people who
+// opened the app, how many tapped "Claim Coins", saw the coins screen, tapped
+// "Collect", and then sent a message. Rows are (day, source). The developer's
+// own traffic (country TH and untagged direct) is folded into a "test" bucket
+// the server tags; the checkbox decides whether it is counted.
+function renderCoinsDaily(rows) {
+  const includeTest = document.getElementById('incltest') &&
+    document.getElementById('incltest').checked;
+  // Fold the server's (day, source, bucket) rows into (day, source), counting
+  // the buckets the checkbox admits — real always, test only when asked.
+  const acc = new Map();
+  for (const r of rows) {
+    if (r.bucket === 'test' && !includeTest) continue;
+    const key = r.day + '\u0000' + (r.source || '?');
+    let a = acc.get(key);
+    if (!a) { a = { day: r.day, source: r.source || '?', opened: 0, arrived: 0,
+                    claim_tap: 0, coins_shown: 0, collected: 0, messaged: 0 }; acc.set(key, a); }
+    a.arrived += r.arrived || 0; a.opened += r.opened || 0;
+    a.claim_tap += r.claim_tap || 0; a.coins_shown += r.coins_shown || 0;
+    a.collected += r.collected || 0; a.messaged += r.messaged || 0;
+  }
+  const list = [...acc.values()].sort((x, y) =>
+    x.day < y.day ? 1 : x.day > y.day ? -1 : (x.source < y.source ? -1 : 1));
+
+  let h = '<h2>Coins funnel &mdash; by day</h2>' +
+    '<p class="muted" style="margin:0 0 8px">Of the people who opened the app: how ' +
+    'many tapped &lsquo;Claim Coins&rsquo;, saw the coins screen, tapped &lsquo;Collect&rsquo;, ' +
+    'and sent a message. ' +
+    (includeTest ? 'Including your test traffic (TH + direct).'
+                 : 'Real traffic only &mdash; your own testing (Thailand + direct) is hidden.') +
+    '</p><div class="wrap"><table class="sortable"><tr>' +
+    '<th data-sorted="desc">Day</th><th>Source</th>' +
+    '<th data-type="num">Opened app</th>' +
+    '<th data-type="num">Tapped &lsquo;Claim Coins&rsquo;</th>' +
+    '<th data-type="num">Coins screen</th>' +
+    '<th data-type="num">Tapped &lsquo;Collect&rsquo;</th>' +
+    '<th data-type="num">Sent a message</th></tr>';
+  function pctOf(n, d) {
+    return d ? ' <span class="muted">(' + Math.round(100 * n / d) + '%)</span>' : '';
+  }
+  for (const r of list) {
+    h += '<tr><td>' + esc(r.day) + '</td><td>' + esc(r.source) +
+      '</td><td class="num">' + r.opened +
+      '</td><td class="num">' + r.claim_tap + pctOf(r.claim_tap, r.opened) +
+      '</td><td class="num">' + r.coins_shown +
+      '</td><td class="num">' + r.collected + pctOf(r.collected, r.coins_shown) +
+      '</td><td class="num">' + r.messaged + '</td></tr>';
+  }
+  if (!list.length) h += '<tr><td colspan="7" class="muted">No data in this window.</td></tr>';
+  h += '</table></div>';
+  return h;
+}
+
 async function render(out) {
   const days = document.getElementById('days').value;
   const res = await fetch('/api/admin/visits?days=' + days);
   if (!res.ok) { out.textContent = 'Error ' + res.status; return; }
   const d = await res.json();
   let h = '';
+
+  h += renderCoinsDaily(d.coinsDaily || []);
 
   h += '<h2>Funnel</h2><p class="muted" style="margin:0 0 8px">' +
        'Distinct visits reaching each step. The biggest drop is where you are ' +
