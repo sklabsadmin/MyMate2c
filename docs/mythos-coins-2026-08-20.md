@@ -6,16 +6,15 @@ outside the repo; this is the operational half. The currency was renamed from
 the working name "Ambrosia Drops" to **Coins** by the 20 Aug design meeting —
 if you find "drops" anywhere, it is stale.
 
-## Where things stand
+## Where things stand (updated 2026-08-25)
 
 | | |
 |---|---|
-| Branch | `feat/coins` (local; not pushed at time of writing) |
-| Commits | ledger (`d22dee0`), client (`29241eb`), profile faucet + sign-in copy (`bf184b7`), entry card (`06f208e`), claim screen + repricing (`fa3af6e`), gift catalogue (this one) |
-| Tests | 81 worker (`npm test`), 81 Flutter (`flutter test`) — all passing |
-| Migration | `0014_coin_ledger.sql` — applied locally; **not applied to remote D1 yet** (the deploy chain does it) |
-| Production | untouched; `COIN_LEDGER` ships `"false"` in wrangler.jsonc |
-| Verified | end-to-end on the local stack with the flag on: grants, a tribute to Odysseus answered in character by the real pipeline, the ledger reading it back |
+| Production | **LIVE** since 2026-08-24: `COIN_LEDGER: "true"` on `main`, migration 0014 applied to remote D1, build 1.7.8+81 |
+| In flight | PR #11 (grant-on-claim + streak line), PR #12 (admin coins reporting) — merge #11 first |
+| Tests | 83 worker (`npm test`), 86 Flutter (`flutter test`) — all passing on the PR branches |
+| Known issue until #11 lands | the app-load sync GRANTS, so every visitor gets a 100-coin wallet without tapping (~84/day at current traffic); #11 moves the grant to the claim tap |
+| First real data | traffic returned 2026-08-24 (~100 opens/day, ig); 0 real users have tapped "Claim Coins" yet — every coin interaction so far is developer testing (see the test bucket on /admin/visits) |
 
 ## What it is, in one paragraph
 
@@ -75,9 +74,14 @@ app bar, which is findable only if you already know it is there.
 
 ## The claim screen
 
-The entry card's button reads **Tap to Claim Coins**, and the tap now puts up
-a full-bleed claim screen (`CoinClaimScreen`) that itemises what landed before
-the conversation starts. Two things about it matter operationally:
+The entry card's button reads **Tap to Claim Coins** (gated: a dark build
+shows the original "Tap to Talk"), and as of PR #11 **the tap is the grant**:
+app start only ever reads the wallet (GET /api/wallet — no rows created,
+nothing granted), and the claim tap calls the granting POST /api/wallet/sync,
+then raises the full-bleed claim screen (`CoinClaimScreen`) itemising what
+landed — with a "2nd dawn in a row" streak line for returners (server-counted
+from the daily grants' date refs; drawn only from 2 up). Things that matter
+operationally:
 
 - **It holds the story.** The screen defers `_raiseGate()` and
   `_triggerWelcomeSequence()` until it is collected, the same rule the entry
@@ -90,9 +94,11 @@ the conversation starts. Two things about it matter operationally:
   inflate the denominator of every rate on the visits page. The gap between
   the two events is what the screen costs; watch it.
 
-It never appears with nothing to show: the grants come from `takeGrants`,
-which is consume-once, so a returning visitor with no pending grant goes
-straight into the conversation.
+It never appears with nothing to show: `claim()` returns what THIS tap
+granted, so a returning visitor whose daily is already claimed gets an empty
+list and drops straight into the conversation. After #11, an `entry_tap`
+without a `claim_shown` means the grant round trip FAILED — network or worker
+error — which makes that gap on the visits funnel a health alarm, not noise.
 
 ## Surfaces
 
