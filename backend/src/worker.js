@@ -384,6 +384,12 @@ export default {
                        COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
                        COUNT(DISTINCT CASE WHEN e.event='entry_shown'   THEN e.visit_id END) AS entry_shown,
                        COUNT(DISTINCT CASE WHEN e.event='entry_tap'     THEN e.visit_id END) AS entry_tap,
+                       -- The two coin buttons, logged as their own steps: the
+                       -- "Tap to Claim Coins" tap is entry_tap above; claim_shown
+                       -- is the coins screen appearing; claim_tap is the
+                       -- "Collect and begin" tap that dismisses it into the chat.
+                       COUNT(DISTINCT CASE WHEN e.event='claim_shown'   THEN e.visit_id END) AS claim_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_tap'     THEN e.visit_id END) AS claim_tap,
                        COUNT(DISTINCT CASE WHEN e.event='gate_shown'    THEN e.visit_id END) AS gate_shown,
                        COUNT(DISTINCT CASE WHEN e.event='gate_choice'   THEN e.visit_id END) AS gate_answered,
                        COUNT(DISTINCT CASE WHEN e.event IN ('input_typed','starter_tap') THEN e.visit_id END) AS engaged,
@@ -7270,7 +7276,9 @@ async function render(out) {
        '<th data-type="num" data-sorted="desc">Arrived</th><th data-type="num">App loaded</th>' +
        '<th data-type="num">Opened a character</th>' +
        '<th data-type="num">Entry card shown</th>' +
-       '<th data-type="num">Tapped to enter</th>' +
+       '<th data-type="num">Tapped &lsquo;Claim Coins&rsquo;</th>' +
+       '<th data-type="num">Coins screen shown</th>' +
+       '<th data-type="num">Tapped &lsquo;Collect&rsquo;</th>' +
        '<th data-type="num">Gate shown</th>' +
        '<th data-type="num">Gate answered</th>' +
        '<th data-type="num">Typed or tapped a starter</th><th data-type="num">Sent a message</th>' +
@@ -7292,18 +7300,28 @@ async function render(out) {
     const entryPct = r.entry_shown
       ? ' <span class="muted">(' + Math.round(100*r.entry_tap/r.entry_shown) + '% of shown)</span>'
       : '';
+    // The coins screen: of those who tapped "Claim Coins", how many the screen
+    // reached; and of those, how many tapped "Collect and begin" into the chat.
+    const claimShownPct = r.entry_tap
+      ? ' <span class="muted">(' + Math.round(100*(r.claim_shown||0)/r.entry_tap) + '% of tap)</span>'
+      : '';
+    const claimTapPct = r.claim_shown
+      ? ' <span class="muted">(' + Math.round(100*(r.claim_tap||0)/r.claim_shown) + '% of shown)</span>'
+      : '';
     h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.arrived) + '>' + r.arrived +
          '</td><td class="num"' + sv(r.loaded) + '>' + r.loaded + pct(r.loaded) +
          '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped + pct(r.tapped) +
          '</td><td class="num"' + sv(r.entry_shown) + '>' + r.entry_shown + pct(r.entry_shown) +
          '</td><td class="num"' + sv(r.entry_tap) + '>' + r.entry_tap + entryPct +
+         '</td><td class="num"' + sv(r.claim_shown || 0) + '>' + (r.claim_shown || 0) + claimShownPct +
+         '</td><td class="num"' + sv(r.claim_tap || 0) + '>' + (r.claim_tap || 0) + claimTapPct +
          '</td><td class="num"' + sv(r.gate_shown) + '>' + r.gate_shown + pct(r.gate_shown) +
          '</td><td class="num"' + sv(r.gate_answered) + '>' + r.gate_answered + answeredPct +
          '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + pct(r.engaged) +
          '</td><td class="num"' + sv(r.messaged) + '>' + r.messaged + pct(r.messaged) +
          '</td><td class="num"' + sv(r.gated) + '>' + r.gated + pct(r.gated) + '</td></tr>';
   }
-  if (!(d.funnel || []).length) h += '<tr><td colspan="11" class="muted">No data yet.</td></tr>';
+  if (!(d.funnel || []).length) h += '<tr><td colspan="13" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
 
   const buckets = d.dwellBuckets || [];
