@@ -384,6 +384,12 @@ export default {
                        COUNT(DISTINCT CASE WHEN e.event='character_tap' THEN e.visit_id END) AS tapped,
                        COUNT(DISTINCT CASE WHEN e.event='entry_shown'   THEN e.visit_id END) AS entry_shown,
                        COUNT(DISTINCT CASE WHEN e.event='entry_tap'     THEN e.visit_id END) AS entry_tap,
+                       -- The two coin buttons, logged as their own steps: the
+                       -- "Tap to Claim Coins" tap is entry_tap above; claim_shown
+                       -- is the coins screen appearing; claim_tap is the
+                       -- "Collect and begin" tap that dismisses it into the chat.
+                       COUNT(DISTINCT CASE WHEN e.event='claim_shown'   THEN e.visit_id END) AS claim_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_tap'     THEN e.visit_id END) AS claim_tap,
                        COUNT(DISTINCT CASE WHEN e.event='gate_shown'    THEN e.visit_id END) AS gate_shown,
                        COUNT(DISTINCT CASE WHEN e.event='gate_choice'   THEN e.visit_id END) AS gate_answered,
                        COUNT(DISTINCT CASE WHEN e.event IN ('input_typed','starter_tap') THEN e.visit_id END) AS engaged,
@@ -561,7 +567,78 @@ export default {
                 byVariant = v.results || [];
             } catch (_) { /* migration 0013 not applied yet */ }
 
+            // The coins funnel, one row per (day, source), split real vs test.
+            // "test" is the developer's own traffic: country TH (the analytics
+            // docs already treat TH as the developer) plus untagged direct
+            // hits (a typed URL, not a campaign click). The page hides these by
+            // default and can toggle them back. claim_shown/claim_tap are the
+            // two coin buttons; app_ready is "opened the app".
+            const coinsDaily = await db.prepare(`
+                SELECT substr(a.created_at,1,10) AS day,
+                       a.source AS source,
+                       CASE WHEN a.country='TH' OR a.source='direct'
+                            THEN 'test' ELSE 'real' END AS bucket,
+                       COUNT(DISTINCT a.visit_id) AS arrived,
+                       COUNT(DISTINCT CASE WHEN e.event='app_ready'     THEN e.visit_id END) AS opened,
+                       COUNT(DISTINCT CASE WHEN e.event='entry_tap'     THEN e.visit_id END) AS claim_tap,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_shown'   THEN e.visit_id END) AS coins_shown,
+                       COUNT(DISTINCT CASE WHEN e.event='claim_tap'     THEN e.visit_id END) AS collected,
+                       COUNT(DISTINCT CASE WHEN e.event='first_message' THEN e.visit_id END) AS messaged
+                FROM site_visits a
+                LEFT JOIN site_visits e ON e.visit_id = a.visit_id
+                WHERE a.event='arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY day, a.source, bucket
+                ORDER BY day DESC, a.source
+            `).bind(since).all();
+
+            // The same funnel folded by ad campaign instead of day, so ad
+            // runs (utm_campaign=hercules-20260824 and friends) can be
+            // compared against each other. utm_campaign lives inside the raw
+            // query string, and SQLite has no regex — so, like the by-ad
+            // table above, the rows come out per visit and the bucketing
+            // happens here. Capped like by-ad so one hot week cannot balloon
+            // the response.
+            const campaignRows = await db.prepare(`
+                SELECT a.query AS query,
+                       CASE WHEN a.country='TH' OR a.source='direct'
+                            THEN 'test' ELSE 'real' END AS bucket,
+                       MAX(CASE WHEN e.event='app_ready'     THEN 1 ELSE 0 END) AS opened,
+                       MAX(CASE WHEN e.event='entry_tap'     THEN 1 ELSE 0 END) AS claim_tap,
+                       MAX(CASE WHEN e.event='claim_shown'   THEN 1 ELSE 0 END) AS coins_shown,
+                       MAX(CASE WHEN e.event='claim_tap'     THEN 1 ELSE 0 END) AS collected,
+                       MAX(CASE WHEN e.event='first_message' THEN 1 ELSE 0 END) AS messaged
+                FROM site_visits a
+                LEFT JOIN site_visits e ON e.visit_id = a.visit_id
+                WHERE a.event='arrive' AND a.created_at >= datetime('now', ?)
+                GROUP BY a.visit_id
+                LIMIT 20000
+            `).bind(since).all();
+            const campaignBuckets = new Map();
+            for (const row of campaignRows.results || []) {
+                let campaign = "(untagged)";
+                try {
+                    const q = row.query || "";
+                    const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
+                    campaign = params.get("utm_campaign") || "(untagged)";
+                } catch (_) { /* junk query strings stay untagged */ }
+                const key = campaign + "\u0000" + row.bucket;
+                let b = campaignBuckets.get(key);
+                if (!b) {
+                    b = { campaign, bucket: row.bucket, arrived: 0, opened: 0,
+                          claim_tap: 0, coins_shown: 0, collected: 0, messaged: 0 };
+                    campaignBuckets.set(key, b);
+                }
+                b.arrived += 1;
+                b.opened += row.opened; b.claim_tap += row.claim_tap;
+                b.coins_shown += row.coins_shown; b.collected += row.collected;
+                b.messaged += row.messaged;
+            }
+            const coinsByCampaign = [...campaignBuckets.values()]
+                .sort((x, y) => y.arrived - x.arrived).slice(0, 60);
+
             return jsonResponse({
+                coinsDaily: coinsDaily.results || [],
+                coinsByCampaign,
                 bySource: bySource.results || [],
                 byDay: byDay.results || [],
                 recent: recent.results || [],
@@ -1105,12 +1182,87 @@ export default {
                     FROM coin_ledger
                 `).first();
 
+                // Retention — the one number the whole feature is for. A
+                // "return" is a SECOND dawn offering: the daily grant is keyed
+                // once per local date and spaced 20h server-side, so a user
+                // with two daily rows came back on another day, no
+                // wall-clock guesswork required.
+                const retention = await db.prepare(`
+                    SELECT COUNT(*) AS claimers,
+                           SUM(CASE WHEN days >= 2 THEN 1 ELSE 0 END) AS returned,
+                           COALESCE(MAX(days), 0) AS best_streak_days
+                    FROM (SELECT user_id, COUNT(*) AS days
+                          FROM coin_ledger WHERE reason = 'daily'
+                          GROUP BY user_id)
+                `).first();
+                // Per day: how many dawn offerings were claimed, and how many
+                // of those claimers had already claimed on an earlier day —
+                // i.e. the day's returning vs new split. Same-day rows are not
+                // "earlier": 'YYYY-MM-DD HH:MM' < 'YYYY-MM-DD' is false in
+                // string order, which is exactly the comparison used.
+                const { results: retentionByDay } = await db.prepare(`
+                    SELECT substr(c.created_at, 1, 10) AS day,
+                           COUNT(*) AS claims,
+                           SUM(CASE WHEN EXISTS (
+                               SELECT 1 FROM coin_ledger p
+                               WHERE p.user_id = c.user_id AND p.reason = 'daily'
+                                 AND p.created_at < substr(c.created_at, 1, 10)
+                           ) THEN 1 ELSE 0 END) AS repeat_claims
+                    FROM coin_ledger c
+                    WHERE c.reason = 'daily' AND c.created_at >= datetime('now', ?)
+                    GROUP BY day ORDER BY day DESC
+                `).bind(`-${days} days`).all();
+
+                // Wallet buckets: engaged (did anything beyond the automatic
+                // welcome/daily — a reply grant, a gift, a link) and test (the
+                // developer: any of the user's beacon rows from TH or a
+                // typed-URL 'direct' source). Joined on app_user_id because
+                // the wallet sync request carries no visit id — the beacon
+                // rows are where a user id and a country meet.
+                const { results: walletBuckets } = await db.prepare(`
+                    SELECT l.user_id,
+                           MAX(CASE WHEN l.reason NOT IN ('welcome', 'daily')
+                                    THEN 1 ELSE 0 END) AS engaged,
+                           COALESCE(t.is_test, 0) AS is_test
+                    FROM coin_ledger l
+                    LEFT JOIN (SELECT app_user_id,
+                                      MAX(CASE WHEN country = 'TH' OR source = 'direct'
+                                               THEN 1 ELSE 0 END) AS is_test
+                               FROM site_visits
+                               WHERE app_user_id IS NOT NULL
+                               GROUP BY app_user_id) t
+                      ON t.app_user_id = l.user_id
+                    GROUP BY l.user_id
+                `).all();
+                const buckets = { engaged: 0, test: 0, real: 0 };
+                const walletTag = {};
+                for (const w of walletBuckets || []) {
+                    if (w.engaged) buckets.engaged += 1;
+                    if (w.is_test) buckets.test += 1; else buckets.real += 1;
+                    walletTag[w.user_id] = { engaged: !!w.engaged, test: !!w.is_test };
+                }
+                const taggedWallets = (topWallets || []).map((w) => ({
+                    ...w,
+                    ...(walletTag[w.user_id] || { engaged: false, test: false }),
+                }));
+
                 return jsonResponse({
                     days,
                     user_id: userFilter,
-                    totals: totals || { rows: 0, granted: 0, spent: 0, users: 0 },
+                    totals: {
+                        ...(totals || { rows: 0, granted: 0, spent: 0, users: 0 }),
+                        engaged_wallets: buckets.engaged,
+                        real_wallets: buckets.real,
+                        test_wallets: buckets.test,
+                    },
+                    retention: {
+                        claimers: (retention && retention.claimers) || 0,
+                        returned: (retention && retention.returned) || 0,
+                        best_streak_days: (retention && retention.best_streak_days) || 0,
+                        by_day: retentionByDay || [],
+                    },
                     by_day: byDay || [],
-                    top_wallets: topWallets || [],
+                    top_wallets: taggedWallets,
                     recent: recent || [],
                 });
             } catch (e) {
@@ -6071,6 +6223,11 @@ function adminCoinsPageHtml() {
 
 <div id="content" style="display:none">
   <div id="totals" class="muted"></div>
+  <h2>Retention &mdash; the dawn offering</h2>
+  <div id="retention" class="muted" style="margin-bottom:6px"></div>
+  <table id="retentionTable"><thead><tr>
+    <th>Day</th><th class="n">Dawn offerings claimed</th><th class="n">By returning users</th><th class="n">First-timers</th>
+  </tr></thead><tbody></tbody></table>
   <h2>Faucets and sinks, by day and reason</h2>
   <table id="bydayTable"><thead><tr>
     <th>Day</th><th>Reason</th><th class="n">Granted</th><th class="n">Spent</th><th class="n">Rows</th>
@@ -6117,7 +6274,28 @@ async function load() {
     }
     document.getElementById('totals').textContent =
       'All time: ' + data.totals.granted + ' granted, ' + data.totals.spent + ' spent across '
-      + data.totals.rows + ' movements by ' + data.totals.users + ' users.';
+      + data.totals.rows + ' movements by ' + data.totals.users + ' users — '
+      + (data.totals.real_wallets || 0) + ' real, '
+      + (data.totals.test_wallets || 0) + ' test (TH/direct), '
+      + (data.totals.engaged_wallets || 0)
+      + ' engaged beyond the automatic grants.';
+
+    // Retention is why coins exist: did anyone come back for a second dawn
+    // offering? Headline rate plus the per-day new/returning split.
+    var ret = data.retention || { claimers: 0, returned: 0, by_day: [] };
+    document.getElementById('retention').textContent = ret.claimers
+      ? ret.returned + ' of ' + ret.claimers + ' claimers came back for a second day ('
+        + Math.round(100 * ret.returned / ret.claimers) + '%). Best streak: '
+        + ret.best_streak_days + ' day' + (ret.best_streak_days === 1 ? '' : 's') + '.'
+      : 'Nobody has claimed a dawn offering yet.';
+    fill('retentionTable', ret.by_day || [], function (r) {
+      var claims = Number(r.claims) || 0;
+      var returning = Number(r.repeat_claims) || 0;
+      return '<tr><td>' + esc(r.day) + '</td>'
+        + '<td class="n">' + claims + '</td>'
+        + '<td class="n plus">' + returning + '</td>'
+        + '<td class="n">' + (claims - returning) + '</td></tr>';
+    });
     fill('bydayTable', data.by_day, function (r) {
       return '<tr><td>' + esc(r.day) + '</td><td>' + esc(r.reason) + '</td>'
         + '<td class="n plus">' + (Number(r.granted) || 0) + '</td>'
@@ -6125,7 +6303,11 @@ async function load() {
         + '<td class="n">' + (Number(r.rows) || 0) + '</td></tr>';
     });
     fill('walletsTable', data.top_wallets, function (r) {
-      return '<tr><td>' + esc(r.user_id) + '</td>'
+      // The developer's wallets and the ones that never did anything beyond
+      // the automatic grants, labelled so the table reads at a glance.
+      var tags = (r.test ? ' <span style="color:#e5a373">test</span>' : '')
+        + (r.engaged ? ' <span class="plus">engaged</span>' : '');
+      return '<tr><td>' + esc(r.user_id) + tags + '</td>'
         + '<td class="n">' + (Number(r.balance) || 0) + '</td>'
         + '<td class="n">' + (Number(r.lifetime_earned) || 0) + '</td>'
         + '<td class="n">' + (Number(r.lifetime_spent) || 0) + '</td>'
@@ -7236,6 +7418,10 @@ ${sortableTableCss()}
   <option value="30">Last 30 days</option>
   <option value="90">Last 90 days</option>
 </select>
+<label style="margin-left:14px; color:#bbb; font-size:13px; cursor:pointer">
+  <input type="checkbox" id="incltest" onchange="load()"> include my test traffic
+  <span class="muted" style="color:#777">(Thailand + direct)</span>
+</label>
 <div id="out">Loading…</div>
 <script>
 ${sortableTableJs()}
@@ -7287,6 +7473,100 @@ function load() {
       esc(err && err.message ? err.message : err) + '</p>';
   });
 }
+// The coins funnel, by day, and the lead view of this page: of the people who
+// opened the app, how many tapped "Claim Coins", saw the coins screen, tapped
+// "Collect", and then sent a message. Rows are (day, source). The developer's
+// own traffic (country TH and untagged direct) is folded into a "test" bucket
+// the server tags; the checkbox decides whether it is counted.
+function renderCoinsDaily(rows) {
+  const includeTest = document.getElementById('incltest') &&
+    document.getElementById('incltest').checked;
+  // Fold the server's (day, source, bucket) rows into (day, source), counting
+  // the buckets the checkbox admits — real always, test only when asked.
+  const acc = new Map();
+  for (const r of rows) {
+    if (r.bucket === 'test' && !includeTest) continue;
+    const key = r.day + '\u0000' + (r.source || '?');
+    let a = acc.get(key);
+    if (!a) { a = { day: r.day, source: r.source || '?', opened: 0, arrived: 0,
+                    claim_tap: 0, coins_shown: 0, collected: 0, messaged: 0 }; acc.set(key, a); }
+    a.arrived += r.arrived || 0; a.opened += r.opened || 0;
+    a.claim_tap += r.claim_tap || 0; a.coins_shown += r.coins_shown || 0;
+    a.collected += r.collected || 0; a.messaged += r.messaged || 0;
+  }
+  const list = [...acc.values()].sort((x, y) =>
+    x.day < y.day ? 1 : x.day > y.day ? -1 : (x.source < y.source ? -1 : 1));
+
+  let h = '<h2>Coins funnel &mdash; by day</h2>' +
+    '<p class="muted" style="margin:0 0 8px">Of the people who opened the app: how ' +
+    'many tapped &lsquo;Claim Coins&rsquo;, saw the coins screen, tapped &lsquo;Collect&rsquo;, ' +
+    'and sent a message. ' +
+    (includeTest ? 'Including your test traffic (TH + direct).'
+                 : 'Real traffic only &mdash; your own testing (Thailand + direct) is hidden.') +
+    '</p><div class="wrap"><table class="sortable"><tr>' +
+    '<th data-sorted="desc">Day</th><th>Source</th>' +
+    '<th data-type="num">Opened app</th>' +
+    '<th data-type="num">Tapped &lsquo;Claim Coins&rsquo;</th>' +
+    '<th data-type="num">Coins screen</th>' +
+    '<th data-type="num">Tapped &lsquo;Collect&rsquo;</th>' +
+    '<th data-type="num">Sent a message</th></tr>';
+  function pctOf(n, d) {
+    return d ? ' <span class="muted">(' + Math.round(100 * n / d) + '%)</span>' : '';
+  }
+  for (const r of list) {
+    h += '<tr><td>' + esc(r.day) + '</td><td>' + esc(r.source) +
+      '</td><td class="num">' + r.opened +
+      '</td><td class="num">' + r.claim_tap + pctOf(r.claim_tap, r.opened) +
+      '</td><td class="num">' + r.coins_shown +
+      '</td><td class="num">' + r.collected + pctOf(r.collected, r.coins_shown) +
+      '</td><td class="num">' + r.messaged + '</td></tr>';
+  }
+  if (!list.length) h += '<tr><td colspan="7" class="muted">No data in this window.</td></tr>';
+  h += '</table></div>';
+  return h;
+}
+
+// The daily funnel again, folded by ad campaign — the table for comparing ad
+// runs against each other. Same real/test buckets, same checkbox.
+function renderCoinsByCampaign(rows) {
+  const includeTest = document.getElementById('incltest') &&
+    document.getElementById('incltest').checked;
+  const acc = new Map();
+  for (const r of rows) {
+    if (r.bucket === 'test' && !includeTest) continue;
+    let a = acc.get(r.campaign);
+    if (!a) { a = { campaign: r.campaign, arrived: 0, opened: 0, claim_tap: 0,
+                    coins_shown: 0, collected: 0, messaged: 0 }; acc.set(r.campaign, a); }
+    a.arrived += r.arrived; a.opened += r.opened; a.claim_tap += r.claim_tap;
+    a.coins_shown += r.coins_shown; a.collected += r.collected; a.messaged += r.messaged;
+  }
+  const list = [...acc.values()].sort((x, y) => y.arrived - x.arrived);
+  let h = '<h2>Coins funnel &mdash; by campaign</h2>' +
+    '<p class="muted" style="margin:0 0 8px">The same journey folded by ' +
+    '<code>utm_campaign</code>, so ad runs can be compared. Untagged arrivals ' +
+    'share the (untagged) row.</p>' +
+    '<div class="wrap"><table class="sortable"><tr><th>Campaign</th>' +
+    '<th data-type="num" data-sorted="desc">Arrived</th>' +
+    '<th data-type="num">Opened app</th>' +
+    '<th data-type="num">Tapped &lsquo;Claim Coins&rsquo;</th>' +
+    '<th data-type="num">Coins screen</th>' +
+    '<th data-type="num">Tapped &lsquo;Collect&rsquo;</th>' +
+    '<th data-type="num">Sent a message</th></tr>';
+  for (const r of list) {
+    const claimPct = r.opened
+      ? ' <span class="muted">(' + Math.round(100 * r.claim_tap / r.opened) + '%)</span>' : '';
+    h += '<tr><td>' + esc(r.campaign) + '</td><td class="num">' + r.arrived +
+      '</td><td class="num">' + r.opened +
+      '</td><td class="num">' + r.claim_tap + claimPct +
+      '</td><td class="num">' + r.coins_shown +
+      '</td><td class="num">' + r.collected +
+      '</td><td class="num">' + r.messaged + '</td></tr>';
+  }
+  if (!list.length) h += '<tr><td colspan="7" class="muted">No data in this window.</td></tr>';
+  h += '</table></div>';
+  return h;
+}
+
 async function render(out) {
   const days = document.getElementById('days').value;
   const res = await fetch('/api/admin/visits?days=' + days);
@@ -7294,13 +7574,18 @@ async function render(out) {
   const d = await res.json();
   let h = '';
 
+  h += renderCoinsDaily(d.coinsDaily || []);
+  h += renderCoinsByCampaign(d.coinsByCampaign || []);
+
   h += '<h2>Funnel</h2><p class="muted" style="margin:0 0 8px">' +
        'Distinct visits reaching each step. The biggest drop is where you are ' +
        'losing people.</p><div class="wrap"><table class="sortable"><tr><th>Source</th>' +
        '<th data-type="num" data-sorted="desc">Arrived</th><th data-type="num">App loaded</th>' +
        '<th data-type="num">Opened a character</th>' +
        '<th data-type="num">Entry card shown</th>' +
-       '<th data-type="num">Tapped to enter</th>' +
+       '<th data-type="num">Tapped &lsquo;Claim Coins&rsquo;</th>' +
+       '<th data-type="num">Coins screen shown</th>' +
+       '<th data-type="num">Tapped &lsquo;Collect&rsquo;</th>' +
        '<th data-type="num">Gate shown</th>' +
        '<th data-type="num">Gate answered</th>' +
        '<th data-type="num">Typed or tapped a starter</th><th data-type="num">Sent a message</th>' +
@@ -7322,18 +7607,28 @@ async function render(out) {
     const entryPct = r.entry_shown
       ? ' <span class="muted">(' + Math.round(100*r.entry_tap/r.entry_shown) + '% of shown)</span>'
       : '';
+    // The coins screen: of those who tapped "Claim Coins", how many the screen
+    // reached; and of those, how many tapped "Collect and begin" into the chat.
+    const claimShownPct = r.entry_tap
+      ? ' <span class="muted">(' + Math.round(100*(r.claim_shown||0)/r.entry_tap) + '% of tap)</span>'
+      : '';
+    const claimTapPct = r.claim_shown
+      ? ' <span class="muted">(' + Math.round(100*(r.claim_tap||0)/r.claim_shown) + '% of shown)</span>'
+      : '';
     h += '<tr><td>' + esc(r.source) + '</td><td class="num"' + sv(r.arrived) + '>' + r.arrived +
          '</td><td class="num"' + sv(r.loaded) + '>' + r.loaded + pct(r.loaded) +
          '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped + pct(r.tapped) +
          '</td><td class="num"' + sv(r.entry_shown) + '>' + r.entry_shown + pct(r.entry_shown) +
          '</td><td class="num"' + sv(r.entry_tap) + '>' + r.entry_tap + entryPct +
+         '</td><td class="num"' + sv(r.claim_shown || 0) + '>' + (r.claim_shown || 0) + claimShownPct +
+         '</td><td class="num"' + sv(r.claim_tap || 0) + '>' + (r.claim_tap || 0) + claimTapPct +
          '</td><td class="num"' + sv(r.gate_shown) + '>' + r.gate_shown + pct(r.gate_shown) +
          '</td><td class="num"' + sv(r.gate_answered) + '>' + r.gate_answered + answeredPct +
          '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + pct(r.engaged) +
          '</td><td class="num"' + sv(r.messaged) + '>' + r.messaged + pct(r.messaged) +
          '</td><td class="num"' + sv(r.gated) + '>' + r.gated + pct(r.gated) + '</td></tr>';
   }
-  if (!(d.funnel || []).length) h += '<tr><td colspan="11" class="muted">No data yet.</td></tr>';
+  if (!(d.funnel || []).length) h += '<tr><td colspan="13" class="muted">No data yet.</td></tr>';
   h += '</table></div>';
 
   const buckets = d.dwellBuckets || [];
