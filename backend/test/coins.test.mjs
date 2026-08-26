@@ -90,12 +90,18 @@ async function callGet(env, { userId = USER } = {}) {
     return { status: res.status, json: JSON.parse(await res.text()) };
 }
 
-async function callSync(env, { userId = USER, localDate } = {}) {
+async function callSync(env, { userId = USER, localDate, claim } = {}) {
     const worker = await loadWorker();
     const request = new Request('https://mythos.test/api/wallet/sync', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-user-id': userId },
-        body: JSON.stringify({ local_date: localDate, app_version: '1.7.2+76' }),
+        body: JSON.stringify({
+            local_date: localDate,
+            app_version: '1.7.2+76',
+            // Absent unless asked for, exactly like the stale bundles whose
+            // boot-time POSTs this flag exists to tell apart from the tap.
+            ...(claim ? { claim: true } : {}),
+        }),
     });
     const res = await worker.fetch(request, env, { waitUntil() {}, passThroughOnException() {} });
     return { status: res.status, json: JSON.parse(await res.text()) };
@@ -111,20 +117,32 @@ function rowCount(db, where, ...binds) {
     return db.prepare(`SELECT COUNT(*) AS n FROM coin_ledger WHERE ${where}`).get(...binds).n;
 }
 
-test('a fresh sync grants the welcome and the dawn offering exactly once', async () => {
+test('nothing is minted until the claim is actually tapped', async () => {
+    // The hole the client-side fix left open: every cached bundle from
+    // before the read/grant split still POSTs /api/wallet/sync at app load.
+    // The gate has to be here, where a stale bundle cannot route around it —
+    // a sync without claim:true grants nothing and creates nothing, whatever
+    // client sent it. "83 users got coins" meaning "83 phones loaded the
+    // app" is the bug this line of tests exists to keep dead.
     const { env, db } = coinsEnv();
+    const boot = await callSync(env, { localDate: '2026-08-20' });
+    assert.equal(boot.status, 200);
+    assert.deepEqual(boot.json.granted, []);
+    assert.equal(rowCount(db, '1=1'), 0, 'no ledger row for a claim-less sync');
+    assert.equal(
+        db.prepare('SELECT COUNT(*) AS n FROM coin_wallets').get().n, 0,
+        'no wallet row either — a device that never taps never joins the economy',
+    );
 
-    const first = await callSync(env, { localDate: '2026-08-20' });
-    assert.equal(first.status, 200);
+    // 80 + 20: the claim pays the round hundred the entry card promises.
+    const claimed = await callSync(env, { localDate: '2026-08-20', claim: true });
     assert.deepEqual(
-        first.json.granted.map((g) => g.reason).sort(),
+        claimed.json.granted.map((g) => g.reason).sort(),
         ['daily', 'welcome'],
     );
-    // 80 + 20: the arrival pays a round hundred, which is what the claim
-    // screen promises on the entry card.
-    assert.equal(first.json.wallet.balance, 100);
+    assert.equal(claimed.json.wallet.balance, 100);
 
-    const second = await callSync(env, { localDate: '2026-08-20' });
+    const second = await callSync(env, { localDate: '2026-08-20', claim: true });
     assert.deepEqual(second.json.granted, []);
     assert.equal(second.json.wallet.balance, 100);
     assert.equal(cachedBalance(db, USER), 100);
@@ -132,12 +150,12 @@ test('a fresh sync grants the welcome and the dawn offering exactly once', async
 
 test('a dawn offering cannot be claimed twice by moving the clock', async () => {
     const { env, db } = coinsEnv();
-    await callSync(env, { localDate: '2026-08-20' });
+    await callSync(env, { localDate: '2026-08-20', claim: true });
 
     // "It's tomorrow already" from a device whose calendar rolled over (or
     // lied): the per-date key is new, but the server's own 20-hour spacing
     // has not elapsed, so nothing is granted.
-    const tomorrow = await callSync(env, { localDate: '2026-08-21' });
+    const tomorrow = await callSync(env, { localDate: '2026-08-21', claim: true });
     assert.deepEqual(tomorrow.json.granted, []);
     assert.equal(cachedBalance(db, USER), 100);
     assert.equal(rowCount(db, "reason = 'daily'"), 1);
@@ -150,7 +168,7 @@ test('every day pays the same flat daily, first day and after', async () => {
     // regression to that split would be invisible until someone read a week
     // of ledger rows.
     const { env, db } = coinsEnv();
-    const first = await callSync(env, { localDate: '2026-08-20' });
+    const first = await callSync(env, { localDate: '2026-08-20', claim: true });
     assert.deepEqual(first.json.granted, [
         { reason: 'welcome', delta: 80 },
         { reason: 'daily', delta: 20 },
@@ -162,6 +180,9 @@ test('every day pays the same flat daily, first day and after', async () => {
         "UPDATE coin_wallets SET last_daily_at = datetime('now', '-21 hours') WHERE user_id = ?"
     ).run(USER);
 
+    // Deliberately claim-less: a wallet that exists — its owner tapped once —
+    // keeps earning its dawn offering even from a stale bundle's boot sync.
+    // The claim gate blocks minting NEW wallets, not paying existing ones.
     const nextDay = await callSync(env, { localDate: '2026-08-21' });
     assert.deepEqual(nextDay.json.granted, [{ reason: 'daily', delta: 20 }]);
     assert.equal(nextDay.json.wallet.balance, 120);
@@ -171,7 +192,7 @@ test('every day pays the same flat daily, first day and after', async () => {
 test('a retried offering charges once, and the second answer is still 200', async (t) => {
     const { env, db } = coinsEnv();
     stubFetch(t, openAiOk);
-    await callSync(env, { localDate: '2026-08-20' }); // balance 100
+    await callSync(env, { localDate: '2026-08-20', claim: true }); // balance 100
 
     const gift = { id: 'gift_retry_00001', item: 'roses' };
     const first = await callChat(env, { gift });
@@ -210,7 +231,7 @@ test('an offering the balance cannot cover never reaches the model', async (t) =
 test('a reply that failed upstream grants nothing', async (t) => {
     const { env, db } = coinsEnv();
     stubFetch(t, openAiDown);
-    await callSync(env, { localDate: '2026-08-20' });
+    await callSync(env, { localDate: '2026-08-20', claim: true });
 
     const res = await callChat(env, {});
     assert.equal(res.status, 500);
@@ -256,7 +277,7 @@ test('an invented user id gets no wallet and writes no rows', async (t) => {
     const { env, db } = coinsEnv();
     stubFetch(t, openAiOk);
 
-    const sync = await callSync(env, { userId: 'hackerman', localDate: '2026-08-20' });
+    const sync = await callSync(env, { userId: 'hackerman', localDate: '2026-08-20', claim: true });
     assert.equal(sync.status, 200);
     assert.equal(sync.json.enabled, true);
     assert.equal(sync.json.wallet, null);
@@ -285,7 +306,7 @@ test('signing in carries the anonymous balance across and pays the bonus once', 
         throw new Error(`unexpected upstream call: ${url}`);
     });
 
-    await callSync(env, { localDate: '2026-08-20' }); // anon balance 100
+    await callSync(env, { localDate: '2026-08-20', claim: true }); // anon balance 100
 
     const worker = await loadWorker();
     const signIn = () => worker.fetch(new Request(
@@ -377,7 +398,7 @@ test('the admin api names the missing migration instead of a bare 500', async ()
     assert.match(res.json.hint || '', /0014_coin_ledger/);
 
     // With the tables present, the report adds up.
-    await callSync(env, { localDate: '2026-08-20' });
+    await callSync(env, { localDate: '2026-08-20', claim: true });
     const ok = await adminFetch(env, '/api/admin/coins?days=14');
     assert.equal(ok.status, 200);
     assert.equal(ok.json.totals.granted, 100);
@@ -445,7 +466,7 @@ test('the wallet quotes the catalogue, so the client never invents a price', asy
 test('a gift the catalogue does not sell is refused, not silently free', async (t) => {
     const { env, db } = coinsEnv();
     const upstreamCalls = stubFetch(t, openAiOk);
-    await callSync(env, { localDate: '2026-08-21' });
+    await callSync(env, { localDate: '2026-08-21', claim: true });
 
     const res = await callChat(env, { gift: { id: 'gift_bogus_0001', item: 'chariot' } });
     assert.equal(res.status, 400);
@@ -471,7 +492,7 @@ test('reading the wallet grants nothing and creates no wallet row', async () => 
     );
 
     // And the granting path still works when the tap does call it.
-    const claim = await callSync(env, { localDate: '2026-08-22' });
+    const claim = await callSync(env, { localDate: '2026-08-22', claim: true });
     assert.deepEqual(claim.json.granted.map((g) => g.reason).sort(), ['daily', 'welcome']);
     assert.equal(claim.json.wallet.balance, 100);
 });

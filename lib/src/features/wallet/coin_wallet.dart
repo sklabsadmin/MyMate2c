@@ -205,7 +205,12 @@ class CoinWalletService {
   /// /api/wallet/sync. Call this ONLY when the user has asked for their coins
   /// (the claim tap); calling it at app load is what handed every passive
   /// arrival a 100-coin wallet.
-  Future<CoinWalletState?> sync() async {
+  ///
+  /// [claim] is how this client tells the server that the tap actually
+  /// happened. The server now refuses to mint a new wallet without it —
+  /// cached bundles from before the split still POST here at boot, so the
+  /// flag, not the call, is what separates a claim from a load.
+  Future<CoinWalletState?> sync({bool claim = false}) async {
     final url = AppConfig.apiUrl('/api/wallet/sync');
     if (url.isEmpty) return null;
     try {
@@ -221,6 +226,7 @@ class CoinWalletService {
       final body = jsonEncode({
         'local_date': localDate,
         'app_version': await _appVersion(),
+        if (claim) 'claim': true,
       });
       final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
 
@@ -325,7 +331,7 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
   /// the visitor simply enters the chat without a claim screen, to try again
   /// next time rather than be stranded on the card.
   Future<List<CoinGrant>> claim() async {
-    final fresh = await ref.read(coinWalletServiceProvider).sync();
+    final fresh = await ref.read(coinWalletServiceProvider).sync(claim: true);
     if (fresh == null || !fresh.enabled) return const [];
     state = AsyncData(fresh);
     await _writeCache(fresh);

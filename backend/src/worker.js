@@ -1597,6 +1597,11 @@ export default {
                         localDate: typeof payload.local_date === "string" ? payload.local_date : null,
                         visitId: (request.headers.get("x-visit-id") || "").slice(0, 64) || null,
                         appVersion: typeof payload.app_version === "string" ? payload.app_version.slice(0, 40) : null,
+                        // Only the claim tap mints. Strictly boolean true: a
+                        // stale bundle's boot-time sync sends no claim field
+                        // and creates nothing, which is the enforcement — the
+                        // server cannot rely on cached clients updating.
+                        claim: payload.claim === true,
                     });
                 }
                 const state = await coinWalletState(env.CHAT_LOGS_DB, userId);
@@ -2496,10 +2501,18 @@ async function coinPendantWorn(db, userId, characterId) {
 /// localDate is the client's own calendar date and is trusted only within the
 /// idempotent key + the 20-hour server-side spacing: lying about the date buys
 /// nothing that waiting would not.
-async function coinSync(db, { userId, localDate, visitId = null, appVersion = null }) {
+async function coinSync(db, { userId, localDate, visitId = null, appVersion = null, claim = false }) {
     const granted = [];
 
-    if (await coinGrant(db, {
+    // Nothing exists until the visitor actually taps "Tap to Claim Coins".
+    // The client stopped granting at app load in 1.7.8+82, but the client
+    // cannot be the gate: every cached bundle from before the split still
+    // POSTs here at boot, and "83 users got coins" going on meaning "83
+    // phones loaded the app" was the whole bug. The welcome mints only on
+    // the claim, and the daily flows only into a wallet that already exists
+    // (or on the claim itself), so a device that never taps never appears
+    // in the economy at all — from any bundle, cached or current.
+    if (claim && await coinGrant(db, {
         id: `grant:welcome:${userId}`,
         userId, delta: COINS.welcome, reason: "welcome", visitId, appVersion,
     })) {
@@ -2517,10 +2530,16 @@ async function coinSync(db, { userId, localDate, visitId = null, appVersion = nu
             SELECT ?, ?, ?, 'grant', 'daily', ?, ?, ?
             WHERE COALESCE((SELECT last_daily_at FROM coin_wallets WHERE user_id = ?), '1970-01-01 00:00:00')
                   <= datetime('now', '-20 hours')
+              -- The same claim gate as the welcome: a claim-less sync pays
+              -- the daily only into a wallet that already exists. Without
+              -- this, every drive-by device would still mint a wallet
+              -- through the daily even with the welcome gated.
+              AND (? = 1 OR EXISTS (SELECT 1 FROM coin_wallets w WHERE w.user_id = ?))
         `).bind(
             `grant:daily:${userId}:${localDate}`,
             userId, dailyAmount, localDate, visitId, appVersion,
             userId,
+            claim ? 1 : 0, userId,
         ).run();
         if (d1Changes(result) > 0) {
             await db.prepare(`
