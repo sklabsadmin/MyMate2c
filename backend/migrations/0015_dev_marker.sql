@@ -1,0 +1,16 @@
+-- One bit that says "this visit was the developer testing".
+--
+-- The exclusion rule until now was country='TH', the developer's home — which
+-- misses exactly the visits that matter most: testing through a VPN or from a
+-- desktop reads as a real foreign visitor. One such Mac session spent a day
+-- being analysed as the coins card's first paid acceptor before timing gave
+-- it away (docs/REVIEW-2026-08-21-first-days-of-instrumentation.md is the
+-- trail head for that week).
+--
+-- The beacon sets it from a localStorage flag a device opts into once by
+-- visiting any page with ?dev=1 (?dev=0 clears it), and sends it on every
+-- event, so any anchor row of a dev visit carries the bit. Admin aggregates
+-- and the eval tools drop flagged visits; export-all keeps them, because the
+-- raw dump stays raw and the inspection pages still want to see them.
+-- NULL means "not marked", the ordinary case, and reads as not-dev.
+ALTER TABLE site_visits ADD COLUMN is_dev INTEGER;

@@ -291,6 +291,7 @@ export default {
                                     WHERE r.visit_id = v.visit_id AND r.event = 'app_ready') AS saw_app
                     FROM site_visits v
                     WHERE v.event = 'arrive' AND v.created_at >= datetime('now', ?)
+                      AND ${notDevSql("v")}
                     GROUP BY v.visit_id
                 ) a
                 GROUP BY a.source, a.client ORDER BY visits DESC
@@ -305,6 +306,7 @@ export default {
                 SELECT date(created_at) AS day, COUNT(DISTINCT visit_id) AS visits
                 FROM site_visits
                 WHERE event = 'arrive' AND created_at >= datetime('now', ?)
+                  AND COALESCE(is_dev, 0) = 0
                 GROUP BY day ORDER BY day DESC
             `).bind(since).all();
 
@@ -370,6 +372,7 @@ export default {
                                 WHERE t.visit_id = a.visit_id AND t.event = 'character_tap') AS opened_character
                 FROM site_visits a
                 WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
+                  AND ${notDevSql("a")}
                 GROUP BY a.visit_id
                 ORDER BY created_at DESC LIMIT 200
             `).bind(since).all();
@@ -398,6 +401,7 @@ export default {
                 FROM site_visits a
                 LEFT JOIN site_visits e ON e.visit_id = a.visit_id
                 WHERE a.event='arrive' AND a.created_at >= datetime('now', ?)
+                  AND ${notDevSql("a")}
                 GROUP BY a.source ORDER BY arrived DESC
             `).bind(since).all();
 
@@ -415,6 +419,7 @@ export default {
                        event, COUNT(*) AS n
                 FROM site_visits
                 WHERE detail IS NOT NULL AND created_at >= datetime('now', ?)
+                  AND COALESCE(is_dev, 0) = 0
                 GROUP BY character_id, event ORDER BY n DESC
             `).bind(since).all();
 
@@ -481,6 +486,7 @@ export default {
                     FROM site_visits v
                     WHERE v.event = 'arrive'
                       AND v.created_at >= datetime('now', ?)
+                      AND ${notDevSql("v")}
                       AND EXISTS (
                           SELECT 1 FROM site_visits t
                           WHERE t.visit_id = v.visit_id AND t.event = 'character_tap'
@@ -518,6 +524,7 @@ export default {
                                   AND e.event IN ('input_typed', 'starter_tap', 'first_message')) AS engaged
                 FROM site_visits a
                 WHERE a.event = 'arrive' AND a.created_at >= datetime('now', ?)
+                  AND ${notDevSql("a")}
                 GROUP BY a.visit_id
                 LIMIT 20000
             `).bind(since).all();
@@ -562,6 +569,7 @@ export default {
                            COUNT(DISTINCT CASE WHEN event IN ('input_typed', 'starter_tap', 'first_message') THEN visit_id END) AS engaged
                     FROM site_visits
                     WHERE variant IS NOT NULL AND created_at >= datetime('now', ?)
+                      AND COALESCE(is_dev, 0) = 0
                     GROUP BY variant ORDER BY variant
                 `).bind(since).all();
                 byVariant = v.results || [];
@@ -710,6 +718,7 @@ export default {
                         FROM site_visits a
                         LEFT JOIN pings p ON p.visit_id = a.visit_id
                         WHERE a.event = 'arrive'
+                          AND ${notDevSql("a")}
                           AND a.created_at >= datetime('now', ?1)
                           AND (?2 = '' OR IFNULL(a.country,'') <> ?2)
                           AND EXISTS (
@@ -844,7 +853,7 @@ export default {
                        (SELECT COUNT(*) FROM site_visits f
                          WHERE f.visit_id = a.visit_id AND f.event = 'send_failed') AS send_failed
                 FROM site_visits a
-                WHERE a.event = 'arrive' AND ${where}
+                WHERE a.event = 'arrive' AND ${notDevSql("a")} AND ${where}
                 GROUP BY a.visit_id
                 ORDER BY created_at DESC
                 LIMIT ${SESSION_LIMIT + 1}
@@ -883,7 +892,7 @@ export default {
                                     WHERE m.visit_id = v.visit_id
                                       AND m.event = 'first_message') AS messaged
                     FROM site_visits v
-                    WHERE v.event = 'arrive' AND ${where.replace(/\ba\./g, "v.")}
+                    WHERE v.event = 'arrive' AND ${notDevSql("v")} AND ${where.replace(/\ba\./g, "v.")}
                     GROUP BY v.visit_id
                 ) a
             `).bind(param).first();
@@ -906,7 +915,7 @@ export default {
                 FROM (
                     SELECT v.visit_id, MIN(v.country) AS country
                     FROM site_visits v
-                    WHERE v.event = 'arrive' AND ${where.replace(/\ba\./g, "v.")}
+                    WHERE v.event = 'arrive' AND ${notDevSql("v")} AND ${where.replace(/\ba\./g, "v.")}
                     GROUP BY v.visit_id
                 ) a
                 GROUP BY a.country
@@ -1143,6 +1152,20 @@ export default {
                 const days = Math.min(Math.max(parseInt(url.searchParams.get("days"), 10) || 14, 1), 90);
                 const userFilter = (url.searchParams.get("user_id") || "").trim().slice(0, 80) || null;
 
+                // The developer's wallets, excluded from every count below: a
+                // wallet belongs to the developer if any visit that carried
+                // its user id was dev-marked (migration 0015). Wallets are
+                // minted automatically on app load, so unexcluded test
+                // sessions read as adopters — one Mac test session spent a
+                // day as the coins card's "first paid acceptor".
+                const notDevUserSql = `user_id NOT IN (
+                    SELECT DISTINCT sv.app_user_id FROM site_visits sv
+                    WHERE COALESCE(sv.is_dev, 0) = 1 AND sv.app_user_id IS NOT NULL)`;
+                const devUsers = await db.prepare(`
+                    SELECT COUNT(DISTINCT app_user_id) AS n FROM site_visits
+                    WHERE COALESCE(is_dev, 0) = 1 AND app_user_id IS NOT NULL
+                `).first();
+
                 // Faucets vs sinks, per day per reason — the economy's own
                 // funnel. Sums, not row counts: a libation and a taste are not
                 // the same event.
@@ -1153,6 +1176,7 @@ export default {
                            COUNT(*) AS rows
                     FROM coin_ledger
                     WHERE created_at >= datetime('now', ?)
+                      AND ${notDevUserSql}
                     GROUP BY day, reason
                     ORDER BY day DESC, reason
                 `).bind(`-${days} days`).all();
@@ -1160,6 +1184,7 @@ export default {
                 const { results: topWallets } = await db.prepare(`
                     SELECT user_id, balance, lifetime_earned, lifetime_spent, last_daily_on, updated_at
                     FROM coin_wallets
+                    WHERE ${notDevUserSql}
                     ORDER BY balance DESC
                     LIMIT 25
                 `).all();
@@ -1170,6 +1195,7 @@ export default {
                        ORDER BY created_at DESC, id DESC LIMIT 200`
                     : `SELECT id, created_at, user_id, delta, kind, reason, ref, visit_id
                        FROM coin_ledger
+                       WHERE ${notDevUserSql}
                        ORDER BY created_at DESC, id DESC LIMIT 100`;
                 const recentStmt = userFilter ? db.prepare(recentSql).bind(userFilter) : db.prepare(recentSql);
                 const { results: recent } = await recentStmt.all();
@@ -1180,6 +1206,7 @@ export default {
                            COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS spent,
                            COUNT(DISTINCT user_id) AS users
                     FROM coin_ledger
+                    WHERE ${notDevUserSql}
                 `).first();
 
                 // Retention — the one number the whole feature is for. A
@@ -1249,6 +1276,7 @@ export default {
                 return jsonResponse({
                     days,
                     user_id: userFilter,
+                    dev_users_excluded: devUsers?.n || 0,
                     totals: {
                         ...(totals || { rows: 0, granted: 0, spent: 0, users: 0 }),
                         engaged_wallets: buckets.engaged,
@@ -3840,6 +3868,9 @@ async function recordSiteVisit(raw, request, env) {
     const isReturn = payload.isReturn === 1 || payload.isReturn === true ? 1
         : payload.isReturn === 0 || payload.isReturn === false ? 0 : null;
     const variant = String(payload.variant || "").slice(0, 60) || null;
+    // The developer's own device, marked once via ?dev=1 (migration 0015).
+    // Strictly the number 1 or true; anything else reads as not-dev.
+    const isDev = payload.isDev === 1 || payload.isDev === true ? 1 : null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -3849,8 +3880,8 @@ async function recordSiteVisit(raw, request, env) {
                 country, colo, duration_ms, detail, app_user_id,
                 viewport_w, viewport_h, failure_reason,
                 visible_ms, hide_count, exit_mode, nav_type, platform,
-                app_version, touch_count, is_return, variant
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                app_version, touch_count, is_return, variant, is_dev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -3878,7 +3909,8 @@ async function recordSiteVisit(raw, request, env) {
             appVersion,
             Number.isFinite(touchCount) && touchCount >= 0 ? Math.round(touchCount) : null,
             isReturn,
-            variant
+            variant,
+            isDev
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -4025,6 +4057,18 @@ function visitVisibleMsSql(alias) {
 /// wrong in for a "how quickly did they leave" chart.
 function visitTimeOnScreenMsSql(alias) {
     return `COALESCE(${visitVisibleMsSql(alias)}, ${visitDwellMsSql(alias)})`;
+}
+
+/// Drops the developer's own visits from an aggregate (migration 0015).
+///
+/// Filterable on the anchor row alone because the beacon sends the bit on
+/// every event — no EXISTS probe needed. NULL is the ordinary, unmarked case
+/// and must read as not-dev, hence the COALESCE. Country='TH' was the old
+/// rule and missed exactly the visits that mattered: a VPN or a desktop test
+/// reads as a real foreign visitor, and one Mac session spent a day being
+/// analysed as the coins card's first paid acceptor.
+function notDevSql(alias) {
+    return `COALESCE(${alias}.is_dev, 0) = 0`;
 }
 
 /// Rows the CSV export will carry at most.
@@ -6278,7 +6322,10 @@ async function load() {
       + (data.totals.real_wallets || 0) + ' real, '
       + (data.totals.test_wallets || 0) + ' test (TH/direct), '
       + (data.totals.engaged_wallets || 0)
-      + ' engaged beyond the automatic grants.';
+      + ' engaged beyond the automatic grants.'
+      // Developer's own wallets are excluded outright (claude/logs-logging-eval).
+      + (data.dev_users_excluded ? ' (' + data.dev_users_excluded + ' dev wallet'
+         + (data.dev_users_excluded === 1 ? '' : 's') + ' excluded.)' : '');
 
     // Retention is why coins exist: did anyone come back for a second dawn
     // offering? Headline rate plus the per-day new/returning split.
