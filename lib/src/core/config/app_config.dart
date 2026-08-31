@@ -227,6 +227,10 @@ class AppConfig {
       return Uri.base.origin;
     }
 
+    // Same guard as appSecret below: dotenv throws on access when nothing
+    // loaded (no .env in the app bundle), and "no config" must read as the
+    // empty string that apiUrl treats as "backend unknown", not a crash.
+    if (!dotenv.isInitialized) return '';
     return dotenv.env['WORKER_URL'] ?? '';
   }
 

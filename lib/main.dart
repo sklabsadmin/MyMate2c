@@ -38,7 +38,12 @@ Future<void> main() async {
       try {
         await dotenv.load(fileName: ".env");
       } catch (_) {}
-      print("Debug: All keys found in .env: ${dotenv.env.keys.toList()}");
+      // dotenv THROWS on access if the load above failed (.env is not a
+      // bundled asset — deliberately, so web deploys can never serve it).
+      // Config then comes from --dart-define, and startup must survive.
+      print(dotenv.isInitialized
+          ? "Debug: All keys found in .env: ${dotenv.env.keys.toList()}"
+          : "Debug: no .env in bundle — using --dart-define values");
     }
     if (AppConfig.workerUrl.isEmpty) {
       print("❌ CRITICAL: WORKER_URL is MISSING! The app cannot connect to the backend.");
