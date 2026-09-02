@@ -188,10 +188,14 @@ flutter run
 
 ### Building for Production
 **Android:**
-To build an App Bundle for the Google Play Store:
+Use the script, not bare `flutter build` — a bare build ships with no backend
+config and every chat fails with "Invalid signature":
 ```bash
-flutter build appbundle
+npm run build:android        # release .aab for Google Play
+npm run build:android:apk    # release .apk to sideload on a phone
 ```
+Signing, the upload key, and the first-run checklist are in
+`docs/android-release-runbook.md`.
 
 **iOS:**
 To build an IPA for the Apple App Store (requires macOS and Xcode):
