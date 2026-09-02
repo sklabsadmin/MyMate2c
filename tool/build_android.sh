@@ -97,8 +97,15 @@ fi
 if [[ "$MODE" == "release" ]]; then
   CHECK_DIR="$(mktemp -d)"
   trap 'rm -rf "$CHECK_DIR"' EXIT
-  unzip -q -o "$OUT" -d "$CHECK_DIR" '*/libapp.so' 'lib/*/libapp.so' 2>/dev/null || true
-  LIBAPP="$(find "$CHECK_DIR" -name libapp.so | head -1 || true)"
+  # No `find` here: in Git Bash on Windows an unquoted `find` resolves to
+  # C:\Windows\System32\FIND.EXE and dies with "Parameter format not
+  # correct". A shell glob over the two layouts (APK: lib/<abi>/, AAB:
+  # base/lib/<abi>/) needs no external tool at all.
+  unzip -q -o "$OUT" 'lib/*/libapp.so' 'base/lib/*/libapp.so' -d "$CHECK_DIR" 2>/dev/null || true
+  shopt -s nullglob
+  LIBAPPS=("$CHECK_DIR"/lib/*/libapp.so "$CHECK_DIR"/base/lib/*/libapp.so)
+  shopt -u nullglob
+  LIBAPP="${LIBAPPS[0]:-}"
   if [[ -z "$LIBAPP" ]]; then
     echo "WARNING: no libapp.so found inside ${OUT}; could not verify defines." >&2
   else
