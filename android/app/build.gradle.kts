@@ -53,9 +53,14 @@ android {
     }
 
     defaultConfig {
-        // Must stay com.aiboyfriend.mymate: it is the Play Store identity and
-        // the package the mymate:// deep links and MainActivity resolve under.
-        applicationId = "com.aiboyfriend.mymate"
+        // The Google Play identity, and it cannot change: the listing the
+        // previous owner published ("MyMate: AI Boyfriend Chat", 164 installs,
+        // last release versionCode 22) lives under this package, and an update
+        // only reaches those users if the bundle carries the same name. It
+        // differs from the Kotlin namespace above on purpose - the namespace
+        // is only where R and MainActivity resolve - and from the iOS bundle
+        // id, which is fine; the stores never compare them.
+        applicationId = "com.iosappv2.ai_boyfriend_chat"
         // 26 is what flutter_local_notifications' desugaring was set up for,
         // and covers effectively every active device. Flutter picks the
         // compile/target SDK so Play's yearly target-API requirement is met by

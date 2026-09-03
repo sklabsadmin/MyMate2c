@@ -12,3 +12,6 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Exported public upload certificate (for Play upload-key reset requests)
+upload_certificate.pem

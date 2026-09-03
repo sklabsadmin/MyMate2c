@@ -45,26 +45,37 @@ run. Found on the first pass:
 3. `.env` in the repo root with `WORKER_URL` and `APP_SECRET` (the same file
    `npm run deploy` uses).
 
+## The Play listing that already exists
+
+Checked in the Play Console on 2026-09-02 (SK Labs LLC, an organization
+account, so no closed-testing waiting period): the previous owner had already
+published this app as "MyMate: AI Boyfriend Chat" under the package
+`com.iosappv2.ai_boyfriend_chat` - 164 installs, last production release
+versionCode 22 (1.1.0) on 2026-01-08, Play App Signing on. That is why
+`applicationId` is `com.iosappv2.ai_boyfriend_chat` while the Kotlin
+namespace is `com.aiboyfriend.mymate`: the package name is the listing's
+identity and cannot change without starting a new listing from zero.
+
+Play App Signing means Google holds the app signing key (SHA-256
+`CD:3F:EB:5F:...:81:44`) and we only need an *upload* key. The upload
+certificate Play had on file (SHA-256 `1E:1B:ED:A0:...:17:8F`) was never
+handed over, so on 2026-09-02 a fresh upload key was generated and an
+upload-key reset requested with its certificate (SHA-256
+`14:CC:60:1A:...:11:15`). Until Google approves the reset, uploads are
+rejected as signed with the wrong key.
+
 ## Upload key
 
-Google Play ties the app to the key that first uploads it, so decide this
-before the first upload:
+Lives at `android/app/upload-keystore.jks` with its passwords in
+`android/key.properties` (both gitignored, both on ablegion7 - back them up).
+`android/upload_certificate.pem` is the exported public certificate, used
+for the reset request; regenerate it with:
 
-- If the previous owner ever published `com.aiboyfriend.mymate` on Play, the
-  app must be signed with *their* upload key (or Play Console → Setup → App
-  signing → "Request upload key reset"). Ask for the `.jks` and its passwords
-  as part of the handover.
-- If it was never on Play, generate one and keep it outside the repo:
+    keytool -export -rfc -keystore app/upload-keystore.jks -alias upload -file upload_certificate.pem
 
-      keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
-
-  Put the file at `android/app/upload-keystore.jks` (gitignored) and copy
-  `android/key.properties.example` to `android/key.properties` with the real
-  passwords. Back up the `.jks` somewhere that is not this machine.
-
-With Play App Signing (the default for new apps), Google holds the *app*
-signing key and this is only the *upload* key, so losing it is recoverable
-through a reset request rather than fatal, but it still costs days.
+If the key is ever lost, Play Console -> Protected with Play -> App signing
+-> "Request upload key reset" with a new certificate is the recovery; it
+costs a couple of days, not the app.
 
 ## Build
 
