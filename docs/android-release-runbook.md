@@ -116,6 +116,11 @@ the last, so bump `+N` for every upload, as for iOS/TestFlight.
   in `docs/odysseus-opening-brief-2026-08-10.md`) - rate accordingly in the
   questionnaire.
 - Billing: RevenueCat/`purchases_flutter` is commented out in `pubspec.yaml`
-  and `BILLING` is declared in the manifest. Harmless until it is re-enabled;
-  when it is, add `REVENUECAT_ANDROID_KEY` as a `--dart-define` in
-  `tool/build_android.sh` next to the other two.
+  and the manifest deliberately does NOT declare `BILLING` - Play rejected
+  the first 2.0.0 upload for declaring it without a Play Billing Library.
+  When RevenueCat comes back, its plugin adds both; then add
+  `REVENUECAT_ANDROID_KEY` as a `--dart-define` in `tool/build_android.sh`.
+- Advertising ID: the listing's declaration (App content -> Advertising ID)
+  must say "no" - the app has no ads SDK and no AD_ID permission.
+- Internal testing: testers are a list on the track (Test and release ->
+  Internal testing -> Testers); a release with no testers publishes to nobody.

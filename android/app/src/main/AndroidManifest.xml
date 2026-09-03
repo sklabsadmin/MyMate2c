@@ -1,7 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Google Play Billing, for when RevenueCat is switched back on. Harmless
-         while purchases_flutter is commented out in pubspec.yaml. -->
-    <uses-permission android:name="com.android.vending.BILLING" />
+    <!-- No com.android.vending.BILLING here on purpose. purchases_flutter is
+         commented out in pubspec.yaml, and declaring the permission without
+         a Play Billing Library in the bundle makes Play Console reject the
+         release ("uses Play Billing Library version AIDL, must update to
+         8.0.0"). When RevenueCat comes back, its plugin brings the permission
+         and the library together. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Local reminder notifications (NotificationService).
