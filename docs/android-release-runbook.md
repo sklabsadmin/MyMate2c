@@ -57,25 +57,24 @@ namespace is `com.aiboyfriend.mymate`: the package name is the listing's
 identity and cannot change without starting a new listing from zero.
 
 Play App Signing means Google holds the app signing key (SHA-256
-`CD:3F:EB:5F:...:81:44`) and we only need an *upload* key. The upload
-certificate Play had on file (SHA-256 `1E:1B:ED:A0:...:17:8F`) was never
-handed over, so on 2026-09-02 a fresh upload key was generated and an
-upload-key reset requested with its certificate (SHA-256
-`14:CC:60:1A:...:11:15`). Until Google approves the reset, uploads are
-rejected as signed with the wrong key.
+`CD:3F:EB:5F:...:81:44`) and we only need the *upload* key. Play's upload
+certificate is SHA-256 `1E:1B:ED:A0:...:17:8F`; the matching keystore turned
+up in the seller's original handover drop
+(`Downloads/mymate-origJun23/android/app/upload-keystore.jks`, alias
+`upload`, the password that used to be hardcoded in build.gradle.kts). It is
+now the project's upload key, so no key reset was needed.
 
 ## Upload key
 
 Lives at `android/app/upload-keystore.jks` with its passwords in
-`android/key.properties` (both gitignored, both on ablegion7 - back them up).
-`android/upload_certificate.pem` is the exported public certificate, used
-for the reset request; regenerate it with:
+`android/key.properties` (both gitignored, both on ablegion7 - back them up
+somewhere off that machine). Check it is the right one with
 
-    keytool -export -rfc -keystore app/upload-keystore.jks -alias upload -file upload_certificate.pem
+    keytool -list -keystore android/app/upload-keystore.jks
 
-If the key is ever lost, Play Console -> Protected with Play -> App signing
--> "Request upload key reset" with a new certificate is the recovery; it
-costs a couple of days, not the app.
+and compare the SHA-256 against Play Console -> Protected with Play ->
+App signing -> "Upload key certificate". If the key is ever lost, the same
+page has "Request upload key reset"; it costs a couple of days, not the app.
 
 ## Build
 
