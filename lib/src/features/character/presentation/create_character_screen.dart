@@ -149,7 +149,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                     children: [
                       Text(
                         _steps[_currentStep]['title'],
-                        style: theme.textTheme.headlineSmall?.copyWith(fontSize: 28),
+                        style: theme.textTheme.headlineSmall?.copyWith(fontSize: 28, color: Colors.white),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
@@ -206,7 +206,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                       onPressed: _handleNextStep,
                       child: Text(
                         _currentStep == _steps.length - 1 ? 'Bring Him to Life' : 'Continue',
-                        style: theme.textTheme.titleMedium,
+                        style: theme.textTheme.titleMedium?.copyWith(color: Colors.white),
                       ),
                     ),
                   ),
@@ -316,7 +316,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Eyes', style: theme.textTheme.titleMedium),
+          Text('Eyes', style: theme.textTheme.titleMedium?.copyWith(color: Colors.white)),
           const SizedBox(height: 16),
           Wrap(
             spacing: 12,
@@ -328,7 +328,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
             )).toList(),
           ),
           const SizedBox(height: 32),
-          Text('Hair', style: theme.textTheme.titleMedium),
+          Text('Hair', style: theme.textTheme.titleMedium?.copyWith(color: Colors.white)),
           const SizedBox(height: 16),
            Wrap(
             spacing: 12,

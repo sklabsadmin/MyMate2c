@@ -69,11 +69,11 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
         elevation: 0,
         centerTitle: false,
         titleTextStyle: theme.textTheme.headlineMedium?.copyWith(
-          color: Colors.white,
+          color: theme.colorScheme.onSurface,
           fontWeight: FontWeight.bold,
         ),
       ),
-      extendBodyBehindAppBar: true, 
+      extendBodyBehindAppBar: true,
       body: Stack(
         children: [
            // Background
@@ -83,8 +83,11 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
                  begin: Alignment.topCenter,
                  end: Alignment.bottomCenter,
                  colors: [
-                   const Color(0xFF2E003E), // Deep Purple
-                   Colors.black,
+                   theme.scaffoldBackgroundColor,
+                   Color.alphaBlend(
+                     theme.primaryColor.withOpacity(0.05),
+                     theme.scaffoldBackgroundColor,
+                   ),
                  ],
                ),
              ),
@@ -154,16 +157,16 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.white.withOpacity(0.3)),
+          Icon(Icons.chat_bubble_outline, size: 64, color: theme.colorScheme.onSurface.withOpacity(0.3)),
           const SizedBox(height: 16),
           Text(
             "No conversations yet",
-            style: theme.textTheme.titleLarge?.copyWith(color: Colors.white70),
+            style: theme.textTheme.titleLarge?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.7)),
           ),
           const SizedBox(height: 8),
           Text(
             "Start talking to someone from Personalities!",
-            style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white38),
+            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.4)),
           ),
           const SizedBox(height: 24),
           ElevatedButton(
@@ -197,7 +200,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
       title: Text(
         chat['name'],
         style: GoogleFonts.outfit(
-          color: Colors.white,
+          color: theme.colorScheme.onSurface,
           fontWeight: FontWeight.w600,
           fontSize: 16,
         ),
@@ -210,7 +213,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
             chat['lastMessage'],
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white70),
+            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.65)),
           ),
         ],
       ),
@@ -221,7 +224,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
           Text(
             _formatTime(chat['timestamp']),
             style: theme.textTheme.bodySmall?.copyWith(
-              color: (chat['unreadCount'] ?? 0) > 0 ? theme.primaryColor : Colors.white38,
+              color: (chat['unreadCount'] ?? 0) > 0 ? theme.primaryColor : theme.colorScheme.onSurface.withOpacity(0.4),
               fontWeight: (chat['unreadCount'] ?? 0) > 0 ? FontWeight.bold : FontWeight.normal,
             ),
           ),

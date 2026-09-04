@@ -4016,7 +4016,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        backgroundColor: const Color(0xFF1E1E1E),
         title: const Text(
           "Report Content",
           style: TextStyle(color: Colors.white),

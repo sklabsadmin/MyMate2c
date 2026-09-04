@@ -158,9 +158,9 @@ class _RoleplayScreenState extends ConsumerState<RoleplayScreen> {
           return Container(
             margin: const EdgeInsets.only(bottom: 16),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: theme.colorScheme.onSurface.withOpacity(0.04),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
+              border: Border.all(color: theme.colorScheme.onSurface.withOpacity(0.1)),
             ),
             child: Material(
               color: Colors.transparent,
@@ -201,14 +201,14 @@ class _RoleplayScreenState extends ConsumerState<RoleplayScreen> {
                               style: theme.textTheme.bodyLarge?.copyWith(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
-                                color: Colors.white,
+                                color: theme.colorScheme.onSurface,
                               ),
                             ),
                             const SizedBox(height: 6),
                             Text(
                               scenario['desc'] as String,
                               style: theme.textTheme.bodyMedium?.copyWith(
-                                color: Colors.white60,
+                                color: theme.colorScheme.onSurface.withOpacity(0.6),
                                 fontSize: 13,
                               ),
                             ),
@@ -222,14 +222,14 @@ class _RoleplayScreenState extends ConsumerState<RoleplayScreen> {
                         Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                             color: Colors.black54,
+                             color: theme.colorScheme.onSurface.withOpacity(0.06),
                              shape: BoxShape.circle,
-                             border: Border.all(color: Colors.white24),
+                             border: Border.all(color: theme.colorScheme.onSurface.withOpacity(0.15)),
                           ),
                           child: const Icon(Icons.lock, color: Colors.amber, size: 20),
                         )
-                      else 
-                        const Icon(Icons.arrow_forward_ios, color: Colors.white24, size: 16),
+                      else
+                        Icon(Icons.arrow_forward_ios, color: theme.colorScheme.onSurface.withOpacity(0.24), size: 16),
                     ],
                   ),
                 ),

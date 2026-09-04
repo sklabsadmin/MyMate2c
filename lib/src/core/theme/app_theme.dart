@@ -2,66 +2,71 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
-  // Romantic Palette
-  static const Color primaryColor = Color(0xFFD81B60); // Deep Passion Pink/Red
-  static const Color secondaryColor = Color(0xFFFFD700); // Gold
-  static const Color backgroundColor = Color(0xFF1A0520); // Midnight Purple/Black
-  static const Color surfaceColor = Color(0xFF2D1035); // Lighter Purple
-  static const Color accentColor = Color(0xFFFF4081); // Bright Pink
+  // Mythos Palette — a bright, warm, romance-forward take on the app icon's
+  // dusk-over-the-Aegean scene: white in place of the old purple field, a
+  // rose primary carrying the interactive weight, antique gold for accents,
+  // and the aegean purple demoted to a quiet secondary highlight.
+  static const Color primaryColor = Color(0xFFC9487C); // Romantic Rose
+  static const Color secondaryColor = Color(0xFFD4AF6A); // Warm Gold
+  static const Color backgroundColor = Color(0xFFFFFFFF); // White
+  static const Color surfaceColor = Color(0xFFFFF6F3); // Soft Blush White
+  static const Color accentColor = Color(0xFF9B7EBD); // Aegean Lavender
+  static const Color inkColor = Color(0xFF241D45); // Wordmark Navy-Plum
+  static const Color mutedInkColor = Color(0xFF7A7288); // Muted body ink
 
   static ThemeData get romanticTheme {
     return ThemeData(
       useMaterial3: true,
-      brightness: Brightness.dark,
+      brightness: Brightness.light,
       scaffoldBackgroundColor: backgroundColor,
       primaryColor: primaryColor,
-      colorScheme: const ColorScheme.dark(
+      colorScheme: const ColorScheme.light(
         primary: primaryColor,
         secondary: secondaryColor,
         surface: surfaceColor,
         error: Colors.redAccent,
         onPrimary: Colors.white,
-        onSecondary: Colors.black,
-        onSurface: Colors.white,
+        onSecondary: inkColor,
+        onSurface: inkColor,
       ),
       textTheme: TextTheme(
         displayLarge: GoogleFonts.playfairDisplay(
           fontSize: 32,
           fontWeight: FontWeight.bold,
-          color: primaryColor,
+          color: inkColor,
         ),
         headlineSmall: GoogleFonts.playfairDisplay(
           fontSize: 24,
           fontWeight: FontWeight.w600,
-          color: Colors.white,
+          color: inkColor,
         ),
         titleLarge: GoogleFonts.playfairDisplay(
           fontSize: 20,
           fontWeight: FontWeight.bold,
-          color: Colors.white,
+          color: inkColor,
         ),
         titleMedium: GoogleFonts.playfairDisplay(
           fontSize: 18,
           fontWeight: FontWeight.bold,
-          color: Colors.white,
+          color: inkColor,
         ),
         bodyLarge: GoogleFonts.lato(
           fontSize: 16,
-          color: Colors.white.withOpacity(0.9),
+          color: mutedInkColor,
         ),
         bodyMedium: GoogleFonts.lato(
           fontSize: 14,
-          color: Colors.white.withOpacity(0.8),
+          color: mutedInkColor,
         ),
         labelLarge: GoogleFonts.playfairDisplay(
           fontSize: 16,
           fontWeight: FontWeight.bold,
-          color: Colors.white,
+          color: inkColor,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: surfaceColor.withOpacity(0.5),
+        fillColor: surfaceColor,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(24), // Softer curves
           borderSide: BorderSide.none,
@@ -74,7 +79,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(24),
           borderSide: const BorderSide(color: primaryColor),
         ),
-        hintStyle: GoogleFonts.lato(color: Colors.white.withOpacity(0.4)),
+        hintStyle: GoogleFonts.lato(color: mutedInkColor.withOpacity(0.6)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
@@ -89,11 +94,11 @@ class AppTheme {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(30), // Pill shape
           ),
-          elevation: 8,
-          shadowColor: primaryColor.withOpacity(0.5),
+          elevation: 4,
+          shadowColor: primaryColor.withOpacity(0.35),
         ),
       ),
-      iconTheme: const IconThemeData(color: Colors.white70),
+      iconTheme: IconThemeData(color: inkColor.withOpacity(0.7)),
     );
   }
 }
