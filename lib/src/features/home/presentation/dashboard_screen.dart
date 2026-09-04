@@ -76,12 +76,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               // Google avatar URLs can 403 once the reference ages out, so
               // never let a broken image take the header down with it.
               errorBuilder: (_, _, _) => Container(
-                color: Colors.white.withOpacity(0.1),
+                color: theme.colorScheme.onSurface.withOpacity(0.08),
                 alignment: Alignment.center,
-                child: const Icon(
+                child: Icon(
                   Icons.person,
                   size: 18,
-                  color: Colors.white70,
+                  color: theme.colorScheme.onSurface.withOpacity(0.7),
                 ),
               ),
             ),
@@ -260,11 +260,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         // degradation; losing the gear is not.
                         Expanded(
                           child: Text(
-                            'Welcome, ${_timeOfDayGreeting()}',
+                            // Just the time of day: "Welcome, Good Afternoon"
+                            // ellipsised beside the coin chip and gear.
+                            _timeOfDayGreeting(),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.titleMedium?.copyWith(
-                              color: Colors.white70,
+                              color: theme.colorScheme.onSurface.withOpacity(0.7),
                             ),
                           ),
                         ),
@@ -303,7 +305,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                       style: theme.textTheme.bodyMedium
                                           ?.copyWith(
                                             fontWeight: FontWeight.bold,
-                                            color: Colors.white,
+                                            color: theme.colorScheme.onSurface,
                                           ),
                                     ),
                                   ],
@@ -314,7 +316,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   width: 80,
                                   height: 4,
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.1),
+                                    color: theme.colorScheme.onSurface.withOpacity(0.1),
                                     borderRadius: BorderRadius.circular(2),
                                   ),
                                   alignment: Alignment.centerLeft,
@@ -342,15 +344,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               child: Container(
                                 padding: const EdgeInsets.all(8),
                                 decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.1),
+                                  color: theme.colorScheme.onSurface.withOpacity(0.06),
                                   shape: BoxShape.circle,
                                   border: Border.all(
-                                    color: Colors.white.withOpacity(0.2),
+                                    color: theme.colorScheme.onSurface.withOpacity(0.15),
                                   ),
                                 ),
-                                child: const Icon(
+                                child: Icon(
                                   Icons.settings,
-                                  color: Colors.white,
+                                  color: theme.colorScheme.onSurface.withOpacity(0.8),
                                   size: 20,
                                 ),
                               ),
@@ -406,15 +408,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 Container(
                                   padding: const EdgeInsets.all(3),
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.07),
+                                    color: theme.colorScheme.onSurface.withOpacity(0.05),
                                     borderRadius: BorderRadius.circular(22),
                                     border: Border.all(
-                                      color: Colors.white.withOpacity(0.12),
+                                      color: theme.colorScheme.onSurface.withOpacity(0.12),
                                     ),
                                   ),
                                   child: TabBar(
                                     labelColor: Colors.white,
-                                    unselectedLabelColor: Colors.white70,
+                                    unselectedLabelColor: theme.colorScheme.onSurface.withOpacity(0.6),
                                     dividerColor: Colors.transparent,
                                     indicatorSize: TabBarIndicatorSize.tab,
                                     splashBorderRadius: BorderRadius.circular(
@@ -508,7 +510,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       return Center(
         child: Text(
           'Nobody here yet.',
-          style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white38),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withOpacity(0.4),
+          ),
         ),
       );
     }
@@ -863,11 +867,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     Text(
                       character['name'],
+                      // White regardless of the app theme: this sits on the
+                      // card's photo behind a dark gradient, not on the page.
                       style: compact
                           ? theme.textTheme.bodyMedium?.copyWith(
                               fontWeight: FontWeight.bold,
+                              color: Colors.white,
                             )
-                          : theme.textTheme.titleMedium,
+                          : theme.textTheme.titleMedium?.copyWith(
+                              color: Colors.white,
+                            ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
