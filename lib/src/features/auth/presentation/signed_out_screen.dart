@@ -44,7 +44,7 @@ class SignedOutScreen extends StatelessWidget {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              theme.scaffoldBackgroundColor,
+              const Color(0xFF2E003E), // Deep Purple — deliberately dark regardless of the app theme
               Colors.black,
               theme.primaryColor.withValues(alpha: 0.1),
             ],

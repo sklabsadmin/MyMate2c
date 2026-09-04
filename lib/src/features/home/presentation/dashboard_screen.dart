@@ -225,8 +225,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   end: Alignment.bottomRight,
                   colors: [
                     theme.scaffoldBackgroundColor,
-                    Colors.black,
-                    theme.primaryColor.withOpacity(0.1),
+                    Color.alphaBlend(
+                      theme.primaryColor.withOpacity(0.05),
+                      theme.scaffoldBackgroundColor,
+                    ),
+                    theme.colorScheme.secondary.withOpacity(0.08),
                   ],
                 ),
               ),

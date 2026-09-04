@@ -132,20 +132,20 @@ class ScaffoldWithNavBar extends StatelessWidget {
             indicatorColor: theme.primaryColor.withOpacity(0.2),
             height: 65,
             labelBehavior: NavigationDestinationLabelBehavior.alwaysHide, // Sexier, minimal
-            destinations: const [
+            destinations: [
               NavigationDestination(
-                icon: Icon(Icons.dashboard_outlined),
-                selectedIcon: Icon(Icons.dashboard, color: Color(0xFFD81B60)),
+                icon: const Icon(Icons.dashboard_outlined),
+                selectedIcon: Icon(Icons.dashboard, color: theme.primaryColor),
                 label: 'Personalities',
               ),
               NavigationDestination(
-                icon: Icon(Icons.chat_bubble_outline),
-                selectedIcon: Icon(Icons.chat_bubble, color: Color(0xFFD81B60)),
+                icon: const Icon(Icons.chat_bubble_outline),
+                selectedIcon: Icon(Icons.chat_bubble, color: theme.primaryColor),
                 label: 'Conversations',
               ),
               NavigationDestination(
-                icon: Icon(Icons.person_outline),
-                selectedIcon: Icon(Icons.person, color: Color(0xFFD81B60)),
+                icon: const Icon(Icons.person_outline),
+                selectedIcon: Icon(Icons.person, color: theme.primaryColor),
                 label: 'My Profile',
               ),
             ],

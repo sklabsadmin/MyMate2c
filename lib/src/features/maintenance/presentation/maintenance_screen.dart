@@ -82,7 +82,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  theme.scaffoldBackgroundColor,
+                  const Color(0xFF2E003E), // Deep Purple — deliberately dark regardless of the app theme
                   Colors.black,
                   theme.primaryColor.withOpacity(0.12),
                 ],

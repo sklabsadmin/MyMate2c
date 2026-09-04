@@ -70,7 +70,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                   center: Alignment.center,
                   radius: 1.5,
                   colors: [
-                    theme.colorScheme.surface, // Inner (Purple)
+                    const Color(0xFF2D1035), // Inner — deliberately dark regardless of the app theme
                     theme.primaryColor.withOpacity(0.2), // Mid (Pinkish glow)
                     Colors.black, // Outer
                   ],
