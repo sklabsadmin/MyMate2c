@@ -7,6 +7,7 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
 // import 'src/core/services/revenue_cat_service.dart'; // RevenueCat disabled
+import 'src/core/services/analytics.dart';
 import 'src/core/services/notification_service.dart';
 
 Future<void> main() async {
@@ -59,6 +60,13 @@ Future<void> main() async {
 
     // Initialize Local Notifications
     await NotificationService().init();
+
+    // Open the visit. On the web the page script did this before Flutter
+    // existed and the call is a no-op; on iOS/Android this IS the arrive —
+    // without it an installed app is invisible to the funnel and "web vs
+    // app" cannot be asked. After the config prints above, so a missing
+    // backend has already announced itself by the time nothing is sent.
+    startVisitFunnel();
 
     runApp(const ProviderScope(child: AIApp()));
   }, (error, stack) async {

@@ -1,0 +1,15 @@
+-- Which runtime sent the event: 'web', 'ios' or 'android'.
+--
+-- Not to be confused with the existing platform column, which answers a
+-- different question — where the TRAFFIC came from (instagram, facebook, a
+-- referring host) — and is derived server-side from the user-agent. This one
+-- is the app declaring what it is running as, which only the app knows:
+-- Flutter compiles the same features for the page, the iOS app and the
+-- Android app, and comparing those surfaces is impossible while every row
+-- assumes there is only the page.
+--
+-- Declared by the client and held to the closed set at write time; the
+-- stored user_agent remains the independent witness. Rows from before this
+-- migration (and from cached pre-16 bundles) read NULL = unknown, the same
+-- rule every other column lives by.
+ALTER TABLE site_visits ADD COLUMN app_platform TEXT;

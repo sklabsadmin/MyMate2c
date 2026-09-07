@@ -575,6 +575,39 @@ export default {
                 byVariant = v.results || [];
             } catch (_) { /* migration 0013 not applied yet */ }
 
+            // Web vs the native apps, one funnel row per runtime. Guarded the
+            // same way as byVariant: the column arrives with migration 0016,
+            // and older rows (no declared platform) stay out of the split
+            // rather than pretending to be a fourth platform. Web is
+            // sub-split by the device the browser sat on, read from the
+            // stored user-agent — because "web vs mobile" is really three
+            // comparisons, and the iOS app against Safari-on-iPhone is the
+            // honest one, not the iOS app against desktop Chrome.
+            let byPlatform = [];
+            try {
+                const p = await db.prepare(`
+                    SELECT app_platform
+                           || CASE WHEN app_platform = 'web' THEN
+                                CASE WHEN user_agent LIKE '%iPhone%' OR user_agent LIKE '%iPad%' THEN ' · iOS browser'
+                                     WHEN user_agent LIKE '%Android%' THEN ' · Android browser'
+                                     ELSE ' · desktop/other' END
+                              ELSE '' END AS platform,
+                           COUNT(DISTINCT visit_id) AS visits,
+                           COUNT(DISTINCT CASE WHEN event = 'entry_shown' THEN visit_id END) AS shown,
+                           COUNT(DISTINCT CASE WHEN event = 'entry_tap' THEN visit_id END) AS tapped,
+                           COUNT(DISTINCT CASE WHEN event IN ('input_typed', 'starter_tap', 'first_message') THEN visit_id END) AS engaged
+                    FROM site_visits
+                    WHERE app_platform IS NOT NULL AND created_at >= datetime('now', ?)
+                      AND COALESCE(is_dev, 0) = 0
+                    GROUP BY 1 ORDER BY 1
+                `).bind(since).all();
+                // GROUP BY 1, not GROUP BY platform: the bare name resolves
+                // to the table's own platform column — the TRAFFIC platform
+                // (instagram/facebook/direct) — which silently folded every
+                // runtime into one row labelled by whichever row came first.
+                byPlatform = p.results || [];
+            } catch (_) { /* migration 0016 not applied yet */ }
+
             // The coins funnel, one row per (day, source), split real vs test.
             // "test" is the developer's own traffic: country TH (the analytics
             // docs already treat TH as the developer) plus untagged direct
@@ -656,6 +689,7 @@ export default {
                 byAd,
                 adsTruncated: (adRows.results || []).length >= 20000,
                 byVariant,
+                byPlatform,
             });
         }
 
@@ -3890,6 +3924,14 @@ async function recordSiteVisit(raw, request, env) {
     // The developer's own device, marked once via ?dev=1 (migration 0015).
     // Strictly the number 1 or true; anything else reads as not-dev.
     const isDev = payload.isDev === 1 || payload.isDev === true ? 1 : null;
+    // Which runtime sent this: the page, the iOS app, or the Android app
+    // (migration 0016). The client declares it — Flutter knows what it was
+    // compiled as — and it is held to the closed set because the endpoint is
+    // unauthenticated: anything else reads as unknown, never as a new
+    // platform. The stored user_agent stays the independent witness (a
+    // Dart/dart:io agent claiming 'web' is a replay, not a browser).
+    const appPlatform = ["web", "ios", "android"].includes(payload.appPlatform)
+        ? payload.appPlatform : null;
 
     try {
         await env.CHAT_LOGS_DB.prepare(`
@@ -3899,8 +3941,9 @@ async function recordSiteVisit(raw, request, env) {
                 country, colo, duration_ms, detail, app_user_id,
                 viewport_w, viewport_h, failure_reason,
                 visible_ms, hide_count, exit_mode, nav_type, platform,
-                app_version, touch_count, is_return, variant, is_dev
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                app_version, touch_count, is_return, variant, is_dev,
+                app_platform
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
             crypto.randomUUID(),
             visitId,
@@ -3929,7 +3972,8 @@ async function recordSiteVisit(raw, request, env) {
             Number.isFinite(touchCount) && touchCount >= 0 ? Math.round(touchCount) : null,
             isReturn,
             variant,
-            isDev
+            isDev,
+            appPlatform
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "site_visit_log_failed", error: error.message }));
@@ -7829,6 +7873,28 @@ async function render(out) {
     for (const r of d.byVariant) {
       const entry = r.shown ? (100 * r.tapped / r.shown).toFixed(1) + '%' : '<span class="muted">&mdash;</span>';
       h += '<tr><td>' + esc(r.variant) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
+           '</td><td class="num"' + sv(r.shown) + '>' + r.shown +
+           '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped +
+           '</td><td class="num"' + sv(r.shown ? r.tapped / r.shown : null) + '>' + entry +
+           '</td><td class="num"' + sv(r.engaged) + '>' + r.engaged + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
+
+  // Web vs the native apps. Hidden until platform-tagged rows exist (they
+  // start with the first 0016-aware bundle); rows from older bundles carry no
+  // platform and stay out rather than muddying the split.
+  if ((d.byPlatform || []).length) {
+    h += '<h2>By platform</h2><p class="muted" style="margin:0 0 8px">' +
+         'What the app was running as. Web is split by the device the browser sat on; ' +
+         'the fair mobile comparison is the app against that platform’s own browser.</p>' +
+         '<div class="wrap"><table class="sortable">' +
+         '<tr><th>Platform</th><th data-type="num" data-sorted="desc">Visits</th>' +
+         '<th data-type="num">Shown</th><th data-type="num">Tapped</th>' +
+         '<th data-type="num">Entry</th><th data-type="num">Engaged</th></tr>';
+    for (const r of d.byPlatform) {
+      const entry = r.shown ? (100 * r.tapped / r.shown).toFixed(1) + '%' : '<span class="muted">&mdash;</span>';
+      h += '<tr><td>' + esc(r.platform) + '</td><td class="num"' + sv(r.visits) + '>' + r.visits +
            '</td><td class="num"' + sv(r.shown) + '>' + r.shown +
            '</td><td class="num"' + sv(r.tapped) + '>' + r.tapped +
            '</td><td class="num"' + sv(r.shown ? r.tapped / r.shown : null) + '>' + entry +

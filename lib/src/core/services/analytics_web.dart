@@ -9,6 +9,12 @@ external String? get _visitId;
 @JS('mythosVariant')
 external String? get _variant;
 
+/// No-op on the web: the page script opened the visit (arrive, app_ready,
+/// visibility edges) before Flutter existed — that is the whole reason
+/// load-deaths are measurable. Exists so main() can call it unconditionally;
+/// only the io implementation has work to do here.
+void startVisitFunnel() {}
+
 /// Fires one funnel event, tagging it with the app's own user id where known
 /// so a visit can be joined to its chat transcripts. The splash beacon cannot
 /// supply that id — it runs before Flutter exists — which is why only the

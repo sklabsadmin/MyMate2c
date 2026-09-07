@@ -445,6 +445,7 @@ BEACON = r'''  <!-- Arrival/exit beacon.
         visibleMs: currentVisibleMs(),
         touchCount: touchCount,
         isReturn: IS_RETURN,
+        appPlatform: 'web',
         isDev: IS_DEV || undefined,
         variant: EXPERIMENT && VARIANT ? EXPERIMENT + ':' + VARIANT : undefined
       }, extra || {}));

@@ -1,3 +1,6 @@
+/// No-op where there is no funnel at all.
+void startVisitFunnel() {}
+
 /// No-op on non-web platforms, where there is no page and no beacon.
 void logFunnelEvent(
   String event, {

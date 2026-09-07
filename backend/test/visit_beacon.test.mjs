@@ -9,11 +9,12 @@ import { testEnv, loadWorker } from './harness.mjs';
 // The route answers 204 immediately and writes through ctx.waitUntil, so the
 // stub has to hold those promises and the test has to await them — a stub
 // with a no-op waitUntil passes even when nothing is ever written.
-async function beacon(env, body) {
+async function beacon(env, body, headers = {}) {
     const worker = await loadWorker();
     const pending = [];
     const res = await worker.fetch(new Request('https://mythos.test/api/visit', {
         method: 'POST',
+        headers,
         body: JSON.stringify(body),
     }), env, { waitUntil(p) { pending.push(p); }, passThroughOnException() {} });
     await Promise.all(pending);
@@ -172,6 +173,58 @@ test('the dev marker lands, and junk does not fake it', async () => {
     // Unauthenticated endpoint: only the exact bit counts as the developer.
     await beacon(env, { visitId: 'v_devjunk', event: 'arrive', path: '/', isDev: 'yes' });
     assert.equal(rowFor(db, 'v_devjunk').is_dev, null);
+});
+
+test('the runtime platform lands as itself, and junk reads as unknown', async () => {
+    // app_platform is what the app DECLARES it is running as (web/ios/
+    // android). It is not the traffic column named platform — that one is
+    // derived from the user-agent and says instagram/facebook/direct — and
+    // the two must never collapse into each other: "an iPhone user" (device)
+    // and "an Instagram click" (traffic) are different questions.
+    const { env, db } = testEnv();
+    await beacon(env, { visitId: 'v_ios', event: 'arrive', path: '/', appPlatform: 'ios' });
+    assert.equal(rowFor(db, 'v_ios').app_platform, 'ios');
+    // A bundle from before the field sends nothing: unknown, same as every
+    // other column's rule.
+    await beacon(env, { visitId: 'v_oldweb', event: 'arrive', path: '/' });
+    assert.equal(rowFor(db, 'v_oldweb').app_platform, null);
+    // Unauthenticated endpoint: the set is closed. An invented platform must
+    // not mint a new row in the split.
+    await beacon(env, { visitId: 'v_ps5', event: 'arrive', path: '/', appPlatform: 'playstation' });
+    assert.equal(rowFor(db, 'v_ps5').app_platform, null);
+});
+
+test('the by-platform table answers web vs app, with web split by device', async () => {
+    const { env } = testEnv();
+    const iphoneUA = { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15' };
+    // Safari-on-iPhone: shown and tapped.
+    await beacon(env, { visitId: 'v_webios', event: 'arrive', path: '/c/zeus', appPlatform: 'web' }, iphoneUA);
+    await beacon(env, { visitId: 'v_webios', event: 'entry_shown', path: '/c/zeus', appPlatform: 'web' }, iphoneUA);
+    await beacon(env, { visitId: 'v_webios', event: 'entry_tap', path: '/c/zeus', appPlatform: 'web' }, iphoneUA);
+    // The iOS app (Dart's own user-agent, not a browser's): shown, not tapped.
+    await beacon(env, { visitId: 'v_app', event: 'arrive', path: '/c/zeus', appPlatform: 'ios' },
+        { 'User-Agent': 'Dart/3.12 (dart:io)' });
+    await beacon(env, { visitId: 'v_app', event: 'entry_shown', path: '/c/zeus', appPlatform: 'ios' },
+        { 'User-Agent': 'Dart/3.12 (dart:io)' });
+    // The developer's own phone taps everything and must move no number.
+    await beacon(env, { visitId: 'v_devphone', event: 'entry_tap', path: '/c/zeus', appPlatform: 'ios', isDev: 1 });
+    // A pre-0016 bundle: no declared platform, stays out of the split
+    // entirely rather than posing as a fourth platform.
+    await beacon(env, { visitId: 'v_legacy', event: 'entry_shown', path: '/c/zeus' });
+
+    const { adminFetch } = await import('./harness.mjs');
+    const res = await adminFetch(env, '/api/admin/visits?days=30');
+    const rows = res.json.byPlatform;
+    const web = rows.find((r) => r.platform === 'web · iOS browser');
+    assert.ok(web, 'the web row carries the device the browser sat on');
+    assert.equal(web.shown, 1);
+    assert.equal(web.tapped, 1);
+    const app = rows.find((r) => r.platform === 'ios');
+    assert.ok(app, 'the app is its own row');
+    assert.equal(app.shown, 1);
+    assert.equal(app.tapped, 0, 'the dev tap must not reach the split');
+    assert.ok(!rows.some((r) => r.platform.startsWith('unknown')),
+        'undeclared rows stay out of the table');
 });
 
 test('dev visits vanish from every aggregate but stay in the raw export', async () => {
