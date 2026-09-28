@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../wallet/coin_wallet.dart';
 
 /// Where sign-out lands, instead of dropping straight back into Settings.
 ///
@@ -26,7 +27,9 @@ class SignedOutScreen extends StatelessWidget {
         : 'mymate://dashboard';
     final prefs = await SharedPreferences.getInstance();
     final anonId = prefs.getString('user_id');
-    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
+    final ticket = await CoinWalletService().mergeTicket();
+    final authUrl =
+        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
     if (authUrl.isEmpty) return;
     // Same tab: a popup opened after an await loses the user-gesture context
     // and gets blocked silently.

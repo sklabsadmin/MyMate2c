@@ -31,12 +31,20 @@ class CoinClaimScreen extends StatefulWidget {
   /// Dismisses this screen and lets the conversation begin.
   final VoidCallback onCollect;
 
+  /// Opens the coin store. Optional, and drawn as a quiet text link under
+  /// the button rather than a second button: nobody buys the moment they
+  /// have been handed free coins, so this is not a sales surface — it is
+  /// the guaranteed two-tap path a tester or an App Store reviewer needs to
+  /// reach a purchase without first running a wallet dry.
+  final VoidCallback? onGetMore;
+
   const CoinClaimScreen({
     super.key,
     required this.grants,
     required this.balance,
     required this.onCollect,
     this.streakDays = 0,
+    this.onGetMore,
   });
 
   @override
@@ -172,6 +180,23 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                     fontSize: 13,
                   ),
                 ),
+                if (widget.onGetMore != null)
+                  TextButton(
+                    onPressed: widget.onGetMore,
+                    style: TextButton.styleFrom(
+                      foregroundColor: gold,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      minimumSize: Size.zero,
+                    ),
+                    child: Text(
+                      'Get more coins',
+                      style: GoogleFonts.lato(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 14),
               ],
             ),

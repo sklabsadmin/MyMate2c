@@ -20,6 +20,7 @@ import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
 import '../../character/presentation/character_profile_screen.dart';
+import '../../../core/services/revenue_cat_service.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
 import '../../wallet/presentation/coin_claim_screen.dart';
@@ -3879,7 +3880,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final returnTo = Uri.base.toString();
     final prefs = await SharedPreferences.getInstance();
     final anonId = prefs.getString('user_id');
-    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
+    final ticket = await CoinWalletService().mergeTicket();
+    final authUrl =
+        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
     if (authUrl.isEmpty) return;
     // Same-tab navigation so the browser keeps the user-gesture context and
     // doesn't popup-block the OAuth redirect.
@@ -4318,12 +4321,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           if (_claimedGrants.isNotEmpty)
             CoinClaimScreen(
               grants: _claimedGrants,
-              balance: _claimBalance,
+              // Live, not the number captured at claim time: the store can
+              // be opened from this screen and pop back onto it richer.
+              balance: ref.watch(coinWalletProvider).value?.balance ??
+                  _claimBalance,
               // The server recounts the streak on every claim, so the state
               // the claim() just wrote already carries today's run.
               streakDays:
                   ref.read(coinWalletProvider).value?.streakDays ?? 0,
               onCollect: _dismissCoinClaim,
+              // Only where a purchase can actually happen; on web the link
+              // would lead to a store with nothing in it.
+              onGetMore: RevenueCatService.isSupported
+                  ? () => context.push('/coins')
+                  : null,
             ),
           if (_entryGateActive)
             _EntryGate(

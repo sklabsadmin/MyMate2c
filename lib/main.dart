@@ -6,7 +6,10 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
-// import 'src/core/services/revenue_cat_service.dart'; // RevenueCat disabled
+import 'package:shared_preferences/shared_preferences.dart';
+import 'src/core/services/device_identity.dart';
+import 'src/core/services/delivery_log.dart';
+import 'src/core/services/revenue_cat_service.dart';
 import 'src/core/services/notification_service.dart';
 
 Future<void> main() async {
@@ -52,10 +55,17 @@ Future<void> main() async {
       print("❌ CRITICAL: APP_SECRET is MISSING! HMAC signatures will fail.");
     }
 
-    // RevenueCat disabled - not monetizing currently. Uncomment to re-enable.
-    // if (!AppConfig.isFreeTier) {
-    //   await RevenueCatService().init();
-    // }
+    // Identity first: a reinstall gets its device id (and paid wallet) back
+    // from the keychain before anything can mint a fresh one.
+    await DeviceIdentity.restore();
+
+    // Coin packs are bought through RevenueCat under OUR user id, so the
+    // worker can match the store's webhook to the wallet. Not awaited past
+    // the identity step it needs: a slow store must not delay first paint.
+    if (RevenueCatService.isSupported) {
+      final prefs = await SharedPreferences.getInstance();
+      RevenueCatService().init(DeliveryLog.ensureUserId(prefs));
+    }
 
     // Initialize Local Notifications
     await NotificationService().init();
