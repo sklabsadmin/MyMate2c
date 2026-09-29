@@ -7,9 +7,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
-import 'package:ai_boyfriend_chat/src/features/wallet/coin_wallet.dart';
-import 'package:ai_boyfriend_chat/src/features/wallet/presentation/coins_sheet.dart';
+import 'package:mythos_live/src/core/config/app_config.dart';
+import 'package:mythos_live/src/features/wallet/coin_wallet.dart';
+import 'package:mythos_live/src/features/wallet/presentation/coins_sheet.dart';
 
 void main() {
   test('enabled:false parses as a disabled wallet, never as a zero balance', () {

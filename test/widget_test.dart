@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ai_boyfriend_chat/src/app.dart';
+import 'package:mythos_live/src/app.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 void main() {

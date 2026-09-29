@@ -7,7 +7,7 @@
 		<key>CFBundleDevelopmentRegion</key>
 		<string>$(DEVELOPMENT_LANGUAGE)</string>
 		<key>CFBundleDisplayName</key>
-		<string>MyMate</string>
+		<string>Mythos Live</string>
 		<!-- Required by image_picker for the My Profile avatar. Without this key
 	     iOS terminates the app the moment the gallery is opened, rather than
 	     showing a permission prompt. -->
@@ -20,7 +20,7 @@
 		<key>CFBundleInfoDictionaryVersion</key>
 		<string>6.0</string>
 		<key>CFBundleName</key>
-		<string>ai_boyfriend_chat</string>
+		<string>mythos_live</string>
 		<key>CFBundlePackageType</key>
 		<string>APPL</string>
 		<key>CFBundleShortVersionString</key>
@@ -33,10 +33,10 @@
 				<key>CFBundleTypeRole</key>
 				<string>Editor</string>
 				<key>CFBundleURLName</key>
-				<string>mymate</string>
+				<string>mythoslive</string>
 				<key>CFBundleURLSchemes</key>
 				<array>
-					<string>mymate</string>
+					<string>mythoslive</string>
 				</array>
 			</dict>
 		</array>

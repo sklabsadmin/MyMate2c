@@ -23,7 +23,7 @@ class SignedOutScreen extends StatelessWidget {
     // signed out" page immediately after signing in would read as a failure.
     final returnTo = kIsWeb
         ? Uri.base.replace(path: '/dashboard', query: null).toString()
-        : 'mymate://dashboard';
+        : 'mythoslive://dashboard';
     final prefs = await SharedPreferences.getInstance();
     final anonId = prefs.getString('user_id');
     final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);

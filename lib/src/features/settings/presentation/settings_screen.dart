@@ -166,7 +166,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _connectGoogle() async {
     final returnTo = kIsWeb
         ? Uri.base.toString()
-        : 'mymate://settings?google=connected';
+        : 'mythoslive://settings?google=connected';
     // Pass along the pre-login anonymous user id so the backend can merge
     // this device's existing chat history onto the linked account.
     final prefs = await SharedPreferences.getInstance();

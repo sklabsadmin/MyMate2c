@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.iosappv2" "\0"
-            VALUE "FileDescription", "ai_boyfriend_chat" "\0"
+            VALUE "FileDescription", "mythos_live" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "ai_boyfriend_chat" "\0"
+            VALUE "InternalName", "mythos_live" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2025 com.iosappv2. All rights reserved." "\0"
-            VALUE "OriginalFilename", "ai_boyfriend_chat.exe" "\0"
-            VALUE "ProductName", "ai_boyfriend_chat" "\0"
+            VALUE "OriginalFilename", "mythos_live.exe" "\0"
+            VALUE "ProductName", "mythos_live" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

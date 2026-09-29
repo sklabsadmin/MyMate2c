@@ -13,7 +13,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ai_boyfriend_chat/src/core/config/app_config.dart';
+import 'package:mythos_live/src/core/config/app_config.dart';
 
 /// The one line both page-script copies must carry.
 String _experimentNamedIn(String path) {

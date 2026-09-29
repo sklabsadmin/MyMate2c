@@ -15,7 +15,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ai_boyfriend_chat/src/core/presentation/seen_detector.dart';
+import 'package:mythos_live/src/core/presentation/seen_detector.dart';
 
 const double _itemHeight = 100;
 const double _viewportHeight = 300;

@@ -1,4 +1,4 @@
-package com.iosappv2.ai_boyfriend_chat
+package com.sklabs.mythoslive
 
 import io.flutter.embedding.android.FlutterActivity
 

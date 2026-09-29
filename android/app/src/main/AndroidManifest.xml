@@ -3,7 +3,7 @@
     <uses-permission android:name="com.android.vending.BILLING" />
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="MyMate"
+        android:label="Mythos Live"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -31,7 +31,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="mymate" />
+                <data android:scheme="mythoslive" />
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

@@ -19,8 +19,8 @@
 
 import 'dart:convert';
 
-import 'package:ai_boyfriend_chat/src/features/chat/presentation/chat_screen.dart';
-import 'package:ai_boyfriend_chat/src/core/models/chat_message.dart';
+import 'package:mythos_live/src/features/chat/presentation/chat_screen.dart';
+import 'package:mythos_live/src/core/models/chat_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

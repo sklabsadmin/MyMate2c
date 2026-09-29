@@ -17,7 +17,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:ai_boyfriend_chat/src/core/services/delivery_log.dart';
+import 'package:mythos_live/src/core/services/delivery_log.dart';
 
 /// Stands in for the network, and records what went over it.
 ///
