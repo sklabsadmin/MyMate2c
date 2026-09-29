@@ -3,6 +3,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/device_identity.dart';
 import '../../../core/services/analytics.dart';
 import '../data/chat_prompt.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -161,6 +162,13 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       }
       if (_characterId != null && _characterId!.isNotEmpty) {
         headers['x-character-id'] = _characterId!;
+      }
+      // A gift is a spend, and a claimed wallet spends only for the device
+      // that holds its secret. Sent on every turn (harmless without a gift)
+      // so the worker never has to guess whether this turn needed it.
+      final claim = DeviceIdentity.claimToken;
+      if (claim != null) {
+        headers['x-wallet-claim'] = claim;
       }
       // Ties this message to the browser visit that sent it, so the server can
       // answer "how many messages did this session manage before quitting".

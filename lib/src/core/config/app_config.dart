@@ -5,8 +5,10 @@ class AppConfig {
   // CONFIGURATION
   // --------------------------------------------------------------------------
 
-  /// Toggle this to TRUE for the initial release to hide all payment features.
-  /// When ready for monetization, set this to FALSE.
+  /// TRUE hides the subscription paywall and treats everyone as premium.
+  /// Monetization is coins only (see docs/coin-packs-brief-2026-09-16.md):
+  /// chat is free, coins buy gifts, coin packs are consumable purchases. This
+  /// stays TRUE unless a subscription is ever added.
   static const bool isFreeTier = true;
 
   /// Shows a holding page instead of the app on launch, so casual visitors to
@@ -297,12 +299,16 @@ class AppConfig {
     );
   }
 
-  static String googleAuthUrl(String returnTo, {String? anonId}) {
+  /// [ticket] is the wallet merge ticket (CoinWalletService.mergeTicket): a
+  /// claimed anonymous wallet only follows the sign-in when the redirect
+  /// carries one. Without it the account still links; the coins stay put.
+  static String googleAuthUrl(String returnTo, {String? anonId, String? ticket}) {
     return apiUrl(
       '/auth/google/start',
       queryParameters: {
         'return_to': returnTo,
         if (anonId != null && anonId.isNotEmpty) 'anon_id': anonId,
+        if (ticket != null && ticket.isNotEmpty) 'anon_ticket': ticket,
       },
     );
   }

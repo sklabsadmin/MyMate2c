@@ -171,7 +171,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // this device's existing chat history onto the linked account.
     final prefs = await SharedPreferences.getInstance();
     final anonId = prefs.getString('user_id');
-    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
+    final ticket = await CoinWalletService().mergeTicket();
+    final authUrl =
+        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
     if (authUrl.isEmpty) return;
     // Navigate in the same tab (not a new one) so the browser doesn't treat
     // this as a popup - launchUrl after an awaited canLaunchUrl check loses

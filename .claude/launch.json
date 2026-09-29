@@ -13,6 +13,20 @@
       "port": 8787
     },
     {
+      "name": "wrangler-local-packs",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--local",
+        "--port", "8787",
+        "--var", "COIN_LEDGER:true",
+        "--var", "RC_WEBHOOK_AUTH:localtest",
+        "--var", "RC_SANDBOX_CREDITS:true"
+      ],
+      "port": 8787
+    },
+    {
       "name": "synthetic-guard-verify",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

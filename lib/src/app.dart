@@ -17,7 +17,7 @@ import 'features/home/presentation/dashboard_screen.dart';
 import 'features/profile/presentation/user_profile_screen.dart';
 import 'core/presentation/scaffold_with_navbar.dart';
 import 'features/maintenance/presentation/maintenance_screen.dart';
-import 'features/paywall/presentation/paywall_screen.dart';
+import 'features/wallet/presentation/coin_store_screen.dart';
 import 'features/settings/presentation/settings_screen.dart';
 import 'core/config/app_config.dart';
 
@@ -343,10 +343,17 @@ class _AIAppState extends ConsumerState<AIApp> {
           parentNavigatorKey: _rootNavigatorKey,
           builder: (context, state) => const CreateCharacterScreen(),
         ),
+        // The coin store. Kept at /paywall as well because older call sites
+        // (all behind isFreeTier, so unreachable today) still push that path.
+        GoRoute(
+          path: '/coins',
+          parentNavigatorKey: _rootNavigatorKey,
+          builder: (context, state) => const CoinStoreScreen(),
+        ),
         GoRoute(
           path: '/paywall',
           parentNavigatorKey: _rootNavigatorKey,
-          builder: (context, state) => const PaywallScreen(),
+          builder: (context, state) => const CoinStoreScreen(),
         ),
         GoRoute(
           path: '/settings',

@@ -325,7 +325,9 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     final returnTo = Uri.base.toString();
     final prefs = await SharedPreferences.getInstance();
     final anonId = prefs.getString('user_id');
-    final authUrl = AppConfig.googleAuthUrl(returnTo, anonId: anonId);
+    final ticket = await CoinWalletService().mergeTicket();
+    final authUrl =
+        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
     if (authUrl.isEmpty) return;
     // Same-tab navigation so the browser keeps the user-gesture context and
     // doesn't popup-block the OAuth redirect. Mirrors chat_screen's login gate.

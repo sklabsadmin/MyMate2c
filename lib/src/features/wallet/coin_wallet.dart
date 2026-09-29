@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/services/delivery_log.dart';
+import '../../core/services/device_identity.dart';
 
 /// Mythos Coins, client side.
 ///
@@ -72,6 +73,20 @@ class CoinWalletState {
   /// a toast (see [CoinWalletNotifier.takeGrants]), never persisted.
   final List<CoinGrant> lastGranted;
 
+  /// Net paid coins ever credited (packs bought minus refunds), and how the
+  /// current balance splits between free income not yet spent and paid coins.
+  /// Free coins are spent first, so for an active user [freeUnspent] is
+  /// mostly 0 and [paidUnspent] is the balance. Negative [paidUnspent] is a
+  /// refund debt the next pack pays off first. All server-computed.
+  final int lifetimePurchased;
+  final int freeUnspent;
+  final int paidUnspent;
+
+  /// The packs for sale, store product id → coins, from the server. The store
+  /// screen shows the coin count from here and the price from the store; the
+  /// client never states either on its own. Empty until a wallet read.
+  final Map<String, int> packs;
+
   const CoinWalletState({
     required this.enabled,
     this.balance = 0,
@@ -85,6 +100,10 @@ class CoinWalletState {
     this.grantValues = const {},
     this.streakDays = 0,
     this.lastGranted = const [],
+    this.lifetimePurchased = 0,
+    this.freeUnspent = 0,
+    this.paidUnspent = 0,
+    this.packs = const {},
   });
 
   CoinWalletState copyWith({
@@ -106,6 +125,13 @@ class CoinWalletState {
       grantValues: grantValues,
       streakDays: streakDays,
       lastGranted: lastGranted ?? this.lastGranted,
+      lifetimePurchased: lifetimePurchased,
+      // A chat turn moves the balance but says nothing about the split; the
+      // next wallet read corrects these. Carrying the old values is closer
+      // than zeroing them.
+      freeUnspent: freeUnspent,
+      paidUnspent: paidUnspent,
+      packs: packs,
     );
   }
 
@@ -144,6 +170,13 @@ class CoinWalletState {
           : const {},
       streakDays: _asInt(wallet['streak_days']),
       lastGranted: parseGrants(data['granted']),
+      lifetimePurchased: _asInt(wallet['lifetime_purchased']),
+      freeUnspent: _asInt(wallet['free_unspent']),
+      paidUnspent: _asInt(wallet['paid_unspent']),
+      packs: wallet['packs'] is Map
+          ? (wallet['packs'] as Map)
+              .map((k, v) => MapEntry(k.toString(), _asInt(v)))
+          : const {},
     );
   }
 
@@ -187,6 +220,7 @@ class CoinWalletService {
             'x-signature': _sign('', timestamp),
             'x-timestamp': timestamp,
             'x-user-id': userId,
+            ..._claimHeader(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -201,11 +235,95 @@ class CoinWalletService {
     }
   }
 
+  /// Asks the worker to check with RevenueCat for any pack this wallet was
+  /// not credited for — POST /api/wallet/reconcile. The "Didn't get your
+  /// coins?" path, and the fallback when a purchase's webhook is slow. Returns
+  /// the fresh wallet, or null when the worker could not ask.
+  Future<CoinWalletState?> reconcile() async {
+    final url = AppConfig.apiUrl('/api/wallet/reconcile');
+    if (url.isEmpty) return null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = DeliveryLog.ensureUserId(prefs);
+      const body = '{}';
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await _dio.post(
+        url,
+        data: body,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': _sign(body, timestamp),
+            'x-timestamp': timestamp,
+            'x-user-id': userId,
+            ..._claimHeader(),
+          },
+          extra: {'withCredentials': true},
+          validateStatus: (status) => status != null && status < 500,
+        ),
+      );
+      final data = res.data;
+      if (res.statusCode != 200 || data is! Map) return null;
+      return CoinWalletState.fromResponse(Map<String, dynamic>.from(data));
+    } catch (e) {
+      if (kDebugMode) debugPrint('Coin reconcile failed: $e');
+      return null;
+    }
+  }
+
+  /// A short-lived ticket that lets a sign-in carry this device's CLAIMED
+  /// wallet onto the account — POST /api/wallet/merge-ticket. Null when the
+  /// wallet is unclaimed (nothing to prove; the merge happens anyway) or the
+  /// worker cannot be reached (the account still links; coins stay here).
+  Future<String?> mergeTicket() async {
+    if (DeviceIdentity.claimToken == null) return null;
+    final url = AppConfig.apiUrl('/api/wallet/merge-ticket');
+    if (url.isEmpty) return null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = DeliveryLog.ensureUserId(prefs);
+      const body = '{}';
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await _dio.post(
+        url,
+        data: body,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+            'x-signature': _sign(body, timestamp),
+            'x-timestamp': timestamp,
+            'x-user-id': userId,
+            ..._claimHeader(),
+          },
+          extra: {'withCredentials': true},
+          validateStatus: (status) => status != null && status < 500,
+        ),
+      );
+      final data = res.data;
+      if (res.statusCode != 200 || data is! Map) return null;
+      final ticket = data['ticket'];
+      return ticket is String && ticket.isNotEmpty ? ticket : null;
+    } catch (e) {
+      if (kDebugMode) debugPrint('Merge ticket failed: $e');
+      return null;
+    }
+  }
+
+  /// The wallet claim, when this device holds one. On a sync with no claim
+  /// yet, asks for one ("new") — the server answers with the token exactly
+  /// once and [sync] stores it. See DeviceIdentity.
+  Map<String, String> _claimHeader({bool requestNew = false}) {
+    final claim = DeviceIdentity.claimToken;
+    if (claim != null) return {'x-wallet-claim': claim};
+    if (requestNew) return {'x-wallet-claim': 'new'};
+    return const {};
+  }
+
   /// GRANTS the welcome/daily and returns the new state — POST
   /// /api/wallet/sync. Call this ONLY when the user has asked for their coins
   /// (the claim tap); calling it at app load is what handed every passive
   /// arrival a 100-coin wallet.
-  Future<CoinWalletState?> sync() async {
+  Future<CoinWalletState?> sync({bool retrying = false}) async {
     final url = AppConfig.apiUrl('/api/wallet/sync');
     if (url.isEmpty) return null;
     try {
@@ -233,13 +351,29 @@ class CoinWalletService {
             'x-signature': _sign(body, timestamp),
             'x-timestamp': timestamp,
             'x-user-id': userId,
+            ..._claimHeader(requestNew: true),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
         ),
       );
       final data = res.data;
+      if (res.statusCode == 403 && !retrying) {
+        // The server does not accept what we hold (or we hold nothing and
+        // the wallet is claimed). The realistic cause is a lost response: the
+        // server minted a token that never reached us. Drop ours and ask
+        // once for a fresh one; the server re-mints only if the old one was
+        // never used, so a stranger gets nothing from the same move.
+        await DeviceIdentity.clearClaimToken();
+        return sync(retrying: true);
+      }
       if (res.statusCode != 200 || data is! Map) return null;
+      // The one time the server says the secret out loud. Stored before the
+      // state is returned, so no later call can go out without it.
+      final token = data['claim_token'];
+      if (token is String && token.isNotEmpty) {
+        await DeviceIdentity.saveClaimToken(token);
+      }
       return CoinWalletState.fromResponse(Map<String, dynamic>.from(data));
     } catch (e) {
       // Offline, blocked storage, mid-deploy — all normal here. The cached
@@ -317,6 +451,43 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
   /// Public nudge for moments identity changes under us (returning from
   /// Google sign-in) or the user asks to see the latest. Read-only.
   Future<void> refresh() => _refresh();
+
+  /// After the store has taken a payment: waits for the worker to credit the
+  /// pack, which arrives by webhook a moment behind the purchase. Polls the
+  /// wallet until `lifetimePurchased` rises above [beforePurchased] or
+  /// [timeout] passes, then asks the worker to reconcile with RevenueCat once
+  /// as a last resort. Watches the paid counter, not the balance: a reply
+  /// grant from a turn still in flight must not pass for a pack.
+  /// Returns true when the coins are visibly there.
+  Future<bool> awaitCredit(
+    int beforePurchased, {
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    final service = ref.read(coinWalletServiceProvider);
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final fresh = await service.fetch();
+      if (fresh != null && fresh.enabled) {
+        state = AsyncData(fresh);
+        await _writeCache(fresh);
+        if (fresh.lifetimePurchased > beforePurchased) return true;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+    }
+    return reconcile(beforePurchased: beforePurchased);
+  }
+
+  /// "Didn't get your coins?" — asks the worker to check with RevenueCat and
+  /// credit anything missing. Returns true when `lifetimePurchased` is above
+  /// [beforePurchased] afterwards (or, with none given, when the call
+  /// succeeded at all).
+  Future<bool> reconcile({int? beforePurchased}) async {
+    final fresh = await ref.read(coinWalletServiceProvider).reconcile();
+    if (fresh == null || !fresh.enabled) return false;
+    state = AsyncData(fresh);
+    await _writeCache(fresh);
+    return beforePurchased == null || fresh.lifetimePurchased > beforePurchased;
+  }
 
   /// Grants the welcome/daily NOW and returns what landed — the claim tap, and
   /// the only place granting happens. A returning visitor with nothing pending

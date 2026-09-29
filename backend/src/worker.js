@@ -1530,8 +1530,21 @@ export default {
         // With the flag off both answer 200 { enabled: false } rather than an
         // error — DELIVERY_LOGGING's ack-don't-refuse rule, so a client built
         // with the UI in it goes quiet instead of retrying into a dead switch.
+        // RevenueCat's server, not the app: no HMAC (it does not hold
+        // APP_SECRET), no CORS (never called from a browser). Its own auth is
+        // inside handleRcWebhook.
+        if (request.method === "POST" && url.pathname === "/api/rc/webhook") {
+            return handleRcWebhook(request, env);
+        }
+
+        //   POST /api/wallet/reconcile  asks RevenueCat what was bought and
+        //                               credits anything the ledger lacks
+        //   POST /api/wallet/merge-ticket  a ticket that lets a sign-in carry
+        //                                  this claimed wallet onto the account
         if ((request.method === "GET" && url.pathname === "/api/wallet") ||
-            (request.method === "POST" && url.pathname === "/api/wallet/sync")) {
+            (request.method === "POST" && url.pathname === "/api/wallet/sync") ||
+            (request.method === "POST" && url.pathname === "/api/wallet/reconcile") ||
+            (request.method === "POST" && url.pathname === "/api/wallet/merge-ticket")) {
             const signature = request.headers.get("x-signature");
             const timestamp = request.headers.get("x-timestamp");
             const requireSignature = env.REQUIRE_SIGNATURE !== "false";
@@ -1582,8 +1595,47 @@ export default {
             }
 
             try {
+                // A claimed anonymous wallet answers only to the device that
+                // holds its secret (see coinClaimCheck). Before any grant or
+                // credit, so a stranger's sync cannot even mint a daily onto
+                // someone else's wallet.
+                const claim = await coinClaimCheck(env.CHAT_LOGS_DB, userId, request);
+                const wantsNew = request.headers.get("x-wallet-claim") === "new";
+                // The one way past a failed check: a sync asking for a fresh
+                // claim on a wallet whose claim was never used (the token
+                // never reached the device). See coinClaimCheck.
+                const remint = !claim.ok && claim.unused && wantsNew
+                    && request.method === "POST" && url.pathname === "/api/wallet/sync";
+                if (!claim.ok && !remint) {
+                    return jsonResponse({ error: "Wallet claim required" }, {
+                        status: 403, headers: corsHeaders(request),
+                    });
+                }
+
                 let granted = [];
-                if (request.method === "POST") {
+                let credited = [];
+                let claimToken = null;
+                if (request.method === "POST" && url.pathname === "/api/wallet/merge-ticket") {
+                    // Only a caller that passed the claim check gets here, and
+                    // only an anonymous wallet has anything to carry across.
+                    if (!coinIsAnonymousId(userId)) {
+                        return jsonResponse({ error: "Not an anonymous wallet" }, {
+                            status: 400, headers: corsHeaders(request),
+                        });
+                    }
+                    return jsonResponse({ ticket: await coinMergeTicket(env, userId), ttl: MERGE_TICKET_TTL_S }, {
+                        headers: corsHeaders(request),
+                    });
+                }
+                if (request.method === "POST" && url.pathname === "/api/wallet/reconcile") {
+                    const outcome = await coinReconcile(env, env.CHAT_LOGS_DB, userId);
+                    if (!outcome.ok) {
+                        return jsonResponse({ error: outcome.error }, {
+                            status: 503, headers: corsHeaders(request),
+                        });
+                    }
+                    credited = outcome.credited;
+                } else if (request.method === "POST") {
                     let payload = {};
                     try {
                         payload = rawBody ? JSON.parse(rawBody) : {};
@@ -1598,11 +1650,19 @@ export default {
                         visitId: (request.headers.get("x-visit-id") || "").slice(0, 64) || null,
                         appVersion: typeof payload.app_version === "string" ? payload.app_version.slice(0, 40) : null,
                     });
+                    // Only a client that asked gets a claim — an older build
+                    // that would not store the token must never be handed one
+                    // it then cannot present. After the grants, so the wallet
+                    // row exists to hold the hash.
+                    if ((!claim.claimed || claim.unused) && coinIsAnonymousId(userId) && wantsNew) {
+                        claimToken = await coinClaimIssue(env.CHAT_LOGS_DB, userId);
+                    }
                 }
                 const state = await coinWalletState(env.CHAT_LOGS_DB, userId);
-                return jsonResponse({ enabled: true, granted, wallet: state }, {
-                    headers: corsHeaders(request),
-                });
+                const body = { enabled: true, granted, wallet: state };
+                if (url.pathname === "/api/wallet/reconcile") body.credited = credited;
+                if (claimToken) body.claim_token = claimToken;
+                return jsonResponse(body, { headers: corsHeaders(request) });
             } catch (e) {
                 // Until migration 0014 is applied the tables are simply not
                 // there. Say exactly that, with the fix, rather than a server
@@ -1799,6 +1859,14 @@ export default {
                 } else if (!gift || !/^[A-Za-z0-9_-]{8,64}$/.test(giftId)) {
                     return new Response(JSON.stringify({ error: "Invalid gift" }), {
                         status: 400,
+                        headers: jsonHeaders(request)
+                    });
+                } else if (!(await coinClaimCheck(env.CHAT_LOGS_DB, userId, request)).ok) {
+                    // A gift is a spend. A claimed wallet spends only for the
+                    // device holding its secret; plain chat from the same id
+                    // is still free to go through.
+                    return new Response(JSON.stringify({ error: "Wallet claim required" }), {
+                        status: 403,
                         headers: jsonHeaders(request)
                     });
                 } else {
@@ -2123,6 +2191,9 @@ async function startGoogleAuth(request, env, url) {
     // The client's pre-login anonymous user id (see x-user-id on /api/chat),
     // so we can merge their existing chat history onto the linked account.
     const anonId = (url.searchParams.get("anon_id") || "").replace(/\|/g, "");
+    // Proof that the caller holds the anonymous wallet's claim (see
+    // coinMergeTicket); a claimed wallet does not merge without it.
+    const anonTicket = (url.searchParams.get("anon_ticket") || "").replace(/[^0-9a-f.]/g, "");
     const redirectUri = getGoogleRedirectUri(request, env);
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 
@@ -2134,7 +2205,7 @@ async function startGoogleAuth(request, env, url) {
     authUrl.searchParams.set("state", state);
 
     return redirectResponse(authUrl.toString(), [
-        cookie("mymate_google_state", `${state}|${returnTo}|${anonId}`, request, { maxAge: 600 }),
+        cookie("mymate_google_state", `${state}|${returnTo}|${anonId}|${anonTicket}`, request, { maxAge: 600 }),
     ]);
 }
 
@@ -2149,7 +2220,7 @@ async function finishGoogleAuth(request, env, url) {
         ]);
     }
 
-    const [expectedState, returnTo, anonId] = stateCookie.split("|");
+    const [expectedState, returnTo, anonId, anonTicket] = stateCookie.split("|");
     if (state !== expectedState) {
         return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
@@ -2200,6 +2271,7 @@ async function finishGoogleAuth(request, env, url) {
             email: profile.email || null,
             displayName: profile.name || null,
             anonId: anonId || null,
+            anonTicket: anonTicket || null,
         });
 
         return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?google=connected`, [
@@ -2219,7 +2291,7 @@ async function finishGoogleAuth(request, env, url) {
 // reattributes that anonymous user's existing conversation_logs rows to the
 // linked account so their prior history carries over. Never throws: a DB
 // hiccup here shouldn't fail an otherwise-successful login.
-async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId }) {
+async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null }) {
     if (!env.CHAT_LOGS_DB) return;
 
     try {
@@ -2255,7 +2327,7 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
             // later, the login cannot.
             if (coinsActive(env, null, userId) || coinsActive(env, null, anonId)) {
                 try {
-                    await coinMergeWallet(env.CHAT_LOGS_DB, userId, anonId);
+                    await coinMergeWallet(env.CHAT_LOGS_DB, userId, anonId, { env, ticket: anonTicket });
                 } catch (e) {
                     console.error(JSON.stringify({
                         event: "coin_merge_failed",
@@ -2406,8 +2478,17 @@ async function coinSpend(db, { id, userId, amount, reason, ref = null, visitId =
 /// client never has to hardcode a number.
 async function coinWalletState(db, userId) {
     const wallet = await db.prepare(
-        `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on FROM coin_wallets WHERE user_id = ?`
+        `SELECT balance, lifetime_earned, lifetime_spent, lifetime_purchased, last_daily_on FROM coin_wallets WHERE user_id = ?`
     ).bind(userId).first();
+    // The free/paid split, by arithmetic rather than per coin: free coins are
+    // always spent first, so whatever free income has not been spent is still
+    // free, and the rest of the balance is paid. Negative paid_unspent is a
+    // refund debt (0017 explains). lifetime_earned/lifetime_spent count only
+    // the free economy from 0017 on.
+    const balance = wallet ? Number(wallet.balance) : 0;
+    const freeUnspent = wallet
+        ? Math.max(0, Number(wallet.lifetime_earned) - Number(wallet.lifetime_spent))
+        : 0;
     const replyRow = await db.prepare(`
         SELECT COUNT(*) AS n FROM coin_ledger
         WHERE user_id = ? AND reason = 'reply' AND created_at >= date('now')
@@ -2426,11 +2507,18 @@ async function coinWalletState(db, userId) {
     const prices = {};
     for (const [item, gift] of Object.entries(COINS.gifts)) prices[item] = gift.price;
     return {
-        balance: wallet ? Number(wallet.balance) : 0,
+        balance,
         lifetime_earned: wallet ? Number(wallet.lifetime_earned) : 0,
         lifetime_spent: wallet ? Number(wallet.lifetime_spent) : 0,
+        lifetime_purchased: wallet ? Number(wallet.lifetime_purchased || 0) : 0,
+        free_unspent: freeUnspent,
+        paid_unspent: balance - freeUnspent,
         today: { reply_grants: replyRow ? Number(replyRow.n) : 0, reply_grant_cap: COINS.replyGrantDailyCap },
         prices: { gift: prices },
+        // The packs for sale, so the store screen can label a product it
+        // knows nothing about ("300 coins") next to the price the store
+        // returns. Same rule as gift prices: the number lives here.
+        packs: Object.fromEntries(Object.entries(COIN_PACKS).map(([id, p]) => [id, p.coins])),
         // What the faucets pay. Travels for the same reason the prices do:
         // the sheet lists "every reply +N", and a client holding its own copy
         // of N goes stale the moment the economy is retuned — which it did,
@@ -2572,22 +2660,49 @@ async function coinChatSettlement(db, { userId, requestId, responseOk, visitId }
 /// history stays honest about where the drops lived, and a re-run is inert
 /// because the second merge-out finds a zero balance. Batched so a crash
 /// between the two halves cannot strand the drops mid-flight.
-async function coinMergeWallet(db, accountUserId, anonId) {
+///
+/// A CLAIMED anonymous wallet (one holding paid coins, in practice) crosses
+/// only when the sign-in carried a merge ticket for it — proof the device that
+/// holds the claim asked for this. Without that, a stranger who guessed a
+/// device id could sign in with a fresh account and walk off with the wallet.
+/// An unclaimed wallet merges as it always did, so older clients keep working.
+/// Refused merges still pay the link bonus; the coins stay where they were.
+async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket = null } = {}) {
     const anonWallet = await db.prepare(
-        `SELECT balance, last_daily_on, last_daily_at FROM coin_wallets WHERE user_id = ?`
+        `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on, last_daily_at, claim_token_hash FROM coin_wallets WHERE user_id = ?`
     ).bind(anonId).first();
     const balance = anonWallet ? Number(anonWallet.balance) : 0;
 
-    if (balance > 0) {
+    let allowed = true;
+    if (anonWallet && anonWallet.claim_token_hash) {
+        allowed = Boolean(env) && await coinMergeTicketValid(env, anonId, ticket);
+        if (!allowed) {
+            console.warn(JSON.stringify({ event: "coin_merge_refused", reason: "claimed wallet without ticket", accountUserId }));
+        }
+    }
+
+    if (allowed && balance !== 0) {
+        // How much of what crosses was paid for (a pack bought before signing
+        // in). Free coins are spent first, so the paid remainder is whatever
+        // the balance holds beyond the unspent free income. A NEGATIVE balance
+        // is a refund debt, which is paid debt in full — it crosses too, or a
+        // sign-in would launder it away (E1 in the brief). Told to the trigger
+        // through meta_json so lifetime_purchased follows the coins onto the
+        // account (0017); the ledger row is still the only write.
+        const freeUnspent = Math.max(0,
+            Number(anonWallet.lifetime_earned) - Number(anonWallet.lifetime_spent));
+        const paid = balance < 0 ? balance : Math.max(0, Math.min(balance, balance - freeUnspent));
         await db.batch([
             db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref)
-                VALUES (?, ?, ?, 'merge', 'link', ?)
-            `).bind(`merge:out:${anonId}`, anonId, -balance, accountUserId),
+                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
+            `).bind(`merge:out:${anonId}`, anonId, -balance, accountUserId,
+                paid !== 0 ? JSON.stringify({ paid: -paid }) : null),
             db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref)
-                VALUES (?, ?, ?, 'merge', 'link', ?)
-            `).bind(`merge:in:${accountUserId}:${anonId}`, accountUserId, balance, anonId),
+                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
+            `).bind(`merge:in:${accountUserId}:${anonId}`, accountUserId, balance, anonId,
+                paid !== 0 ? JSON.stringify({ paid }) : null),
         ]);
     }
 
@@ -2617,6 +2732,377 @@ async function coinMergeWallet(db, accountUserId, anonId) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Coin packs — real money into the ledger. docs/coin-packs-brief-2026-09-16.md.
+//
+// RevenueCat is a verification adapter, nothing more: the app hands it OUR
+// user id as the customer id, it settles the purchase with the store, and it
+// tells us by webhook. We write one ledger row per store transaction. Nothing
+// here trusts the client about a purchase, and nothing outside rc_events
+// (an audit log) stores a RevenueCat identifier.
+// ---------------------------------------------------------------------------
+
+/// The catalogue, keyed by store product id — the same ids in App Store
+/// Connect, Play and Stripe, so one table serves every store. Prices live in
+/// the stores (and are shown from there, already localised); only the coin
+/// count is ours to say.
+const COIN_PACKS = {
+    mythos_coins_300: { coins: 300 },
+    mythos_coins_1000: { coins: 1000 },
+    mythos_coins_3000: { coins: 3000 },
+};
+
+/// One paid credit, idempotent under the store's transaction id. Returns true
+/// only when THIS call wrote the row — the webhook is at-least-once and
+/// unordered, and the reconcile path may see the same transaction again, so
+/// a second arrival must be a no-op with no code caring which came first.
+async function coinPurchaseCredit(db, { transactionId, userId, coins, productId, meta = null }) {
+    const result = await db.prepare(`
+        INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+        VALUES (?, ?, ?, 'purchase', 'pack', ?, ?)
+    `).bind(`purchase:${transactionId}`, userId, coins, productId, meta ? JSON.stringify(meta) : null).run();
+    return d1Changes(result) > 0;
+}
+
+/// Reverses a credit when the store refunds it. The debit is the exact delta
+/// of the purchase row (looked up, never recomputed from the catalogue, which
+/// may have changed since), and it is unconditional: a balance may go
+/// negative, because a refund of coins already given away is a debt the next
+/// pack pays first, not a free gift. Answers what it did so the event log can
+/// say why nothing happened when there was nothing to reverse.
+async function coinRefundDebit(db, { transactionId, meta = null }) {
+    const purchase = await db.prepare(
+        `SELECT user_id, delta, ref FROM coin_ledger WHERE id = ?`
+    ).bind(`purchase:${transactionId}`).first();
+    if (!purchase) return { ok: false, note: "no purchase row to refund" };
+    const result = await db.prepare(`
+        INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+        VALUES (?, ?, ?, 'refund', 'pack', ?, ?)
+    `).bind(`refund:${transactionId}`, purchase.user_id, -Number(purchase.delta), purchase.ref,
+        meta ? JSON.stringify(meta) : null).run();
+    return { ok: true, userId: purchase.user_id, applied: d1Changes(result) > 0 };
+}
+
+/// Whether a SANDBOX (test store / TestFlight) purchase may mint coins on this
+/// wallet. Only for wallets we already treat as the developer's: on the
+/// COIN_ALLOWLIST, marked dev by a ?dev=1 visit (0015), or when the
+/// RC_SANDBOX_CREDITS switch is on for a soak. Everything else is logged and
+/// not applied, so a sandbox account can never fill a production wallet.
+async function coinSandboxAllowed(env, db, userId) {
+    if (env.RC_SANDBOX_CREDITS === "true") return true;
+    const allowlist = typeof env.COIN_ALLOWLIST === "string" ? env.COIN_ALLOWLIST : "";
+    if (allowlist.split(",").map((s) => s.trim()).includes(userId)) return true;
+    try {
+        const row = await db.prepare(
+            `SELECT 1 AS present FROM site_visits WHERE app_user_id = ? AND COALESCE(is_dev, 0) = 1 LIMIT 1`
+        ).bind(userId).first();
+        return Boolean(row);
+    } catch (_) {
+        return false;
+    }
+}
+
+/// Picks the id the ledger knows out of a RevenueCat event: the customer id
+/// we configured the SDK with, or — after a login merged an anonymous SDK id
+/// into ours — one of its aliases. Anything not in our id format is not ours.
+function coinUserFromEvent(event) {
+    const candidates = [event.app_user_id, event.original_app_user_id, ...(Array.isArray(event.aliases) ? event.aliases : [])];
+    return candidates.find((id) => typeof id === "string" && isRealUserId(id)) || null;
+}
+
+/// Applies one RevenueCat event to the ledger. Pure with respect to HTTP: the
+/// route stores the event, calls this, and records the outcome. Returns
+/// { applied, note, userId }.
+async function coinApplyRcEvent(env, db, event) {
+    const type = String(event.type || "");
+    const userId = coinUserFromEvent(event);
+    const transactionId = typeof event.transaction_id === "string" ? event.transaction_id : null;
+    const productId = typeof event.product_id === "string" ? event.product_id : null;
+    const meta = {
+        store: event.store || null,
+        environment: event.environment || null,
+        price: typeof event.price === "number" ? event.price : null,
+        currency: event.currency || null,
+        event_id: event.id || null,
+    };
+
+    if (type === "NON_RENEWING_PURCHASE") {
+        if (!userId) return { applied: false, note: "no wallet id in event", userId: null };
+        if (!transactionId) return { applied: false, note: "no transaction id", userId };
+        const pack = productId ? COIN_PACKS[productId] : null;
+        if (!pack) return { applied: false, note: `unknown product ${productId}`, userId };
+        if (event.environment === "SANDBOX" && !(await coinSandboxAllowed(env, db, userId))) {
+            return { applied: false, note: "sandbox purchase on a non-dev wallet", userId };
+        }
+        // Apple lets a consumable be bought several-at-once; RevenueCat passes
+        // that through as quantity when it does.
+        const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
+        const wrote = await coinPurchaseCredit(db, {
+            transactionId, userId, coins: pack.coins * quantity, productId, meta,
+        });
+        return { applied: wrote, note: wrote ? null : "already credited", userId };
+    }
+
+    if (type === "CANCELLATION") {
+        // A refund of a one-time purchase arrives as a CANCELLATION carrying
+        // the purchase's transaction id (there is no separate REFUND type).
+        if (!transactionId) return { applied: false, note: "no transaction id", userId };
+        const refundMeta = { ...meta, cancel_reason: event.cancel_reason || null };
+        const refund = await coinRefundDebit(db, { transactionId, meta: refundMeta });
+        if (refund.ok) {
+            return { applied: refund.applied, note: refund.applied ? null : "already refunded", userId: refund.userId };
+        }
+        // Webhooks are unordered: the refund can land before the purchase it
+        // reverses. For a pack we sell, write the debit now from the catalogue
+        // so the purchase, when it arrives (or reconcile finds it), nets to
+        // zero instead of crediting a refunded pack in full.
+        const pack = productId ? COIN_PACKS[productId] : null;
+        if (!pack || !userId) return { applied: false, note: refund.note, userId };
+        const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
+        const result = await db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+            VALUES (?, ?, ?, 'refund', 'pack', ?, ?)
+        `).bind(`refund:${transactionId}`, userId, -(pack.coins * quantity), productId,
+            JSON.stringify({ ...refundMeta, before_purchase: true })).run();
+        const wrote = d1Changes(result) > 0;
+        return { applied: wrote, note: wrote ? "refund before purchase" : "already refunded", userId };
+    }
+
+    // TEST (the dashboard's "send test event"), TRANSFER, subscription types
+    // we do not sell, VIRTUAL_CURRENCY_TRANSACTION — logged, not applied.
+    return { applied: false, note: `ignored type ${type}`, userId };
+}
+
+/// POST /api/rc/webhook — RevenueCat's server telling ours about a purchase.
+///
+/// Auth is the static Authorization value configured in the RevenueCat
+/// dashboard (RC_WEBHOOK_AUTH here); there is no signature scheme to verify.
+/// Delivery is at-least-once with retries on anything but 2xx, so: store
+/// first under RevenueCat's event id, and answer 200 for every event we have
+/// understood — including ones we chose not to apply — so it is never resent.
+/// Only a storage failure returns 5xx, because that is the one case a retry
+/// can fix. An event stored but never finalised (a crash between the two
+/// writes) is re-applied on the retry rather than treated as a duplicate.
+async function handleRcWebhook(request, env) {
+    if (!env.RC_WEBHOOK_AUTH) {
+        return jsonResponse({ error: "Webhook is not configured" }, { status: 503 });
+    }
+    const auth = request.headers.get("Authorization") || "";
+    if (!timingSafeEqual(auth, env.RC_WEBHOOK_AUTH)
+        && !timingSafeEqual(auth.replace(/^Bearer\s+/i, ""), env.RC_WEBHOOK_AUTH)) {
+        console.warn(JSON.stringify({ event: "rc_webhook_rejected", reason: "auth" }));
+        return jsonResponse({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!env.CHAT_LOGS_DB) {
+        return jsonResponse({ error: "Wallet storage is not configured" }, { status: 503 });
+    }
+    const rawBody = await request.text();
+    let payload;
+    try {
+        payload = JSON.parse(rawBody);
+    } catch (_) {
+        return jsonResponse({ error: "Invalid JSON" }, { status: 400 });
+    }
+    const event = payload && typeof payload.event === "object" && payload.event ? payload.event : null;
+    if (!event || typeof event.id !== "string" || !event.id) {
+        return jsonResponse({ error: "No event" }, { status: 400 });
+    }
+
+    const db = env.CHAT_LOGS_DB;
+    try {
+        const inserted = await db.prepare(`
+            INSERT OR IGNORE INTO rc_events (
+                id, type, app_user_id, transaction_id, original_transaction_id, product_id,
+                store, environment, price, currency, purchased_at_ms, event_timestamp_ms, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+            event.id, String(event.type || "UNKNOWN"),
+            typeof event.app_user_id === "string" ? event.app_user_id : null,
+            typeof event.transaction_id === "string" ? event.transaction_id : null,
+            typeof event.original_transaction_id === "string" ? event.original_transaction_id : null,
+            typeof event.product_id === "string" ? event.product_id : null,
+            typeof event.store === "string" ? event.store : null,
+            typeof event.environment === "string" ? event.environment : null,
+            typeof event.price === "number" ? event.price : null,
+            typeof event.currency === "string" ? event.currency : null,
+            Number.isFinite(event.purchased_at_ms) ? event.purchased_at_ms : null,
+            Number.isFinite(event.event_timestamp_ms) ? event.event_timestamp_ms : null,
+            rawBody.slice(0, 64 * 1024),
+        ).run();
+
+        if (d1Changes(inserted) === 0) {
+            const seen = await db.prepare(
+                `SELECT applied, note FROM rc_events WHERE id = ?`
+            ).bind(event.id).first();
+            if (seen && (Number(seen.applied) === 1 || seen.note)) {
+                return jsonResponse({ ok: true, duplicate: true });
+            }
+        }
+
+        const outcome = await coinApplyRcEvent(env, db, event);
+        // A retry of an event that crashed after its ledger write finds the
+        // row already there; that still means THIS event credited, so the
+        // audit log says so rather than calling it a duplicate.
+        const applied = outcome.applied
+            || (d1Changes(inserted) === 0 && outcome.note === "already credited");
+        await db.prepare(
+            `UPDATE rc_events SET applied = ?, note = ?, user_id = ? WHERE id = ?`
+        ).bind(applied ? 1 : 0, applied ? null : outcome.note, outcome.userId, event.id).run();
+        console.log(JSON.stringify({
+            event: "rc_webhook", type: event.type, applied: outcome.applied, note: outcome.note,
+            environment: event.environment || null, product: event.product_id || null,
+        }));
+        return jsonResponse({ ok: true, applied: outcome.applied, note: outcome.note });
+    } catch (e) {
+        if (/no such table/i.test(e.message || "")) {
+            return jsonResponse({
+                error: "Purchase tables are missing",
+                hint: "Apply backend/migrations/0017_coin_packs.sql to this database.",
+            }, { status: 503 });
+        }
+        console.error(JSON.stringify({ event: "rc_webhook_failed", error: e && e.message ? e.message : String(e) }));
+        return jsonResponse({ error: "Could not store event" }, { status: 500 });
+    }
+}
+
+/// The belt to the webhook's braces: asks RevenueCat's REST API what this
+/// customer has bought and credits anything the ledger is missing. The client
+/// calls it from "Didn't get your coins?" and after a purchase whose webhook
+/// has not landed within the poll. Same idempotency, so it can never double-
+/// credit; same sandbox rule. Returns the list of transaction ids it credited.
+async function coinReconcile(env, db, userId) {
+    if (!env.RC_SECRET_KEY) return { ok: false, error: "Reconcile is not configured", credited: [] };
+    const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`, {
+        headers: { Authorization: `Bearer ${env.RC_SECRET_KEY}`, Accept: "application/json" },
+    });
+    if (!res.ok) {
+        console.error(JSON.stringify({ event: "rc_reconcile_failed", status: res.status }));
+        return { ok: false, error: `RevenueCat answered ${res.status}`, credited: [] };
+    }
+    const data = await res.json();
+    const nonSubs = data && data.subscriber && data.subscriber.non_subscriptions
+        ? data.subscriber.non_subscriptions : {};
+    const credited = [];
+    for (const [productId, purchases] of Object.entries(nonSubs)) {
+        const pack = COIN_PACKS[productId];
+        if (!pack || !Array.isArray(purchases)) continue;
+        for (const p of purchases) {
+            // ONLY the store's transaction id — the value the webhook carries
+            // as transaction_id, which is what the ledger row is keyed on.
+            // RevenueCat's own `id` for the entry is a different string; using
+            // it would credit the same purchase a second time under a second
+            // key. An entry without the store id is skipped, never guessed.
+            const transactionId = typeof p.store_transaction_id === "string" && p.store_transaction_id
+                ? p.store_transaction_id : null;
+            if (!transactionId) continue;
+            if (p.is_sandbox && !(await coinSandboxAllowed(env, db, userId))) continue;
+            const wrote = await coinPurchaseCredit(db, {
+                transactionId, userId, coins: pack.coins, productId,
+                meta: { store: p.store || null, environment: p.is_sandbox ? "SANDBOX" : "PRODUCTION", source: "reconcile" },
+            });
+            if (wrote) credited.push(transactionId);
+        }
+    }
+    if (credited.length) console.log(JSON.stringify({ event: "rc_reconcile_credited", count: credited.length }));
+    return { ok: true, credited };
+}
+
+// --- Wallet claim token -------------------------------------------------------
+//
+// An anonymous id is a 13-digit timestamp any stranger could type. Before
+// money, guessing one bought nothing worth having; now it would let them spend
+// someone's paid coins. So an anonymous wallet can be CLAIMED: the device asks
+// once (x-wallet-claim: new on a sync), the server mints a secret, stores only
+// its hash (the column 0014 reserved), and from then on every wallet write and
+// every gift from that id must carry the secret. Wallets that never asked are
+// unaffected — an old client keeps working — and signed-in identities do not
+// need it, their session already proves who they are.
+
+function coinIsAnonymousId(userId) {
+    return typeof userId === "string" && userId.startsWith("user_");
+}
+
+async function coinClaimHash(token) {
+    const bytes = new TextEncoder().encode(token);
+    return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+}
+
+/// Verifies the claim on an anonymous wallet. ok:true when the wallet has no
+/// claim (or the id is not anonymous), or when the header matches.
+///
+/// `unused` is true while the claim has never been presented successfully:
+/// the one case where the device may ask for a fresh one (the response that
+/// carried the token was lost — a timeout, the app killed mid-sync). Once a
+/// token has been used, a re-mint is closed for good; the window in which a
+/// stranger could re-mint first is the seconds between issue and the device's
+/// next call, against a wallet that at that moment holds free coins only.
+async function coinClaimCheck(db, userId, request) {
+    if (!coinIsAnonymousId(userId)) return { ok: true, claimed: false, unused: false };
+    const row = await db.prepare(
+        `SELECT claim_token_hash, claim_used_at FROM coin_wallets WHERE user_id = ?`
+    ).bind(userId).first();
+    if (!row || !row.claim_token_hash) return { ok: true, claimed: false, unused: false };
+    const unused = !row.claim_used_at;
+    const presented = request.headers.get("x-wallet-claim") || "";
+    if (!presented || presented === "new") return { ok: false, claimed: true, unused };
+    const hash = await coinClaimHash(presented);
+    const ok = timingSafeEqual(hash, row.claim_token_hash);
+    if (ok && unused) {
+        await db.prepare(
+            `UPDATE coin_wallets SET claim_used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND claim_used_at IS NULL`
+        ).bind(userId).run();
+    }
+    return { ok, claimed: true, unused };
+}
+
+/// Mints a claim for a wallet that has none — or whose claim was never used
+/// (see coinClaimCheck). Returns the token exactly once; the server keeps the
+/// hash only. The UPDATE's own guard makes a race between two "new" requests
+/// hand a token to only one of them.
+async function coinClaimIssue(db, userId) {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = bytesToHex(bytes);
+    const hash = await coinClaimHash(token);
+    const result = await db.prepare(`
+        UPDATE coin_wallets SET claim_token_hash = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND (claim_token_hash IS NULL OR claim_used_at IS NULL)
+    `).bind(hash, userId).run();
+    return d1Changes(result) > 0 ? token : null;
+}
+
+// --- Merge ticket -------------------------------------------------------------
+//
+// Signing in moves the anonymous wallet onto the account (coinMergeWallet).
+// The sign-in flow is a browser redirect that cannot carry the wallet secret
+// itself (it would sit in the address bar and the history). So the client
+// first trades its claim for a TICKET: a short-lived, single-purpose HMAC
+// over the anonymous id, minted only for a caller that passed the claim
+// check. The redirect carries the ticket; the callback verifies it before
+// merging. Stateless, so no table; ten minutes, so a leaked one goes stale.
+
+const MERGE_TICKET_TTL_S = 600;
+
+function coinMergeSecret(env) {
+    return env.SESSION_SECRET || env.APP_SECRET || "";
+}
+
+async function coinMergeTicket(env, anonId) {
+    const exp = Math.floor(Date.now() / 1000) + MERGE_TICKET_TTL_S;
+    const sig = await signHmacHex(coinMergeSecret(env), `merge|${anonId}|${exp}`);
+    return `${exp}.${sig}`;
+}
+
+async function coinMergeTicketValid(env, anonId, ticket) {
+    if (typeof ticket !== "string" || !ticket) return false;
+    const [expText, sig] = ticket.split(".");
+    const exp = parseInt(expText, 10);
+    if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000) || !sig) return false;
+    const secret = coinMergeSecret(env);
+    if (!secret) return false;
+    return verifyHmacHex(secret, `merge|${anonId}|${exp}`, sig);
+}
+
 function corsHeaders(request) {
     const origin = request.headers.get("Origin") || "*";
     return {
@@ -2628,7 +3114,7 @@ function corsHeaders(request) {
         // at all (preflight rejects it), so the tester drops the header to make
         // the request work and their traffic lands in the analytics tables —
         // which is how a "browsertest" user id got into conversation_logs.
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test",
+        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
         "Vary": "Origin",
     };
 }
@@ -8993,3 +9479,7 @@ ${visitTimelineJs()}
 </body>
 </html>`;
 }
+
+/// Internals the worker suite drives directly where no route reaches them
+/// without a live OAuth exchange. Not part of the Worker's runtime surface.
+export const __test = { coinMergeWallet };
