@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -199,8 +200,9 @@ Future<void> showCoinsSheet(
                   '${wallet != null && wallet.replyGrantCap > 0 ? ' (${wallet.replyGrantsToday}/${wallet.replyGrantCap} today)' : ''}',
                   _grant(grants, 'reply'),
                 ),
-                _EarnRow(Icons.account_circle_outlined, 'Sign in with Google',
-                    _grant(grants, 'link')),
+                if (kIsWeb)
+                  _EarnRow(Icons.account_circle_outlined, 'Sign in with Google',
+                      _grant(grants, 'link')),
                 _EarnRow(Icons.badge_outlined, 'Complete your profile',
                     _grant(grants, 'profile')),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[

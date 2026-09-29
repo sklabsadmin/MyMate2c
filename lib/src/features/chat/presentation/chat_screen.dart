@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show kIsWeb, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -3462,7 +3462,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _idleNudges = 0;
 
     final authed = ref.read(authProvider).value?.authenticated ?? false;
-    if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+    // Native builds have no sign-in path yet (see AuthNotifier), so the gate
+    // would be a dead end there; it is web-only until native auth ships.
+    if (kIsWeb && !authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
       logFunnelEvent(
         'login_gate',
         detail: widget.characterId,
@@ -3544,7 +3546,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // with this one. Signing in removes the limit. Other characters are
     // unaffected until they each hit their own limit.
     final authed = ref.read(authProvider).value?.authenticated ?? false;
-    if (!authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
+    // Native builds have no sign-in path yet (see AuthNotifier), so the gate
+    // would be a dead end there; it is web-only until native auth ships.
+    if (kIsWeb && !authed && _replyCount >= AppConfig.freeRepliesPerCharacter) {
       // Funnel: the conversion bottleneck — 31 people have chatted and 3
       // have signed in, and until now the drop-off was invisible.
       logFunnelEvent(

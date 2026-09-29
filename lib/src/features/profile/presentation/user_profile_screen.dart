@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -216,7 +217,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
 
     final authed = ref.read(authProvider).value?.authenticated ?? false;
     if (!authed) {
-      if (!_signInSuggested) {
+      // The Google suggestion is web-only: native has no sign-in path yet.
+      if (kIsWeb && !_signInSuggested) {
         _signInSuggested = true;
         await _suggestSignIn();
         return;
