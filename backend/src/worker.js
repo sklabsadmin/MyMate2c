@@ -536,7 +536,7 @@ export default {
                     ad = q.get("utm_content");
                     adset = q.get("utm_term");
                 } catch (_) { /* an unparseable query is still a visit */ }
-                const key = [row.utm_campaign || "", ad || "", adset || ""].join(" ");
+                const key = [row.utm_campaign || "", ad || "", adset || ""].join("\u0000");
                 let c = adBuckets.get(key);
                 if (!c) adBuckets.set(key, (c = {
                     utm_campaign: row.utm_campaign || null,
@@ -6053,7 +6053,7 @@ async function buildExportText(env, params) {
     // Group header needs the per-conversation stats, so bucket rows first.
     const buckets = new Map();
     for (const row of results) {
-        const key = `${row.user_id} ${row.chat_id}`;
+        const key = `${row.user_id}\u0000${row.chat_id}`;
         if (!buckets.has(key)) buckets.set(key, []);
         buckets.get(key).push(row);
     }

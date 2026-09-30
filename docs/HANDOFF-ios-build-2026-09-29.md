@@ -8,9 +8,9 @@ except the build itself and the screenshots. This is the Mac half.
 
 | | |
 |---|---|
-| Branch | `claude/mythos-live-apple-connect-xamzaj` |
+| Branch | `feat/mythos-live-packs` (this rebrand + coin packs; supersedes `claude/mythos-live-apple-connect-xamzaj`) |
 | Bundle ID | `com.sklabs.mythoslive` (new; the old `com.aiboyfriend.mymate` is retired) |
-| Version | 1.0.0, build 1 (`pubspec.yaml` → `1.0.0+1`) |
+| Version | 1.0.0, build 89 (`pubspec.yaml` → `1.0.0+89`; build numbers stay monotonic with web, which was at +88) |
 | Apple team | SK Labs Limited Liability Company |
 | App Store Connect record | "Mythos Live", Apple ID 6817279097, status "1.0 Prepare for Submission" |
 | App ID in developer portal | registered, no capabilities |
@@ -33,17 +33,25 @@ record is waiting on a build and on screenshots.
 
 ## Do this
 
+First, `.env` in the repo root must contain `APP_SECRET` and
+`REVENUECAT_IOS_KEY=appl_…` (the public SDK key of the Mythos Live app in
+RevenueCat). The script refuses to build without them: flutter_dotenv never
+loads on native, so a build without these defines ships with no server URL,
+no signing secret, and RevenueCat's sandbox Test Store key.
+
 ```
 cd /Users/adam/abldev/mymate2c        # or wherever the checkout is
-git fetch origin claude/mythos-live-apple-connect-xamzaj
-git checkout claude/mythos-live-apple-connect-xamzaj
+git fetch origin feat/mythos-live-packs
+git checkout feat/mythos-live-packs
 bash tool/ios_release.sh
 ```
 
 The script pulls, `flutter clean`, `flutter pub get`, `flutter precache --ios`,
-wipes and re-runs `pod install --repo-update`, then opens
+runs `pod install` against the committed Podfile.lock, writes the release
+config into `Generated.xcconfig` (and verifies it), then opens
 `ios/Runner.xcworkspace`. If `pod` is missing: `sudo gem install cocoapods`
-or `brew install cocoapods`.
+or `brew install cocoapods`. Don't run `flutter build` / `flutter run` between
+the script and Product → Archive — they rewrite that config.
 
 Then in Xcode:
 
@@ -109,7 +117,7 @@ Run once on a real iPhone or the simulator and confirm:
 ## After the build shows in App Store Connect
 
 Adam does this part, but for completeness: 1.0 version page → Build section
-→ **+** → pick build 1 → Save → **Add for Review** → Submit. Version release
+→ **+** → pick build 89 → Save → **Add for Review** → Submit. Version release
 is set to manual, so approval does not publish automatically.
 
 ## Known leftovers, not blocking
