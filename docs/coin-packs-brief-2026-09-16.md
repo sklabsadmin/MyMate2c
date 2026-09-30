@@ -489,3 +489,30 @@ Version: this is the second money release; suggest it lands as **2.2.0**.
 - The current iOS share of traffic (query needed — F1).
 - Whether the App Store Connect app already has any IAP products or a signed
   Paid Apps Agreement.
+
+---
+
+## Update 2026-09-30 — App Store side wired up; iOS floor raised to 16
+
+- App Store Connect (Mythos Live, `com.sklabs.mythoslive`): three consumables
+  created (`mythos_coins_300/1000/3000`, $2.99/$7.99/$19.99, all countries,
+  review notes set). Paid Apps Agreement, bank and W-9 all Active. **Still
+  needed per product: a review screenshot of the coin store**, and the first
+  IAPs must be submitted together with the 1.0 app version.
+- RevenueCat: App Store app "Mythos Live (App Store)" with the In-App Purchase
+  key (valid), the three products attached to the `coins` offering beside the
+  Test Store ones, "track purchases from server-to-server notifications" on.
+  Apple's production AND sandbox Server Notification URLs point at
+  RevenueCat's endpoint. Worker webhook verified end to end (TEST event → 200,
+  `rc_events` row). `REVENUECAT_IOS_KEY` (the public `appl_` key) is in `.env`.
+- **iOS deployment target raised 15.0 → 16.0** (Podfile ×2, pbxproj ×3,
+  Podfile.lock synced; `pod install` needs `LANG=en_US.UTF-8` in this shell).
+  Reason: 15.0 was only the floor Apple/Xcode 27 allow, not a user-support
+  decision; iOS 16 drops just the iPhone 6s/7/SE-1 class. It also removes the
+  StoreKit 1 path, so the legacy App-Specific Shared Secret is NOT needed.
+- **Before App Review: `wrangler secret put RC_SANDBOX_CREDITS` = `true`.**
+  Reviewers and TestFlight testers buy in Apple's sandbox, which the worker
+  refuses to credit by default; without this the reviewer never gets coins.
+  Remove it after approval (`wrangler secret delete RC_SANDBOX_CREDITS`).
+- Small Business Program date in RevenueCat (2026-09-29) affects reporting
+  only; confirm enrolment or click Remove.
