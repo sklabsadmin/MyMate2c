@@ -107,6 +107,15 @@
     // "synthetic" admits x-synthetic-test requests) turns it on for named
     // users while this stays "false" — the staff soak before the flip.
     "COIN_LEDGER": "true",
+    // Coin packs: whether a SANDBOX purchase (Apple's test store, which is what
+    // App Review and TestFlight use) credits coins on any wallet. Default-off
+    // idiom, ONLY the exact string "true" enables it. Production purchases
+    // are unaffected either way.
+    //
+    // ON while the first Mythos Live build is in review, because a reviewer
+    // who buys a pack and never receives coins is a rejection. REMOVE THIS LINE
+    // (or set it to "false") and redeploy once the app is approved.
+    "RC_SANDBOX_CREDITS": "true",
     // Persona prompt tuning (2026-08-22, from 10 sessions of Hercules
     // testing): shorter replies, and stop ending every turn on a question.
     // Default-on; set to the exact string "false" to restore the previous
