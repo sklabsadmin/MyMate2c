@@ -174,8 +174,8 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
               Expanded(child: _body(packs)),
               const SizedBox(height: 12),
               Text(
-                'Coins never expire. They are kept for this device — '
-                'sign in when it is offered to keep them safe if you change phones.',
+                'Coins are kept on this device. To keep them between devices, '
+                'sign in with Google or Apple when it is offered.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.lato(
                   color: AppTheme.mutedInkColor,
