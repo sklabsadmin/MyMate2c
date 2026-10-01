@@ -61,7 +61,9 @@ if [[ "${1:-}" == "--ipa" ]]; then
   echo "==> flutter build ipa --release (config baked in)"
   flutter build ipa --release "${DEFINES[@]}"
   APP_BIN="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Frameworks/App.framework/App"
-  if strings "$APP_BIN" | grep -qF -- "$APP_SECRET"; then
+  # grep the binary directly: `strings | grep -q` under pipefail reports a miss
+  # when grep exits early on a match and strings dies of SIGPIPE.
+  if grep -qaF -- "$APP_SECRET" "$APP_BIN"; then
     echo "==> verified: APP_SECRET is baked into App.framework"
   else
     echo "ERROR: APP_SECRET not found in the built App.framework — do not upload" >&2
