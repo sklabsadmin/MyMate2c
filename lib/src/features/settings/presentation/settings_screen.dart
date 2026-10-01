@@ -12,7 +12,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/config/app_config.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
+import '../../../core/services/device_identity.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -28,6 +30,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   // GET /auth/me. Null until checked, or if not signed in.
   String? _linkedProvider;
   String? _linkedUsername;
+
+  // The hidden "reset as new user" testing tool: seven taps on the version
+  // row inside a few seconds. Deliberately undiscoverable — it abandons this
+  // device's wallet, paid coins included — and confirmed by typing RESET.
+  int _versionTaps = 0;
+  DateTime? _firstVersionTap;
 
   @override
   void initState() {
@@ -104,10 +112,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: Colors.white,
         title: const Text(
           'Contact Support',
-          style: TextStyle(color: Colors.white),
+          style: TextStyle(color: AppTheme.inkColor),
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -115,13 +123,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           children: [
             const Text(
               "We couldn't open your mail app. Email us at:",
-              style: TextStyle(color: Colors.white70, fontSize: 13),
+              style: TextStyle(color: AppTheme.mutedInkColor, fontSize: 13),
             ),
             const SizedBox(height: 12),
             SelectableText(
               _supportEmail,
               style: const TextStyle(
-                color: Colors.white,
+                color: AppTheme.inkColor,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
               ),
@@ -141,7 +149,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Close',
-                style: TextStyle(color: Colors.white70)),
+                style: TextStyle(color: AppTheme.mutedInkColor)),
           ),
         ],
       ),
@@ -217,18 +225,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Dark theme background
+      backgroundColor: AppTheme.backgroundColor,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: AppTheme.inkColor),
           onPressed: () => context.pop(),
         ),
         title: Text(
           'Settings',
           style: GoogleFonts.playfairDisplay(
-            color: Colors.white,
+            color: AppTheme.inkColor,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -267,7 +275,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 iconColor: Colors.pinkAccent,
                 onTap: _connectGoogle,
                 trailing: _linkedProvider == 'google'
-                    ? const Icon(Icons.check_circle, color: Colors.greenAccent)
+                    ? const Icon(Icons.check_circle, color: Color(0xFF15803D))
                     : null,
               ),
               _buildSettingsTile(
@@ -282,7 +290,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 iconColor: Colors.pinkAccent,
                 onTap: _showInstagramComingSoon,
                 trailing: _linkedProvider == 'instagram'
-                    ? const Icon(Icons.check_circle, color: Colors.greenAccent)
+                    ? const Icon(Icons.check_circle, color: Color(0xFF15803D))
                     : null,
               ),
               if (_linkedProvider != null)
@@ -291,7 +299,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   icon: Icons.logout,
                   title: 'Sign out',
                   subtitle: 'Disconnect this account on this device',
-                  iconColor: Colors.white70,
+                  iconColor: AppTheme.mutedInkColor,
                   onTap: _logout,
                 ),
               if (_linkedProvider == null)
@@ -358,7 +366,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       child: Text(
         title,
         style: GoogleFonts.lato(
-          color: Colors.white.withValues(alpha: 0.5),
+          color: AppTheme.mutedInkColor,
           fontSize: 12,
           fontWeight: FontWeight.bold,
           letterSpacing: 1.5,
@@ -379,23 +387,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E), // Dark card color
+        color: AppTheme.panelColor, // Card fill on the white page
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.hairlineColor),
       ),
       child: ListTile(
         onTap: onTap,
         leading: Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: (iconColor ?? Colors.white).withValues(alpha: 0.1),
+            color: (iconColor ?? AppTheme.inkColor).withValues(alpha: 0.1),
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, color: iconColor ?? Colors.white, size: 24),
+          child: Icon(icon, color: iconColor ?? AppTheme.inkColor, size: 24),
         ),
         title: Text(
           title,
           style: GoogleFonts.lato(
-            color: Colors.white,
+            color: AppTheme.inkColor,
             fontWeight: FontWeight.w600,
             fontSize: 16,
           ),
@@ -404,7 +413,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ? Text(
                 subtitle,
                 style: GoogleFonts.lato(
-                  color: Colors.white.withValues(alpha: 0.5),
+                  color: AppTheme.mutedInkColor,
                   fontSize: 12,
                 ),
               )
@@ -414,7 +423,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ? null
                 : Icon(
                     Icons.chevron_right,
-                    color: Colors.white.withValues(alpha: 0.3),
+                    color: AppTheme.faintInkColor,
                   )),
       ),
     );
@@ -425,9 +434,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.06),
+        color: AppTheme.panelColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        border: Border.all(color: AppTheme.hairlineColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -447,7 +456,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   child: Text(
                     benefit,
                     style: GoogleFonts.lato(
-                      color: Colors.white.withValues(alpha: 0.72),
+                      color: AppTheme.mutedInkColor,
                       fontSize: 13,
                       height: 1.25,
                     ),
@@ -468,12 +477,79 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppTheme.panelColor,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.hairlineColor),
       ),
       child: Column(
         children: [
-          _buildInfoRow('Mythos Live Version', version),
+          // Plain to look at; seven quick taps open the reset tool.
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _onVersionTap,
+            child: _buildInfoRow('Mythos Live Version', version),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _onVersionTap() {
+    final now = DateTime.now();
+    if (_firstVersionTap == null ||
+        now.difference(_firstVersionTap!) > const Duration(seconds: 4)) {
+      _firstVersionTap = now;
+      _versionTaps = 0;
+    }
+    _versionTaps++;
+    if (_versionTaps >= 7) {
+      _versionTaps = 0;
+      _firstVersionTap = null;
+      _confirmResetAsNewUser();
+    }
+  }
+
+  /// Testing only: makes this install a brand-new user. Clears the device id
+  /// and wallet claim (keychain) and every SharedPreferences key — chats,
+  /// profile, wallet cache, onboarding — so the next launch mints a fresh id,
+  /// gets a new wallet and the welcome claim screen again. The old wallet is
+  /// left on the server. A relaunch is required: services hold the old id in
+  /// memory, and iOS does not let an app restart itself.
+  Future<void> _confirmResetAsNewUser() async {
+    // The dialog owns its text controller (see _ResetConfirmDialog): disposing
+    // it here, while the dialog was still animating out, crashed debug builds.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => const _ResetConfirmDialog(),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await DeviceIdentity.forgetAll();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Text(
+          'Reset done',
+          style: TextStyle(color: AppTheme.inkColor),
+        ),
+        content: Text(
+          kIsWeb
+              ? 'Reload the page to start as a new user.'
+              : 'Now close the app completely (swipe it away in the app '
+                  'switcher) and open it again to start as a new user.',
+          style: const TextStyle(color: AppTheme.mutedInkColor, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
         ],
       ),
     );
@@ -490,7 +566,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             child: Text(
               label,
               style: GoogleFonts.lato(
-                color: Colors.white.withValues(alpha: 0.5),
+                color: AppTheme.mutedInkColor,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
               ),
@@ -501,7 +577,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               value,
               textAlign: TextAlign.right,
               style: GoogleFonts.lato(
-                color: Colors.white,
+                color: AppTheme.inkColor,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
               ),
@@ -512,4 +588,68 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+}
+
+/// "Type RESET to confirm" — a StatefulWidget so the text controller is
+/// disposed with the dialog, after its exit animation, not before it.
+class _ResetConfirmDialog extends StatefulWidget {
+  const _ResetConfirmDialog();
+
+  @override
+  State<_ResetConfirmDialog> createState() => _ResetConfirmDialogState();
+}
+
+class _ResetConfirmDialogState extends State<_ResetConfirmDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: Colors.white,
+      title: const Text(
+        'Reset as new user?',
+        style: TextStyle(color: AppTheme.inkColor),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Testing tool. This device forgets who it is: chats, profile '
+            'and this device\'s coins (including any bought) are left '
+            'behind. Type RESET to confirm.',
+            style: TextStyle(color: AppTheme.mutedInkColor, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            style: const TextStyle(color: AppTheme.inkColor),
+            decoration: const InputDecoration(hintText: 'RESET'),
+            onChanged: (_) => setState(() {}),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _controller.text.trim() == 'RESET'
+              ? () => Navigator.pop(context, true)
+              : null,
+          style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+          child: const Text('Reset'),
+        ),
+      ],
+    );
+  }
 }

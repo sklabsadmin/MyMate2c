@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/theme/app_theme.dart';
 
 /// Holding page shown before the app while [AppConfig.showMaintenanceGate] is
 /// true, so casual visitors don't wander through a work-in-progress build.
@@ -82,8 +83,8 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  const Color(0xFF2E003E), // Deep Purple — deliberately dark regardless of the app theme
-                  Colors.black,
+                  AppTheme.backgroundColor, // White
+                  AppTheme.surfaceColor, // Soft Blush
                   theme.primaryColor.withOpacity(0.12),
                 ],
               ),
@@ -127,7 +128,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                           textAlign: TextAlign.center,
                           style: theme.textTheme.displayLarge?.copyWith(
                             fontSize: 30,
-                            color: Colors.white,
+                            color: AppTheme.inkColor,
                             height: 1.2,
                           ),
                         ),
@@ -141,7 +142,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                           style: theme.textTheme.bodyLarge?.copyWith(
                             fontSize: 20,
                             fontWeight: FontWeight.w400,
-                            color: Colors.white.withValues(alpha: 0.92),
+                            color: AppTheme.inkColor,
                             height: 1.35,
                           ),
                         ),
@@ -150,7 +151,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                           'We are undergoing a few personality changes.',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyLarge?.copyWith(
-                            color: Colors.white70,
+                            color: AppTheme.mutedInkColor,
                             height: 1.5,
                           ),
                         ),
@@ -159,7 +160,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                           'Please come back again later!',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyLarge?.copyWith(
-                            color: Colors.white70,
+                            color: AppTheme.mutedInkColor,
                             height: 1.5,
                           ),
                         ),

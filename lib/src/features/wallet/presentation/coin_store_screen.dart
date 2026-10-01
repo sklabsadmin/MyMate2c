@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 
 import '../../../core/services/revenue_cat_service.dart';
+import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
 
 /// The coin store: the packs, priced by the store, credited by the worker.
@@ -21,7 +22,12 @@ import '../coin_wallet.dart';
 /// There is no restore button. Consumables cannot be restored through the
 /// store; "Didn't get your coins?" (reconcile) is the honest equivalent.
 class CoinStoreScreen extends ConsumerStatefulWidget {
-  const CoinStoreScreen({super.key});
+  /// Why the player is here, when something sent them: "Ambrosia costs 150
+  /// coins. You have 32." Shown under the balance. Null from the plain
+  /// "Get more coins" buttons.
+  final String? reason;
+
+  const CoinStoreScreen({super.key, this.reason});
 
   @override
   ConsumerState<CoinStoreScreen> createState() => _CoinStoreScreenState();
@@ -30,9 +36,12 @@ class CoinStoreScreen extends ConsumerStatefulWidget {
 enum _Phase { loading, ready, unavailable, buying, waiting, arrived, onItsWay }
 
 class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
-  static const Color _gold = Color(0xFFE8C36A);
-  static const Color _ink = Color(0xFF2E003E);
-  static const Color _page = Color(0xFF1B0A24);
+  // The light theme's store: white page, gold reserved for fills and the
+  // price pills (with ink on them), gold-ink for gold text on white.
+  static const Color _gold = AppTheme.secondaryColor;
+  static const Color _goldInk = AppTheme.goldInkColor;
+  static const Color _ink = AppTheme.inkColor;
+  static const Color _page = Colors.white;
 
   final RevenueCatService _store = RevenueCatService();
   List<Package> _packages = const [];
@@ -43,6 +52,10 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
   @override
   void initState() {
     super.initState();
+    // Nothing on this screen takes text. Whatever had focus behind it (the
+    // chat's message box) must not get it back when the App Store sheet
+    // closes and raise a keyboard over the packs.
+    FocusManager.instance.primaryFocus?.unfocus();
     _load();
   }
 
@@ -79,6 +92,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
 
     final outcome = await _store.purchase(package);
     if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
 
     switch (outcome) {
       case PurchaseOutcome.cancelled:
@@ -143,7 +157,8 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
       backgroundColor: _page,
       appBar: AppBar(
         backgroundColor: _page,
-        foregroundColor: Colors.white,
+        foregroundColor: _ink,
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
         title: Text('Mythos Coins',
             style: GoogleFonts.outfit(fontWeight: FontWeight.w700)),
@@ -163,7 +178,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
                 'sign in when it is offered to keep them safe if you change phones.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.lato(
-                  color: Colors.white.withOpacity(0.45),
+                  color: AppTheme.mutedInkColor,
                   fontSize: 12,
                 ),
               ),
@@ -181,7 +196,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
         Text(
           '$balance',
           style: GoogleFonts.outfit(
-            color: _gold,
+            color: _goldInk,
             fontSize: 44,
             fontWeight: FontWeight.w800,
             fontFeatures: const [FontFeature.tabularFigures()],
@@ -192,11 +207,35 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
               ? 'A refund left this wallet owing. The next pack settles it first.'
               : 'coins in your purse',
           style: GoogleFonts.lato(
-            color: Colors.white.withOpacity(0.6),
+            color: AppTheme.mutedInkColor,
             fontSize: 13,
           ),
           textAlign: TextAlign.center,
         ),
+        // What sent them here, when something did — the tribute they reached
+        // for. Rose rather than muted: it is the reason for the whole screen.
+        // Only while choosing: once a pack lands, "You have 100" is wrong.
+        if (widget.reason != null &&
+            !debt &&
+            (_phase == _Phase.ready || _phase == _Phase.buying)) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryColor.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              widget.reason!,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.lato(
+                color: AppTheme.primaryColor,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -204,14 +243,14 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
   Widget _body(Map<String, int> packs) {
     switch (_phase) {
       case _Phase.loading:
-        return const Center(child: CircularProgressIndicator(color: _gold));
+        return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
       case _Phase.unavailable:
         return _notice(
           'The store is not open on this device right now.',
           'Coin packs are bought through the App Store. Please try again later.',
         );
       case _Phase.buying:
-        return const Center(child: CircularProgressIndicator(color: _gold));
+        return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
       case _Phase.waiting:
         return _notice('Adding your coins…', 'This usually takes a moment.',
             spinner: true);
@@ -222,7 +261,8 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
           action: TextButton(
             onPressed: () => context.pop(),
             child: Text('Back to the conversation',
-                style: GoogleFonts.lato(color: _gold, fontWeight: FontWeight.w600)),
+                style: GoogleFonts.lato(
+                    color: AppTheme.primaryColor, fontWeight: FontWeight.w600)),
           ),
         );
       case _Phase.onItsWay:
@@ -233,7 +273,8 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
           action: TextButton(
             onPressed: _checkAgain,
             child: Text("Didn't get your coins? Check again",
-                style: GoogleFonts.lato(color: _gold, fontWeight: FontWeight.w600)),
+                style: GoogleFonts.lato(
+                    color: AppTheme.primaryColor, fontWeight: FontWeight.w600)),
           ),
         );
       case _Phase.ready:
@@ -251,7 +292,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
     // The middle of a three-pack ladder is the one to nudge towards.
     final highlight = _packages.length >= 3 && _packages.indexOf(package) == 1;
     return Material(
-      color: highlight ? _gold.withOpacity(0.14) : Colors.white.withOpacity(0.06),
+      color: highlight ? _gold.withOpacity(0.16) : AppTheme.panelColor,
       borderRadius: BorderRadius.circular(18),
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
@@ -261,7 +302,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: highlight ? _gold : Colors.white.withOpacity(0.12),
+              color: highlight ? _gold : AppTheme.hairlineColor,
               width: highlight ? 1.5 : 1,
             ),
           ),
@@ -274,7 +315,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
                     Text(
                       coins != null ? '$coins coins' : 'Coin pack',
                       style: GoogleFonts.outfit(
-                        color: Colors.white,
+                        color: _ink,
                         fontSize: 20,
                         fontWeight: FontWeight.w700,
                       ),
@@ -284,7 +325,7 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
                         padding: const EdgeInsets.only(top: 2),
                         child: Text('Most popular',
                             style: GoogleFonts.lato(
-                                color: _gold, fontSize: 12, fontWeight: FontWeight.w600)),
+                                color: _goldInk, fontSize: 12, fontWeight: FontWeight.w600)),
                       ),
                   ],
                 ),
@@ -317,18 +358,18 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (spinner) ...[
-            const CircularProgressIndicator(color: _gold),
+            const CircularProgressIndicator(color: AppTheme.primaryColor),
             const SizedBox(height: 20),
           ],
           Text(title,
               textAlign: TextAlign.center,
               style: GoogleFonts.outfit(
-                  color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
+                  color: _ink, fontSize: 22, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
           Text(body,
               textAlign: TextAlign.center,
               style: GoogleFonts.lato(
-                  color: Colors.white.withOpacity(0.65), fontSize: 14)),
+                  color: AppTheme.mutedInkColor, fontSize: 14)),
           if (action != null) ...[const SizedBox(height: 16), action],
         ],
       ),

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 
 class RecentChatsScreen extends ConsumerStatefulWidget {
   const RecentChatsScreen({super.key});
@@ -157,16 +158,16 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 64, color: theme.colorScheme.onSurface.withOpacity(0.3)),
+          Icon(Icons.chat_bubble_outline, size: 64, color: AppTheme.faintInkColor),
           const SizedBox(height: 16),
           Text(
             "No conversations yet",
-            style: theme.textTheme.titleLarge?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.7)),
+            style: theme.textTheme.titleLarge?.copyWith(color: AppTheme.mutedInkColor),
           ),
           const SizedBox(height: 8),
           Text(
             "Start talking to someone from Personalities!",
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.4)),
+            style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.faintInkColor),
           ),
           const SizedBox(height: 24),
           ElevatedButton(
@@ -213,7 +214,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
             chat['lastMessage'],
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurface.withOpacity(0.65)),
+            style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.mutedInkColor),
           ),
         ],
       ),
@@ -224,7 +225,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
           Text(
             _formatTime(chat['timestamp']),
             style: theme.textTheme.bodySmall?.copyWith(
-              color: (chat['unreadCount'] ?? 0) > 0 ? theme.primaryColor : theme.colorScheme.onSurface.withOpacity(0.4),
+              color: (chat['unreadCount'] ?? 0) > 0 ? theme.primaryColor : AppTheme.faintInkColor,
               fontWeight: (chat['unreadCount'] ?? 0) > 0 ? FontWeight.bold : FontWeight.normal,
             ),
           ),

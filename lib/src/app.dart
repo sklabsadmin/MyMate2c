@@ -348,7 +348,11 @@ class _AIAppState extends ConsumerState<AIApp> {
         GoRoute(
           path: '/coins',
           parentNavigatorKey: _rootNavigatorKey,
-          builder: (context, state) => const CoinStoreScreen(),
+          // extra: an optional "why you're here" line (a String), passed by
+          // a tribute the player could not afford.
+          builder: (context, state) => CoinStoreScreen(
+            reason: state.extra is String ? state.extra as String : null,
+          ),
         ),
         GoRoute(
           path: '/paywall',

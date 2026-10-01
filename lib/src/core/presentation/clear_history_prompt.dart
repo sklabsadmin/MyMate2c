@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../theme/app_theme.dart';
+
 /// Hidden "clear chat history" confirmation, opened by pressing Tab.
 ///
 /// Deliberately undiscoverable, like the Tab bypass on the holding page: it
@@ -69,20 +71,22 @@ class _ClearHistoryDialogState extends State<_ClearHistoryDialog> {
       onKeyEvent: _onKey,
       autofocus: true,
       child: AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: Colors.white,
         title: Text(
           widget.message,
-          style: const TextStyle(color: Colors.white, fontSize: 17),
+          style: const TextStyle(color: AppTheme.inkColor, fontSize: 17),
         ),
         content: const Text(
           'Press Y to confirm. Any other key cancels.\n\n'
           'This clears the copy stored on this device only.',
-          style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+          style: TextStyle(
+              color: AppTheme.mutedInkColor, fontSize: 13, height: 1.5),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppTheme.mutedInkColor)),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),

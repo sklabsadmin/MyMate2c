@@ -12,6 +12,7 @@ import '../../../core/models/user_profile.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/profile_sync_service.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../wallet/coin_wallet.dart';
 
 /// "My Profile" — the player's own details, reached from the bottom nav.
@@ -127,9 +128,10 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     final theme = Theme.of(context);
     final chosen = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        side: BorderSide(color: AppTheme.hairlineColor),
       ),
       builder: (sheetContext) {
         return SafeArea(
@@ -142,7 +144,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                 Text(
                   'Pick an emoji',
                   style: theme.textTheme.titleMedium
-                      ?.copyWith(color: Colors.white),
+                      ?.copyWith(color: AppTheme.inkColor),
                 ),
                 const SizedBox(height: 16),
                 Wrap(
@@ -157,9 +159,9 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                           width: 52,
                           height: 52,
                           alignment: Alignment.center,
-                          decoration: BoxDecoration(
+                          decoration: const BoxDecoration(
                             shape: BoxShape.circle,
-                            color: Colors.white.withOpacity(0.05),
+                            color: AppTheme.panelColor,
                           ),
                           child: Text(e, style: const TextStyle(fontSize: 26)),
                         ),
@@ -256,9 +258,10 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     final theme = Theme.of(context);
     final signIn = await showModalBottomSheet<bool>(
       context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        side: BorderSide(color: AppTheme.hairlineColor),
       ),
       builder: (sheetContext) => SafeArea(
         child: Padding(
@@ -270,14 +273,14 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               Text(
                 'Saved on this device',
                 style:
-                    theme.textTheme.titleMedium?.copyWith(color: Colors.white),
+                    theme.textTheme.titleMedium?.copyWith(color: AppTheme.inkColor),
               ),
               const SizedBox(height: 10),
               Text(
                 'Sign in with Google to keep your profile if you clear your '
                 'browser, and to have it follow you to your phone.',
                 style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: Colors.white70, height: 1.4),
+                    ?.copyWith(color: AppTheme.mutedInkColor, height: 1.4),
               ),
               const SizedBox(height: 22),
               SizedBox(
@@ -307,7 +310,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                   onPressed: () => Navigator.of(sheetContext).pop(false),
                   child: const Text(
                     'Not now',
-                    style: TextStyle(color: Colors.white54),
+                    style: TextStyle(color: AppTheme.mutedInkColor),
                   ),
                 ),
               ),
@@ -363,7 +366,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
             Text(
               'My Profile',
               style: theme.textTheme.displayLarge
-                  ?.copyWith(fontSize: 28, color: Colors.white),
+                  ?.copyWith(fontSize: 28, color: AppTheme.inkColor),
             ),
             const SizedBox(height: 6),
             Text(
@@ -371,7 +374,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                   ? 'Tell your companions about you. Every field is optional.'
                   : '$filled of ${UserProfile.fieldCount} filled in. Every field is optional.',
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: Colors.white54,
+                color: AppTheme.mutedInkColor,
               ),
             ),
             const SizedBox(height: 20),
@@ -422,7 +425,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
             Text(
               'Saved on this device only.',
               style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.white38,
+                color: AppTheme.faintInkColor,
                 fontSize: 11,
               ),
             ),
@@ -433,15 +436,17 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                 onPressed: _dirty ? _save : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: theme.primaryColor,
-                  disabledBackgroundColor: Colors.white12,
+                  disabledBackgroundColor: AppTheme.hairlineColor,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(26),
                   ),
                 ),
                 child: Text(
                   _dirty ? 'Save' : 'Saved',
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    // White on the rose button; the disabled "Saved" sits on
+                    // a pale hairline fill, where white would vanish.
+                    color: _dirty ? Colors.white : AppTheme.mutedInkColor,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.5,
                   ),
@@ -468,14 +473,14 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           fit: BoxFit.cover,
           // A corrupt or truncated stored value shouldn't blank the screen.
           errorBuilder: (_, _, _) =>
-              const Icon(Icons.person, size: 44, color: Colors.white24),
+              const Icon(Icons.person, size: 44, color: AppTheme.faintInkColor),
         ),
       );
     } else if (hasEmoji) {
       avatarContent = Text(_avatarEmoji, style: const TextStyle(fontSize: 44));
     } else {
       avatarContent =
-          const Icon(Icons.person_outline, size: 44, color: Colors.white24);
+          const Icon(Icons.person_outline, size: 44, color: AppTheme.faintInkColor);
     }
 
     return Center(
@@ -487,11 +492,11 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white.withOpacity(0.05),
+              color: AppTheme.panelColor,
               border: Border.all(
                 color: _current.hasAvatar
                     ? theme.primaryColor.withOpacity(0.5)
-                    : Colors.white.withOpacity(0.08),
+                    : AppTheme.hairlineColor,
                 width: 2,
               ),
             ),
@@ -537,17 +542,17 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   }) {
     return TextButton.icon(
       onPressed: onTap,
-      icon: Icon(icon, size: 16, color: Colors.white70),
+      icon: Icon(icon, size: 16, color: AppTheme.mutedInkColor),
       label: Text(
         label,
-        style: const TextStyle(color: Colors.white70, fontSize: 12),
+        style: const TextStyle(color: AppTheme.mutedInkColor, fontSize: 12),
       ),
       style: TextButton.styleFrom(
-        backgroundColor: Colors.white.withOpacity(0.05),
+        backgroundColor: AppTheme.panelColor,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: Colors.white.withOpacity(0.08)),
+          side: const BorderSide(color: AppTheme.hairlineColor),
         ),
       ),
     );
@@ -580,7 +585,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                 child: Text(
                   label,
                   style: theme.textTheme.bodyMedium?.copyWith(
-                    color: Colors.white70,
+                    color: AppTheme.mutedInkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -593,12 +598,12 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           TextField(
             controller: controller,
             maxLines: maxLines,
-            style: const TextStyle(color: Colors.white),
+            style: const TextStyle(color: AppTheme.inkColor),
             decoration: InputDecoration(
               hintText: hint,
-              hintStyle: const TextStyle(color: Colors.white24),
+              hintStyle: const TextStyle(color: AppTheme.faintInkColor),
               filled: true,
-              fillColor: Colors.white.withOpacity(0.05),
+              fillColor: AppTheme.panelColor,
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               border: OutlineInputBorder(
@@ -607,7 +612,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
+                borderSide: const BorderSide(color: AppTheme.hairlineColor),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
@@ -638,12 +643,12 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
-          color: Colors.white.withOpacity(0.05),
-          border: Border.all(color: Colors.white.withOpacity(0.08)),
+          color: AppTheme.panelColor,
+          border: Border.all(color: AppTheme.hairlineColor),
         ),
         child: Text(
           value,
-          style: const TextStyle(color: Colors.white70, fontSize: 11),
+          style: const TextStyle(color: AppTheme.mutedInkColor, fontSize: 11),
         ),
       ),
     );

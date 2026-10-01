@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/theme/app_theme.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
@@ -70,9 +71,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                   center: Alignment.center,
                   radius: 1.5,
                   colors: [
-                    const Color(0xFF2D1035), // Inner — deliberately dark regardless of the app theme
-                    theme.primaryColor.withOpacity(0.2), // Mid (Pinkish glow)
-                    Colors.black, // Outer
+                    AppTheme.backgroundColor, // Inner (White)
+                    theme.primaryColor.withOpacity(0.12), // Mid (Pinkish glow)
+                    AppTheme.surfaceColor, // Outer (Soft Blush)
                   ],
                   stops: const [0.0, 0.6, 1.0],
                 ),
@@ -107,7 +108,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                             fontSize: 42,
                             fontWeight: FontWeight.bold,
                             height: 1.1,
-                            color: Colors.white,
+                            color: AppTheme.inkColor,
                             shadows: [
                               Shadow(
                                 color: theme.primaryColor.withOpacity(0.6),
@@ -122,7 +123,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                           textAlign: TextAlign.center,
                           style: GoogleFonts.lato(
                             fontSize: 16,
-                            color: Colors.white70,
+                            color: AppTheme.mutedInkColor,
                             height: 1.5,
                             letterSpacing: 0.5,
                           ),
@@ -149,7 +150,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                               elevation: 10,
                             ),
                             child: _isLoading
-                                ? const CircularProgressIndicator(color: Colors.white)
+                                // Rose, not white: while loading the button is
+                                // disabled and drops to its pale disabled fill.
+                                ? const CircularProgressIndicator(color: AppTheme.primaryColor)
                                 : Text(
                                     'Begin the Journey',
                                     style: GoogleFonts.cinzel(
@@ -164,7 +167,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
                           'Private • Secure • Judgement Free',
                           style: GoogleFonts.lato(
                             fontSize: 12,
-                            color: Colors.white38,
+                            color: AppTheme.faintInkColor,
                           ),
                         ),
                       ],

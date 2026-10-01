@@ -77,6 +77,21 @@ class DeviceIdentity {
   static String? get claimToken =>
       (_claim == null || _claim!.isEmpty) ? null : _claim;
 
+  /// Forgets who this device is: the device id and the wallet claim, in the
+  /// keychain and in memory. For the hidden "reset as new user" testing tool
+  /// in Settings only — paired with clearing SharedPreferences and a full
+  /// relaunch, the next start mints a fresh id and the wallet it had is left
+  /// behind on the server, paid coins included.
+  static Future<void> forgetAll() async {
+    _claim = null;
+    try {
+      await _vault?.delete(key: _kUserId);
+      await _vault?.delete(key: _kClaim);
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeviceIdentity forget failed: $e');
+    }
+  }
+
   /// Forgets a token the server no longer accepts (a 403). The next sync then
   /// asks for a fresh one; the server grants that only if the old token was
   /// never used — the lost-response case — so this cannot help a stranger.

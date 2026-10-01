@@ -3,6 +3,7 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
 
 /// The screen that hands over the coins the entry card promised.
@@ -31,11 +32,12 @@ class CoinClaimScreen extends StatefulWidget {
   /// Dismisses this screen and lets the conversation begin.
   final VoidCallback onCollect;
 
-  /// Opens the coin store. Optional, and drawn as a quiet text link under
-  /// the button rather than a second button: nobody buys the moment they
-  /// have been handed free coins, so this is not a sales surface — it is
-  /// the guaranteed two-tap path a tester or an App Store reviewer needs to
-  /// reach a purchase without first running a wallet dry.
+  /// Opens the coin store. Optional (null where nothing can be bought, e.g.
+  /// web). Drawn as a real secondary button under "Collect and begin", not a
+  /// link: few people buy the moment they are handed free coins, but this is
+  /// the one screen every new player sees, so it is where they learn coins
+  /// can be bought — and the guaranteed two-tap path a tester or an App Store
+  /// reviewer needs to reach a purchase without first running a wallet dry.
   final VoidCallback? onGetMore;
 
   const CoinClaimScreen({
@@ -102,15 +104,17 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
         key: const ValueKey('coin_claim_surface'),
         // Opaque at every stop, for the reason the entry card documents: a
         // translucent overlay lets the quick-reply strip and the message box
-        // read through, and then this stops being a screen at all.
+        // read through, and then this stops being a screen at all. White into
+        // the blush surface with a breath of gold — the light theme's version
+        // of the old purple night.
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              const Color(0xFF2E003E),
-              Color.alphaBlend(gold.withOpacity(0.10), const Color(0xFF1A0520)),
-              const Color(0xFF12000F),
+              Colors.white,
+              Color.alphaBlend(gold.withOpacity(0.12), AppTheme.surfaceColor),
+              AppTheme.surfaceColor,
             ],
           ),
         ),
@@ -146,18 +150,17 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                     ),
                   ),
                 ),
-                // Alone at the foot, like the entry card's button: the only
-                // thing on this screen that does anything.
+                // The way forward, at the foot like the entry card's button;
+                // the store sits under it as the one alternative.
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
                     onPressed: widget.onCollect,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: gold,
-                      // Deep purple on gold, never white: 12.8:1 against this
-                      // background versus white's 1.4:1. Same pairing the
-                      // entry button uses.
-                      foregroundColor: const Color(0xFF2E003E),
+                      // Ink on gold, never white: white on this gold is 2:1.
+                      // Same pairing the entry button uses.
+                      foregroundColor: AppTheme.inkColor,
                       padding: const EdgeInsets.symmetric(vertical: 18),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(999),
@@ -172,31 +175,41 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                     ),
                   ),
                 ),
+                if (widget.onGetMore != null) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('coin_claim_get_more'),
+                      onPressed: widget.onGetMore,
+                      icon: const Icon(Icons.add_circle_outline, size: 20),
+                      label: Text(
+                        'Buy more coins',
+                        style: GoogleFonts.outfit(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.primaryColor,
+                        side: const BorderSide(
+                            color: AppTheme.primaryColor, width: 1.5),
+                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 Text(
                   'Balance: ${widget.balance}',
                   style: GoogleFonts.lato(
-                    color: Colors.white.withOpacity(0.5),
+                    color: AppTheme.mutedInkColor,
                     fontSize: 13,
                   ),
                 ),
-                if (widget.onGetMore != null)
-                  TextButton(
-                    onPressed: widget.onGetMore,
-                    style: TextButton.styleFrom(
-                      foregroundColor: gold,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      minimumSize: Size.zero,
-                    ),
-                    child: Text(
-                      'Get more coins',
-                      style: GoogleFonts.lato(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
                 const SizedBox(height: 14),
               ],
             ),
@@ -252,7 +265,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                 'Your coins are yours',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.playfairDisplay(
-                  color: Colors.white,
+                  color: AppTheme.inkColor,
                   fontSize: 26,
                   fontWeight: FontWeight.w600,
                 ),
@@ -261,7 +274,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
               Text(
                 '+$counted',
                 style: GoogleFonts.outfit(
-                  color: gold,
+                  color: AppTheme.goldInkColor,
                   fontSize: 50,
                   fontWeight: FontWeight.w700,
                   height: 1.0,
@@ -289,7 +302,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                       Text(
                         grant.label,
                         style: GoogleFonts.lato(
-                          color: Colors.white,
+                          color: AppTheme.inkColor,
                           fontSize: 15,
                         ),
                       ),
@@ -297,7 +310,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                       Text(
                         '+${grant.delta}',
                         style: GoogleFonts.lato(
-                          color: gold,
+                          color: AppTheme.goldInkColor,
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
                         ),
@@ -320,7 +333,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                     Text(
                       '${_ordinal(streakDays)} dawn in a row',
                       style: GoogleFonts.lato(
-                        color: gold,
+                        color: AppTheme.goldInkColor,
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
                       ),
@@ -333,7 +346,7 @@ class _CoinClaimScreenState extends State<CoinClaimScreen>
                 'Spend them on tributes your companions will answer for.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.lato(
-                  color: Colors.white.withOpacity(0.66),
+                  color: AppTheme.mutedInkColor,
                   fontSize: 15,
                   height: 1.4,
                 ),

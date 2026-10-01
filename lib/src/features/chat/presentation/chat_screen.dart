@@ -12,6 +12,7 @@ import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/services/analytics.dart';
 import '../../../core/services/chime.dart';
 import '../../../core/services/delivery_log.dart';
@@ -3449,7 +3450,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // So the sheet can tell whether THIS character already wears a pendant.
       characterId: widget.characterId,
       onTribute: _sendTribute,
+      // Null where nothing can be bought (web): the sheet then hides its buy
+      // button and keeps unaffordable tributes disabled.
+      onGetCoins: RevenueCatService.isSupported
+          ? (reason) => _openCoinStore(reason: reason)
+          : null,
     );
+  }
+
+  /// The coin store, from any coin moment in a chat. When a purchase lands
+  /// while the player is in the store, they come back to the tribute list
+  /// rather than a bare conversation — the gift they reached for is one tap
+  /// away, and nothing is spent until they tap it (decision 2026-10-01).
+  ///
+  /// [reopenSheet] is false from the claim screen, which is still up behind
+  /// the store; the sheet would open on top of it.
+  Future<void> _openCoinStore({String? reason, bool reopenSheet = true}) async {
+    final before =
+        ref.read(coinWalletProvider).value?.lifetimePurchased ?? 0;
+    // Drop the message box's focus first. Otherwise iOS hands it back when
+    // the App Store sheet closes, and the keyboard rises over the store.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await context.push('/coins', extra: reason);
+    if (!mounted || !reopenSheet) return;
+    final after =
+        ref.read(coinWalletProvider).value?.lifetimePurchased ?? before;
+    if (after > before) _openCoinsSheet();
   }
 
   /// A tribute is an ordinary chat turn with a coin debit attached: the
@@ -3666,11 +3692,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (ai.lastFailureReason == 'insufficient_coins') {
       // Nothing was charged and nothing went upstream. Say so plainly rather
       // than letting the silence read as the character ignoring the gift —
-      // the sheet disables unaffordable tributes, so this is the rare race,
-      // not the normal path.
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      // the sheet routes unaffordable tributes to the store, so this is the
+      // rare race (a balance that moved after the sheet opened), not the
+      // normal path. Still a way forward, never a dead end.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         behavior: SnackBarBehavior.floating,
-        content: Text('Not enough coins for that tribute.'),
+        content: const Text('Not enough coins for that tribute.'),
+        action: RevenueCatService.isSupported
+            ? SnackBarAction(
+                label: 'Get coins',
+                onPressed: () => _openCoinStore(
+                  reason: 'Not enough coins for that tribute.',
+                ),
+              )
+            : null,
       ));
       return;
     }
@@ -3899,14 +3934,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
+      useSafeArea: true,
       builder: (sheetContext) {
         final theme = Theme.of(sheetContext);
         return Container(
           padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
           decoration: BoxDecoration(
-            color: const Color(0xFF1A1A1A),
+            color: Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            border: Border.all(color: AppTheme.hairlineColor),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.inkColor.withOpacity(0.10),
+                blurRadius: 24,
+                offset: const Offset(0, -4),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3917,7 +3960,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 '$name wants to remember you',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.playfairDisplay(
-                  color: Colors.white,
+                  color: AppTheme.inkColor,
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
                 ),
@@ -3928,7 +3971,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 "Your conversations stay with you across visits and devices.",
                 textAlign: TextAlign.center,
                 style: GoogleFonts.lato(
-                  color: Colors.white.withOpacity(0.6),
+                  color: AppTheme.mutedInkColor,
                   fontSize: 14,
                   height: 1.4,
                 ),
@@ -3949,7 +3992,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                         'Your coins come with you — signing in adds +100.',
                         textAlign: TextAlign.center,
                         style: GoogleFonts.lato(
-                          color: theme.colorScheme.secondary,
+                          color: AppTheme.goldInkColor,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -3993,8 +4036,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   icon: const Icon(Icons.camera_alt_outlined, size: 22),
                   label: const Text('Continue with Instagram  ·  WIP'),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white.withOpacity(0.7),
-                    side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                    foregroundColor: AppTheme.mutedInkColor,
+                    side: const BorderSide(color: AppTheme.hairlineColor),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     textStyle: GoogleFonts.lato(
                       fontSize: 15,
@@ -4008,7 +4051,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onPressed: () => Navigator.pop(sheetContext),
                 child: Text(
                   'Maybe later',
-                  style: TextStyle(color: Colors.white.withOpacity(0.4)),
+                  style: TextStyle(color: AppTheme.mutedInkColor),
                 ),
               ),
             ],
@@ -4023,14 +4066,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: Colors.white,
         title: const Text(
           "Report Content",
-          style: TextStyle(color: Colors.white),
+          style: TextStyle(color: AppTheme.inkColor),
         ),
         content: const Text(
           "Do you want to report this message for inappropriate content?",
-          style: TextStyle(color: Colors.white70),
+          style: TextStyle(color: AppTheme.mutedInkColor),
         ),
         actions: [
           TextButton(
@@ -4113,7 +4156,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               child: Text(
                 widget.scenario ?? 'Your $_currentVibe Lover',
                 style: GoogleFonts.outfit(
-                  color: Colors.white,
+                  color: AppTheme.inkColor,
                   fontWeight: FontWeight.w600,
                   fontSize: 20,
                 ),
@@ -4127,7 +4170,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: theme.colorScheme.secondary),
+          icon: const Icon(Icons.arrow_back, color: AppTheme.primaryColor),
           onPressed: () {
             if (context.canPop()) {
               context.pop();
@@ -4164,8 +4207,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           // itself to the button on every platform, which is the whole reason
           // to prefer it over the right-click that Chrome hijacks.
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            color: const Color(0xFF2A1533),
+            icon: const Icon(Icons.more_vert, color: AppTheme.mutedInkColor),
+            color: Colors.white,
             tooltip: 'Conversation options',
             onSelected: (value) {
               if (value == 'fresh') _startFreshConversation();
@@ -4176,10 +4219,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 child: ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.refresh, color: Colors.white70),
+                  leading: Icon(Icons.refresh, color: AppTheme.mutedInkColor),
                   title: Text(
                     'Fresh conversation',
-                    style: TextStyle(color: Colors.white),
+                    style: TextStyle(color: AppTheme.inkColor),
                   ),
                 ),
               ),
@@ -4189,7 +4232,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         flexibleSpace: ClipRect(
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(color: Colors.black.withOpacity(0.2)),
+            // Frosted white: the conversation scrolls under the bar, and a
+            // mostly-opaque wash keeps the title readable over any bubble.
+            child: Container(color: Colors.white.withOpacity(0.82)),
           ),
         ),
       ),
@@ -4201,10 +4246,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
+                // White into the blush surface, with a breath of rose at the
+                // foot — the light theme's version of the old purple night.
                 colors: [
-                  const Color(0xFF2E003E), // Deep Purple
-                  theme.primaryColor.withOpacity(0.15),
-                  Colors.black,
+                  Colors.white,
+                  AppTheme.surfaceColor,
+                  Color.alphaBlend(
+                    theme.primaryColor.withOpacity(0.06),
+                    AppTheme.surfaceColor,
+                  ),
                 ],
               ),
             ),
@@ -4337,7 +4387,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               // Only where a purchase can actually happen; on web the link
               // would lead to a store with nothing in it.
               onGetMore: RevenueCatService.isSupported
-                  ? () => context.push('/coins')
+                  ? () => _openCoinStore(reopenSheet: false)
                   : null,
             ),
           if (_entryGateActive)
@@ -4394,7 +4444,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             child: ClipRect(
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: Container(color: Colors.black.withOpacity(0.6)),
+                child: Container(color: Colors.white.withOpacity(0.88)),
               ),
             ),
           ),
@@ -4404,7 +4454,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               child: Container(
                 decoration: BoxDecoration(
                   border: Border(
-                    top: BorderSide(color: Colors.white.withOpacity(0.1)),
+                    top: BorderSide(color: AppTheme.hairlineColor),
                   ),
                 ),
               ),
@@ -4435,9 +4485,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                       const SizedBox(width: 8),
                       Expanded(
                         // Until the visitor has sent something the box wears a
-                        // slow accent-coloured pulse. On a dark glass panel a
-                        // 10%-white field with a "Talk to me..." hint at 38%
-                        // opacity reads as decoration; this has to read as the
+                        // slow accent-coloured pulse. A pale field with a faint
+                        // hint reads as decoration; this has to read as the
                         // one thing on screen asking to be used.
                         child: _PulsingHighlight(
                           active: !_userHasSent,
@@ -4447,23 +4496,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                             controller: _textController,
                             autofocus: true,
                             style: theme.textTheme.bodyLarge?.copyWith(
-                              color: Colors.white,
+                              color: AppTheme.inkColor,
                             ),
-                            cursorColor: theme.secondaryHeaderColor,
+                            cursorColor: theme.primaryColor,
                             textInputAction: TextInputAction.send,
                             decoration: InputDecoration(
                               // Naming the character turns a vague invitation
                               // into an instruction about who is listening.
                               hintText: 'Message $_characterDisplayName…',
                               hintStyle: theme.textTheme.bodyLarge?.copyWith(
-                                color: Colors.white70,
+                                color: AppTheme.mutedInkColor,
                               ),
                               prefixIcon: Icon(
                                 Icons.edit_outlined,
                                 size: 20,
-                                color: Colors.white.withOpacity(
-                                  _userHasSent ? 0.35 : 0.7,
-                                ),
+                                color: _userHasSent
+                                    ? AppTheme.faintInkColor
+                                    : AppTheme.mutedInkColor,
                               ),
                               // Without this a prefixIcon is given a 48x48
                               // minimum, which set the height of the whole
@@ -4482,8 +4531,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                 10,
                               ),
                               filled: true,
-                              fillColor: Colors.white.withOpacity(
-                                _userHasSent ? 0.10 : 0.16,
+                              fillColor: AppTheme.panelColor,
+                              // A hairline at rest so the field reads as a
+                              // field on the white glass; the theme's rose
+                              // border when focused.
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                borderSide: const BorderSide(
+                                    color: AppTheme.hairlineColor),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                borderSide: BorderSide(
+                                    color: theme.primaryColor
+                                        .withOpacity(0.6)),
                               ),
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(24),
@@ -4505,14 +4566,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           shape: BoxShape.circle,
                           color: _hasDraft
                               ? theme.primaryColor
-                              : Colors.white.withOpacity(0.12),
+                              : AppTheme.hairlineColor,
                         ),
                         child: IconButton(
                           icon: Icon(
                             Icons.arrow_upward,
-                            color: Colors.white.withOpacity(
-                              _hasDraft ? 1.0 : 0.45,
-                            ),
+                            color: _hasDraft
+                                ? Colors.white
+                                : AppTheme.faintInkColor,
                           ),
                           // 44, not IconButton's default 48: the smallest the
                           // send target can be and still meet the 44pt
@@ -4626,7 +4687,7 @@ class _PulsingEnterButtonState extends State<_PulsingEnterButton>
 
   /// Label colour on the gold button. See the note at its use site — this is a
   /// contrast fix, not a preference.
-  static const Color _labelColor = Color(0xFF2E003E);
+  static const Color _labelColor = AppTheme.inkColor;
 
   @override
   void initState() {
@@ -4779,8 +4840,9 @@ class _EntryGate extends StatelessWidget {
       // tappable-looking things on it and did not read as a new screen at all.
       //
       // alphaBlend rather than a hand-picked hex so the tone still follows
-      // theme.primaryColor, composited onto the black it would have been
-      // sitting on anyway.
+      // theme.primaryColor, composited onto the blush surface so every stop
+      // stays opaque. Light theme: white into blush, a touch more rose than
+      // the chat behind it so the card still reads as its own screen.
       child: Container(
         key: _entryGateKey,
         decoration: BoxDecoration(
@@ -4788,12 +4850,15 @@ class _EntryGate extends StatelessWidget {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              const Color(0xFF2E003E),
+              Colors.white,
               Color.alphaBlend(
-                theme.primaryColor.withOpacity(0.25),
-                Colors.black,
+                theme.primaryColor.withOpacity(0.06),
+                AppTheme.surfaceColor,
               ),
-              Colors.black,
+              Color.alphaBlend(
+                theme.primaryColor.withOpacity(0.12),
+                AppTheme.surfaceColor,
+              ),
             ],
           ),
         ),
@@ -4873,7 +4938,7 @@ class _EntryGate extends StatelessWidget {
                           name,
                           textAlign: TextAlign.center,
                           style: GoogleFonts.outfit(
-                            color: Colors.white,
+                            color: AppTheme.inkColor,
                             fontWeight: FontWeight.w600,
                             fontSize: 30,
                           ),
@@ -4884,7 +4949,7 @@ class _EntryGate extends StatelessWidget {
                             title,
                             textAlign: TextAlign.center,
                             style: GoogleFonts.outfit(
-                              color: Colors.white.withOpacity(0.65),
+                              color: AppTheme.mutedInkColor,
                               fontSize: 17,
                             ),
                           ),
@@ -4895,7 +4960,7 @@ class _EntryGate extends StatelessWidget {
                             tagline,
                             textAlign: TextAlign.center,
                             style: GoogleFonts.outfit(
-                              color: Colors.white.withOpacity(0.55),
+                              color: AppTheme.mutedInkColor,
                               fontSize: 15,
                             ),
                           ),
@@ -4910,11 +4975,10 @@ class _EntryGate extends StatelessWidget {
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
+                              const Icon(
                                 Icons.touch_app_outlined,
                                 size: 15,
-                                color: theme.colorScheme.secondary
-                                    .withOpacity(0.75),
+                                color: AppTheme.goldInkColor,
                               ),
                               const SizedBox(width: 6),
                               // Flexible, not bare. A Row sizes its children
@@ -4928,8 +4992,7 @@ class _EntryGate extends StatelessWidget {
                                   'Tap the photo or name for the full profile',
                                   textAlign: TextAlign.center,
                                   style: GoogleFonts.outfit(
-                                    color: theme.colorScheme.secondary
-                                        .withOpacity(0.75),
+                                    color: AppTheme.goldInkColor,
                                     fontSize: 13,
                                   ),
                                 ),
@@ -4977,7 +5040,7 @@ class _EntryGate extends StatelessWidget {
                             'and understand your journey',
                     textAlign: TextAlign.center,
                     style: GoogleFonts.outfit(
-                      color: Colors.white.withOpacity(0.75),
+                      color: AppTheme.inkColor.withOpacity(0.8),
                       fontSize: 17,
                       height: 1.4,
                     ),
@@ -5139,7 +5202,10 @@ class _StarterPromptsState extends State<_StarterPrompts>
   /// also fills the row, thickens the border and swaps the arrow for a tick,
   /// none of which the pass does — but if the two ever do get confused, this
   /// is the constant to pull apart.
-  static const Color _attentionColor = Color(0xFF4ADE80);
+  ///
+  /// A deep green, not the bright 0xFF4ADE80 the dark theme used: that is
+  /// 1.7:1 on white and vanishes; this is 5:1.
+  static const Color _attentionColor = Color(0xFF15803D);
 
   /// The instruction flashes after the three rows have been lit, not during —
   /// it is the summary of what just happened, so it has to land last.
@@ -5451,7 +5517,8 @@ class _StarterPromptsState extends State<_StarterPrompts>
                                           text: directive,
                                           style: GoogleFonts.lato(
                                             color: Color.lerp(
-                                                Colors.white.withOpacity(0.75),
+                                                AppTheme.inkColor
+                                                    .withOpacity(0.8),
                                                 _attentionColor,
                                                 f),
                                             fontSize: 12.5,
@@ -5465,8 +5532,7 @@ class _StarterPromptsState extends State<_StarterPrompts>
                                         TextSpan(
                                           text: ' · or type your own',
                                           style: GoogleFonts.lato(
-                                            color:
-                                                Colors.white.withOpacity(0.55),
+                                            color: AppTheme.mutedInkColor,
                                             fontSize: 12.5,
                                             fontWeight: FontWeight.w600,
                                           ),
@@ -5550,7 +5616,7 @@ class _GiftButton extends StatelessWidget {
       button: true,
       label: 'Give $characterName a gift',
       child: Material(
-        color: gold.withValues(alpha: 0.12),
+        color: gold.withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(20),
         child: InkWell(
           onTap: onTap,
@@ -5560,12 +5626,13 @@ class _GiftButton extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.card_giftcard, size: 14, color: gold),
+                const Icon(Icons.card_giftcard,
+                    size: 14, color: AppTheme.goldInkColor),
                 const SizedBox(width: 5),
                 Text(
                   'Gift',
                   style: GoogleFonts.lato(
-                    color: Colors.white.withValues(alpha: 0.85),
+                    color: AppTheme.inkColor,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
@@ -5595,7 +5662,7 @@ class _PhotoRequestButton extends StatelessWidget {
       button: true,
       label: 'Ask $characterName for a photo',
       child: Material(
-        color: Colors.white.withValues(alpha: 0.08),
+        color: theme.primaryColor.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(20),
         child: InkWell(
           onTap: onTap,
@@ -5614,7 +5681,7 @@ class _PhotoRequestButton extends StatelessWidget {
                 Text(
                   'Photo',
                   style: GoogleFonts.lato(
-                    color: Colors.white.withValues(alpha: 0.85),
+                    color: AppTheme.inkColor,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
@@ -5649,7 +5716,7 @@ class _StarterButton extends StatelessWidget {
   /// The confirmation colour. Green rather than the accent purple because it
   /// has to mean something different from the resting border, which is already
   /// accent-coloured — the same hue at a higher opacity would read as a hover.
-  static const Color _selectedColor = Color(0xFF4ADE80);
+  static const Color _selectedColor = Color(0xFF15803D);
 
   const _StarterButton({
     required this.label,
@@ -5693,7 +5760,7 @@ class _StarterButton extends StatelessWidget {
         color: selected
             ? _selectedColor.withValues(alpha: 0.14)
             : Color.lerp(
-                Colors.white.withValues(alpha: 0.07),
+                Colors.white,
                 _selectedColor.withValues(alpha: 0.09),
                 lit,
               )!,
@@ -5729,7 +5796,7 @@ class _StarterButton extends StatelessWidget {
                   child: Text(
                     label,
                     style: GoogleFonts.lato(
-                      color: Colors.white,
+                      color: AppTheme.inkColor,
                       fontSize: 14.5,
                       height: 1.2,
                     ),
@@ -5878,7 +5945,7 @@ class _ChatBubble extends StatelessWidget {
               bottomLeft: Radius.circular(isUser ? 20 : 4),
               bottomRight: Radius.circular(isUser ? 4 : 20),
             ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            border: Border.all(color: AppTheme.hairlineColor),
           ),
           clipBehavior: Clip.antiAlias,
           child: Semantics(
@@ -5947,8 +6014,11 @@ class _ChatBubble extends StatelessWidget {
           // corner on a 34pt-tall box is most of the height, and the pill
           // shape it produced read as a button rather than a message.
           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+          // The character's bubbles are white cards on the blush page, edged
+          // with a hairline; the visitor's are solid rose with white text.
           decoration: BoxDecoration(
-            color: isUser ? theme.primaryColor : Colors.white.withOpacity(0.1),
+            color: isUser ? theme.primaryColor : Colors.white,
+            border: isUser ? null : Border.all(color: AppTheme.hairlineColor),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(14),
               topRight: const Radius.circular(14),
@@ -5959,7 +6029,7 @@ class _ChatBubble extends StatelessWidget {
           child: Text(
             message.text,
             style: theme.textTheme.bodyLarge?.copyWith(
-              color: Colors.white.withOpacity(0.95),
+              color: isUser ? Colors.white : AppTheme.inkColor,
               fontSize: 16,
               height: 1.25,
             ),
@@ -6053,8 +6123,10 @@ class _TypingBubbleState extends State<_TypingBubble>
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        // Matches the character's message bubble: white card, hairline edge.
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.1),
+          color: Colors.white,
+          border: Border.all(color: AppTheme.hairlineColor),
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(20),
             topRight: Radius.circular(20),
@@ -6083,7 +6155,7 @@ class _TypingBubbleState extends State<_TypingBubble>
                           width: 8,
                           height: 8,
                           decoration: const BoxDecoration(
-                            color: Colors.white,
+                            color: AppTheme.mutedInkColor,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -6109,7 +6181,7 @@ class _TypingBubbleState extends State<_TypingBubble>
                           _statusPhrases[_statusIndex],
                           key: ValueKey(_statusIndex),
                           style: const TextStyle(
-                            color: Colors.white70,
+                            color: AppTheme.mutedInkColor,
                             fontSize: 12,
                             fontStyle: FontStyle.italic,
                           ),

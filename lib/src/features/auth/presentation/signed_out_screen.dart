@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../wallet/coin_wallet.dart';
 
 /// Where sign-out lands, instead of dropping straight back into Settings.
@@ -47,8 +48,8 @@ class SignedOutScreen extends StatelessWidget {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              const Color(0xFF2E003E), // Deep Purple — deliberately dark regardless of the app theme
-              Colors.black,
+              AppTheme.backgroundColor, // White
+              AppTheme.surfaceColor, // Soft Blush
               theme.primaryColor.withValues(alpha: 0.1),
             ],
           ),
@@ -65,15 +66,15 @@ class SignedOutScreen extends StatelessWidget {
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
+                        color: AppTheme.panelColor,
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.12),
+                          color: AppTheme.hairlineColor,
                         ),
                       ),
                       child: const Icon(
                         Icons.waving_hand_outlined,
-                        color: Colors.white70,
+                        color: AppTheme.mutedInkColor,
                         size: 34,
                       ),
                     ),
@@ -82,7 +83,7 @@ class SignedOutScreen extends StatelessWidget {
                       "You're signed out",
                       textAlign: TextAlign.center,
                       style: theme.textTheme.headlineSmall?.copyWith(
-                        color: Colors.white,
+                        color: AppTheme.inkColor,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -92,7 +93,7 @@ class SignedOutScreen extends StatelessWidget {
                       'whenever you want to pick up where you left off.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: Colors.white60,
+                        color: AppTheme.mutedInkColor,
                         height: 1.4,
                       ),
                     ),
@@ -121,7 +122,7 @@ class SignedOutScreen extends StatelessWidget {
                       onPressed: () => context.go('/dashboard'),
                       child: const Text(
                         'Continue without signing in',
-                        style: TextStyle(color: Colors.white70),
+                        style: TextStyle(color: AppTheme.mutedInkColor),
                       ),
                     ),
                   ],

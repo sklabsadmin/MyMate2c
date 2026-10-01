@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
@@ -13,6 +14,26 @@ class AppTheme {
   static const Color accentColor = Color(0xFF9B7EBD); // Aegean Lavender
   static const Color inkColor = Color(0xFF241D45); // Wordmark Navy-Plum
   static const Color mutedInkColor = Color(0xFF7A7288); // Muted body ink
+
+  // The light-surface vocabulary. Every screen draws on white now, so these
+  // replace the Colors.white / white.withOpacity(...) styling the dark theme
+  // used: text that was white is ink, text that was white70/54 is mutedInk,
+  // white38/24 hints are faintInk, translucent white fills are panel, and
+  // white hairlines are hairline. Use these rather than ad-hoc opacities so
+  // the app reads as one design.
+  /// Hints, disabled labels, captions that may fade (≈ the old white38).
+  static const Color faintInkColor = Color(0xFFA59FB2);
+
+  /// Card and field fill on a white page (≈ the old white 0.05 fill).
+  static const Color panelColor = Color(0xFFF7F3F6);
+
+  /// Borders and dividers on a white page (≈ the old white 0.08 hairline).
+  static const Color hairlineColor = Color(0xFFE8E2EA);
+
+  /// Gold for TEXT on white. The accent gold (secondaryColor) is 2:1 against
+  /// white and unreadable as a number or label; this is the same hue darkened
+  /// to 5:1. Keep secondaryColor for fills, icons and borders, with ink on top.
+  static const Color goldInkColor = Color(0xFF8C6A1F);
 
   static ThemeData get romanticTheme {
     return ThemeData(
@@ -99,6 +120,15 @@ class AppTheme {
         ),
       ),
       iconTheme: IconThemeData(color: inkColor.withOpacity(0.7)),
+      // Dark status-bar text on every screen. Left to itself an AppBar picks
+      // the style from its background, and the transparent bars (chat,
+      // recents, create character) read as black — so iOS drew a white clock
+      // and battery on a white page, i.e. none at all.
+      appBarTheme: const AppBarTheme(
+        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        foregroundColor: inkColor,
+        surfaceTintColor: Colors.transparent,
+      ),
     );
   }
 }

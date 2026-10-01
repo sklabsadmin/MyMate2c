@@ -36,6 +36,8 @@ class CoinGrant {
         'reply' => 'Conversation',
         'link' => 'Account linked',
         'profile' => 'Profile complete',
+        // Money rows (ledger reason 'pack', kind purchase or refund).
+        'pack' => delta < 0 ? 'Refund' : 'Coin pack',
         _ => reason,
       };
 }

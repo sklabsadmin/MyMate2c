@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/revenue_cat_service.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/data/character_profiles.dart';
@@ -76,12 +78,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               // Google avatar URLs can 403 once the reference ages out, so
               // never let a broken image take the header down with it.
               errorBuilder: (_, _, _) => Container(
-                color: Colors.white.withOpacity(0.1),
+                color: AppTheme.panelColor,
                 alignment: Alignment.center,
                 child: const Icon(
                   Icons.person,
                   size: 18,
-                  color: Colors.white70,
+                  color: AppTheme.mutedInkColor,
                 ),
               ),
             ),
@@ -264,7 +266,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.titleMedium?.copyWith(
-                              color: Colors.white70,
+                              color: AppTheme.mutedInkColor,
                             ),
                           ),
                         ),
@@ -283,8 +285,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             if (coinsLive)
                               CoinChip(
                                 balance: coinWallet!.balance,
-                                onTap: () =>
-                                    showCoinsSheet(context, ref: ref),
+                                onTap: () => showCoinsSheet(
+                                  context,
+                                  ref: ref,
+                                  // The sheet's "Get more coins" button,
+                                  // where purchases exist (iOS).
+                                  onGetCoins: RevenueCatService.isSupported
+                                      ? (reason) =>
+                                          context.push('/coins', extra: reason)
+                                      : null,
+                                ),
                               )
                             else
                               Column(
@@ -303,7 +313,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                       style: theme.textTheme.bodyMedium
                                           ?.copyWith(
                                             fontWeight: FontWeight.bold,
-                                            color: Colors.white,
+                                            color: AppTheme.inkColor,
                                           ),
                                     ),
                                   ],
@@ -314,7 +324,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   width: 80,
                                   height: 4,
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.1),
+                                    color: AppTheme.hairlineColor,
                                     borderRadius: BorderRadius.circular(2),
                                   ),
                                   alignment: Alignment.centerLeft,
@@ -342,15 +352,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               child: Container(
                                 padding: const EdgeInsets.all(8),
                                 decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.1),
+                                  color: AppTheme.panelColor,
                                   shape: BoxShape.circle,
                                   border: Border.all(
-                                    color: Colors.white.withOpacity(0.2),
+                                    color: AppTheme.hairlineColor,
                                   ),
                                 ),
                                 child: const Icon(
                                   Icons.settings,
-                                  color: Colors.white,
+                                  color: AppTheme.mutedInkColor,
                                   size: 20,
                                 ),
                               ),
@@ -406,15 +416,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 Container(
                                   padding: const EdgeInsets.all(3),
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.07),
+                                    color: AppTheme.panelColor,
                                     borderRadius: BorderRadius.circular(22),
                                     border: Border.all(
-                                      color: Colors.white.withOpacity(0.12),
+                                      color: AppTheme.hairlineColor,
                                     ),
                                   ),
                                   child: TabBar(
+                                    // White on the rose indicator; muted ink
+                                    // for the segments behind it.
                                     labelColor: Colors.white,
-                                    unselectedLabelColor: Colors.white70,
+                                    unselectedLabelColor:
+                                        AppTheme.mutedInkColor,
                                     dividerColor: Colors.transparent,
                                     indicatorSize: TabBarIndicatorSize.tab,
                                     splashBorderRadius: BorderRadius.circular(
@@ -508,7 +521,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       return Center(
         child: Text(
           'Nobody here yet.',
-          style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white38),
+          style: theme.textTheme.bodyMedium
+              ?.copyWith(color: AppTheme.faintInkColor),
         ),
       );
     }
@@ -861,13 +875,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // White: these sit on the photo's dark scrim, not the
+                    // page, so the theme's ink would vanish into it.
                     Text(
                       character['name'],
                       style: compact
                           ? theme.textTheme.bodyMedium?.copyWith(
                               fontWeight: FontWeight.bold,
+                              color: Colors.white,
                             )
-                          : theme.textTheme.titleMedium,
+                          : theme.textTheme.titleMedium
+                              ?.copyWith(color: Colors.white),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -941,10 +959,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       },
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
+          color: AppTheme.panelColor,
           borderRadius: BorderRadius.circular(compact ? 14 : 20),
           border: Border.all(
-            color: Colors.white.withOpacity(0.2),
+            color: AppTheme.hairlineColor,
             style: BorderStyle.solid,
           ),
         ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/theme/app_theme.dart';
+
 /// The coin balance, as a small gold pill: ● 120.
 ///
 /// Gold because gold is already this app's "the one thing that does anything"
@@ -32,14 +34,14 @@ class CoinChip extends StatelessWidget {
             vertical: compact ? 4 : 6,
           ),
           decoration: BoxDecoration(
-            color: gold.withOpacity(0.12),
+            color: gold.withOpacity(0.18),
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: gold.withOpacity(0.55)),
+            border: Border.all(color: gold.withOpacity(0.7)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.paid, size: compact ? 14 : 16, color: gold),
+              Icon(Icons.paid, size: compact ? 14 : 16, color: AppTheme.goldInkColor),
               const SizedBox(width: 5),
               // AnimatedSwitcher so a grant reads as the number changing,
               // not the whole header repainting.
@@ -59,7 +61,9 @@ class CoinChip extends StatelessWidget {
                   '$balance',
                   key: ValueKey<int>(balance),
                   style: TextStyle(
-                    color: Colors.white,
+                    // Ink, not white: the chip sits on white headers now,
+                    // and white on this pale gold tint was unreadable.
+                    color: AppTheme.inkColor,
                     fontWeight: FontWeight.bold,
                     fontSize: compact ? 13 : 14,
                     fontFeatures: const [FontFeature.tabularFigures()],

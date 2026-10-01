@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
 
 /// The tribute a player can offer a character, priced by the server.
@@ -57,23 +58,34 @@ const Map<String, Map<String, String>> kGiftRewards = {
 String? giftRewardAsset(String? characterId, String item) =>
     characterId == null ? null : kGiftRewards[characterId]?[item];
 
-/// "Your Coins": balance, tributes (in a chat), how to earn, recent history.
+/// "Your Coins": balance, a way to buy more, tributes (in a chat), how to
+/// earn, recent history.
 ///
 /// Same sheet language as the login gate (chat_screen's _showLoginGate):
-/// transparent barrier, 0xFF1A1A1A container, 24px top radius, Playfair title,
-/// Lato body, and a "Maybe later" way out — the app's one established way of
+/// transparent barrier, white container with a 24px top radius, Playfair
+/// title, Lato body, and a quiet way out — the app's one established way of
 /// asking for something.
+///
+/// [onGetCoins] opens the coin store, called AFTER the sheet has closed. Null
+/// where nothing can be bought (web), which hides every buy affordance and
+/// leaves unaffordable tributes disabled as before. With it, an unaffordable
+/// tribute is no longer a dead end: tapping it goes to the store, carrying a
+/// line that says what it costs and what the player has.
 Future<void> showCoinsSheet(
   BuildContext context, {
   required WidgetRef ref,
   String? characterName,
   String? characterId,
   void Function(String item, int price)? onTribute,
+  void Function(String? reason)? onGetCoins,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
+    // Keeps a tall sheet (three tributes and a history) clear of the status
+    // bar and Dynamic Island; it scrolls inside instead of sliding under them.
+    useSafeArea: true,
     builder: (sheetContext) => Consumer(
       builder: (context, sheetRef, _) {
         final theme = Theme.of(context);
@@ -83,14 +95,28 @@ Future<void> showCoinsSheet(
         final prices = wallet?.tributePrices ?? const <String, int>{};
         final grants = wallet?.grantValues ?? const <String, int>{};
 
+        // Closes the sheet, then hands over to the store — in that order, so
+        // the store is pushed from the chat, not stacked on a closing sheet.
+        void getCoins([String? reason]) {
+          Navigator.of(sheetContext).pop();
+          onGetCoins?.call(reason);
+        }
+
         return Container(
           padding: EdgeInsets.fromLTRB(
             24, 28, 24, 32 + MediaQuery.of(sheetContext).viewInsets.bottom,
           ),
           decoration: BoxDecoration(
-            color: const Color(0xFF1A1A1A),
+            color: Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            border: Border.all(color: AppTheme.hairlineColor),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.inkColor.withOpacity(0.10),
+                blurRadius: 24,
+                offset: const Offset(0, -4),
+              ),
+            ],
           ),
           child: SingleChildScrollView(
             child: Column(
@@ -103,7 +129,7 @@ Future<void> showCoinsSheet(
                   'Your Coins',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.playfairDisplay(
-                    color: Colors.white,
+                    color: AppTheme.inkColor,
                     fontSize: 24,
                     fontWeight: FontWeight.w600,
                   ),
@@ -113,7 +139,7 @@ Future<void> showCoinsSheet(
                   '$balance',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.lato(
-                    color: gold,
+                    color: AppTheme.goldInkColor,
                     fontSize: 34,
                     fontWeight: FontWeight.w800,
                   ),
@@ -135,7 +161,7 @@ Future<void> showCoinsSheet(
                         Text(
                           'Level $level',
                           style: GoogleFonts.lato(
-                            color: Colors.white70,
+                            color: AppTheme.mutedInkColor,
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
                           ),
@@ -144,12 +170,34 @@ Future<void> showCoinsSheet(
                     ),
                   );
                 }),
+                // Buying, right under the number it changes. Every coin moment
+                // reaches the store from here: the chip opens this sheet, and
+                // so does a tribute the player cannot afford.
+                if (onGetCoins != null) ...[
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    key: const ValueKey('coins_sheet_get_more'),
+                    onPressed: () => getCoins(),
+                    icon: const Icon(Icons.add_circle_outline, size: 20),
+                    label: Text(
+                      'Get more coins',
+                      style: GoogleFonts.outfit(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 1,
+                    ),
+                  ),
+                ],
                 if (onTribute != null && characterName != null) ...[
                   const SizedBox(height: 18),
                   Text(
                     'Offer a tribute to $characterName',
                     style: GoogleFonts.lato(
-                      color: Colors.white70,
+                      color: AppTheme.mutedInkColor,
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.6,
@@ -157,31 +205,44 @@ Future<void> showCoinsSheet(
                   ),
                   const SizedBox(height: 8),
                   for (final option in kTributeOptions)
-                    _TributeRow(
-                      option: option,
-                      price: prices[option.item] ?? 0,
-                      // A pendant already given reads "Worn" instead of a
-                      // price — it cannot be bought twice, and offering it
-                      // again would look like a way to waste 500 coins.
-                      worn: option.once &&
-                          (wallet?.pendants ?? const []).contains(characterId),
-                      // Unpriced (no wallet read yet) or unaffordable rows
-                      // stay visible but disabled: the goal is legible, not
-                      // hidden.
-                      enabled: (prices[option.item] ?? 0) > 0 &&
-                          balance >= (prices[option.item] ?? 0),
-                      onTap: () {
-                        final price = prices[option.item] ?? 0;
-                        Navigator.of(sheetContext).pop();
-                        onTribute(option.item, price);
-                      },
-                    ),
+                    Builder(builder: (context) {
+                      final price = prices[option.item] ?? 0;
+                      final affordable = price > 0 && balance >= price;
+                      return _TributeRow(
+                        option: option,
+                        price: price,
+                        // A pendant already given reads "Worn" instead of a
+                        // price — it cannot be bought twice, and offering it
+                        // again would look like a way to waste 500 coins.
+                        worn: option.once &&
+                            (wallet?.pendants ?? const [])
+                                .contains(characterId),
+                        enabled: affordable,
+                        // Priced but unaffordable, where coins can be bought:
+                        // the row stays live and leads to the store, saying
+                        // how many more it needs. Unpriced (no wallet read
+                        // yet), or nowhere to buy, it stays disabled.
+                        shortfall: !affordable && price > 0 &&
+                                onGetCoins != null
+                            ? price - balance
+                            : 0,
+                        onTap: () {
+                          if (affordable) {
+                            Navigator.of(sheetContext).pop();
+                            onTribute(option.item, price);
+                          } else {
+                            getCoins('${option.label} costs $price coins. '
+                                'You have $balance.');
+                          }
+                        },
+                      );
+                    }),
                 ],
                 const SizedBox(height: 18),
                 Text(
                   'HOW TO EARN',
                   style: GoogleFonts.lato(
-                    color: Colors.white38,
+                    color: AppTheme.faintInkColor,
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1.2,
@@ -210,7 +271,7 @@ Future<void> showCoinsSheet(
                   Text(
                     'RECENT',
                     style: GoogleFonts.lato(
-                      color: Colors.white38,
+                      color: AppTheme.faintInkColor,
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1.2,
@@ -225,7 +286,7 @@ Future<void> showCoinsSheet(
                   onPressed: () => Navigator.of(sheetContext).pop(),
                   child: Text(
                     'Close',
-                    style: GoogleFonts.lato(color: Colors.white54),
+                    style: GoogleFonts.lato(color: AppTheme.mutedInkColor),
                   ),
                 ),
               ],
@@ -249,6 +310,10 @@ class _TributeRow extends StatelessWidget {
   final int price;
   final bool enabled;
   final bool worn;
+
+  /// Coins still needed, when the row is unaffordable but can lead to the
+  /// store. 0 means "not that case" (affordable, worn, or nowhere to buy).
+  final int shortfall;
   final VoidCallback onTap;
 
   const _TributeRow({
@@ -257,6 +322,7 @@ class _TributeRow extends StatelessWidget {
     required this.enabled,
     required this.onTap,
     this.worn = false,
+    this.shortfall = 0,
   });
 
   @override
@@ -265,20 +331,21 @@ class _TributeRow extends StatelessWidget {
     // A worn pendant is not a disabled row — it is a finished one. Same gold
     // as an affordable gift, so the sheet reads as an achievement rather than
     // something switched off.
-    final live = enabled && !worn;
+    final toStore = shortfall > 0 && !worn;
+    final live = (enabled || toStore) && !worn;
     final ink = worn
-        ? gold
-        : enabled
-            ? Colors.white
-            : Colors.white38;
+        ? AppTheme.goldInkColor
+        : enabled || toStore
+            ? AppTheme.inkColor
+            : AppTheme.faintInkColor;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: worn
-            ? gold.withOpacity(0.07)
+            ? gold.withOpacity(0.10)
             : enabled
-                ? gold.withOpacity(0.10)
-                : Colors.white.withOpacity(0.04),
+                ? gold.withOpacity(0.14)
+                : AppTheme.panelColor,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
@@ -289,10 +356,10 @@ class _TributeRow extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 color: worn
-                    ? gold.withOpacity(0.35)
+                    ? gold.withOpacity(0.45)
                     : enabled
-                        ? gold.withOpacity(0.5)
-                        : Colors.white12,
+                        ? gold.withOpacity(0.7)
+                        : AppTheme.hairlineColor,
               ),
             ),
             child: Row(
@@ -306,7 +373,7 @@ class _TributeRow extends StatelessWidget {
                   width: 40,
                   height: 40,
                   child: Opacity(
-                    opacity: worn || enabled ? 1.0 : 0.35,
+                    opacity: worn || enabled ? 1.0 : toStore ? 0.6 : 0.35,
                     child: Image.asset(option.asset, fit: BoxFit.contain),
                   ),
                 ),
@@ -325,12 +392,18 @@ class _TributeRow extends StatelessWidget {
                       Text(
                         worn
                             ? 'Worn since you gave it.'
-                            : option.detail,
+                            : toStore
+                                ? 'Needs $shortfall more coins — tap to get them'
+                                : option.detail,
                         style: GoogleFonts.lato(
-                          color: enabled || worn
-                              ? Colors.white54
-                              : Colors.white24,
+                          color: toStore
+                              ? AppTheme.primaryColor
+                              : enabled || worn
+                                  ? AppTheme.mutedInkColor
+                                  : AppTheme.faintInkColor,
                           fontSize: 12,
+                          fontWeight:
+                              toStore ? FontWeight.w600 : FontWeight.normal,
                         ),
                       ),
                     ],
@@ -340,18 +413,23 @@ class _TributeRow extends StatelessWidget {
                   Text(
                     'Worn',
                     style: GoogleFonts.lato(
-                      color: gold,
+                      color: AppTheme.goldInkColor,
                       fontWeight: FontWeight.w800,
                     ),
                   )
                 else ...[
                   Icon(Icons.paid,
-                      size: 14, color: enabled ? gold : Colors.white24),
+                      size: 14,
+                      color: enabled
+                          ? AppTheme.goldInkColor
+                          : AppTheme.faintInkColor),
                   const SizedBox(width: 4),
                   Text(
                     price > 0 ? '$price' : '—',
                     style: GoogleFonts.lato(
-                      color: enabled ? gold : Colors.white38,
+                      color: enabled
+                          ? AppTheme.goldInkColor
+                          : AppTheme.faintInkColor,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
@@ -373,23 +451,23 @@ class _EarnRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final gold = Theme.of(context).colorScheme.secondary;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          Icon(icon, size: 16, color: Colors.white38),
+          Icon(icon, size: 16, color: AppTheme.faintInkColor),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               label,
-              style: GoogleFonts.lato(color: Colors.white70, fontSize: 13.5),
+              style: GoogleFonts.lato(
+                  color: AppTheme.mutedInkColor, fontSize: 13.5),
             ),
           ),
           Text(
             amount,
             style: GoogleFonts.lato(
-              color: gold,
+              color: AppTheme.goldInkColor,
               fontWeight: FontWeight.w700,
               fontSize: 13.5,
             ),
@@ -406,7 +484,6 @@ class _RecentRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final gold = Theme.of(context).colorScheme.secondary;
     final delta = row['delta'] is int
         ? row['delta'] as int
         : int.tryParse('${row['delta']}') ?? 0;
@@ -418,14 +495,17 @@ class _RecentRow extends StatelessWidget {
           Expanded(
             child: Text(
               delta < 0 && '${row['reason']}' == 'gift' ? 'Tribute' : label,
-              style: GoogleFonts.lato(color: Colors.white54, fontSize: 12.5),
+              style: GoogleFonts.lato(
+                  color: AppTheme.mutedInkColor, fontSize: 12.5),
               overflow: TextOverflow.ellipsis,
             ),
           ),
           Text(
             delta > 0 ? '+$delta' : '$delta',
             style: GoogleFonts.lato(
-              color: delta > 0 ? gold : Colors.white54,
+              color: delta > 0
+                  ? AppTheme.goldInkColor
+                  : AppTheme.mutedInkColor,
               fontWeight: FontWeight.w700,
               fontSize: 12.5,
             ),

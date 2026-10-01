@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 
 class CreateCharacterScreen extends ConsumerStatefulWidget {
   const CreateCharacterScreen({super.key});
@@ -90,7 +91,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: AppTheme.inkColor),
           onPressed: () {
             if (_currentStep > 0) {
               _pageController.previousPage(
@@ -112,9 +113,9 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  const Color(0xFF2E003E), // Deep Purple
-                  theme.primaryColor.withOpacity(0.3),
-                  Colors.black,
+                  AppTheme.backgroundColor, // White
+                  AppTheme.surfaceColor, // Soft Blush
+                  theme.primaryColor.withOpacity(0.12),
                 ],
               ),
             ),
@@ -124,7 +125,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
           Positioned.fill(
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-              child: Container(color: Colors.black.withOpacity(0.2)),
+              child: Container(color: Colors.white.withOpacity(0.2)),
             ),
           ),
 
@@ -136,7 +137,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
                   child: LinearProgressIndicator(
                     value: (_currentStep + 1) / _steps.length,
-                    backgroundColor: Colors.white10,
+                    backgroundColor: AppTheme.hairlineColor,
                     valueColor: AlwaysStoppedAnimation<Color>(theme.primaryColor),
                     borderRadius: BorderRadius.circular(10),
                   ),
@@ -149,14 +150,14 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                     children: [
                       Text(
                         _steps[_currentStep]['title'],
-                        style: theme.textTheme.headlineSmall?.copyWith(fontSize: 28, color: Colors.white),
+                        style: theme.textTheme.headlineSmall?.copyWith(fontSize: 28, color: AppTheme.inkColor),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
                       Text(
                         _steps[_currentStep]['subtitle'],
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color: Colors.white70,
+                          color: AppTheme.mutedInkColor,
                           fontSize: 16,
                         ),
                         textAlign: TextAlign.center,
@@ -240,7 +241,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isSelected ? theme.primaryColor : Colors.white12,
+                color: isSelected ? theme.primaryColor : AppTheme.hairlineColor,
                 width: isSelected ? 3 : 1,
               ),
               image: DecorationImage(
@@ -284,15 +285,15 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
           controller: _nameController,
           style: GoogleFonts.playfairDisplay(
             fontSize: 32,
-            color: Colors.white,
+            color: AppTheme.inkColor,
             fontWeight: FontWeight.bold
           ),
           textAlign: TextAlign.center,
           decoration: InputDecoration(
             hintText: 'Enter his name',
-            hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+            hintStyle: const TextStyle(color: AppTheme.faintInkColor),
             border: InputBorder.none,
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+            enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppTheme.faintInkColor)),
             focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: theme.primaryColor)),
           ),
         ),
@@ -316,7 +317,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Eyes', style: theme.textTheme.titleMedium?.copyWith(color: Colors.white)),
+          Text('Eyes', style: theme.textTheme.titleMedium?.copyWith(color: AppTheme.inkColor)),
           const SizedBox(height: 16),
           Wrap(
             spacing: 12,
@@ -328,7 +329,7 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
             )).toList(),
           ),
           const SizedBox(height: 32),
-          Text('Hair', style: theme.textTheme.titleMedium?.copyWith(color: Colors.white)),
+          Text('Hair', style: theme.textTheme.titleMedium?.copyWith(color: AppTheme.inkColor)),
           const SizedBox(height: 16),
            Wrap(
             spacing: 12,
@@ -369,10 +370,10 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
             duration: const Duration(milliseconds: 200),
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isSelected ? theme.primaryColor.withOpacity(0.2) : Colors.white.withOpacity(0.05),
+              color: isSelected ? theme.primaryColor.withOpacity(0.2) : AppTheme.panelColor,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: isSelected ? theme.primaryColor : Colors.white10,
+                color: isSelected ? theme.primaryColor : AppTheme.hairlineColor,
                 width: isSelected ? 2 : 1,
               ),
             ),
@@ -383,11 +384,11 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(vibe['label']!, style: theme.textTheme.titleMedium?.copyWith(
-                        color: isSelected ? Colors.white : Colors.white70,
+                        color: isSelected ? AppTheme.inkColor : AppTheme.mutedInkColor,
                       )),
                       const SizedBox(height: 4),
                       Text(vibe['desc']!, style: theme.textTheme.bodyMedium?.copyWith(
-                        color: Colors.white54,
+                        color: AppTheme.mutedInkColor,
                         fontSize: 12,
                       )),
                     ],
@@ -433,23 +434,23 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
           child: AnimatedContainer(
              duration: const Duration(milliseconds: 200),
              decoration: BoxDecoration(
-               color: isSelected ? theme.primaryColor.withOpacity(0.2) : Colors.white.withOpacity(0.05),
+               color: isSelected ? theme.primaryColor.withOpacity(0.2) : AppTheme.panelColor,
                borderRadius: BorderRadius.circular(20),
                border: Border.all(
-                 color: isSelected ? theme.primaryColor : Colors.white10,
+                 color: isSelected ? theme.primaryColor : AppTheme.hairlineColor,
                  width: isSelected ? 2 : 1,
                ),
              ),
              child: Column(
                mainAxisAlignment: MainAxisAlignment.center,
                children: [
-                 Icon(style['icon'] as IconData, size: 32, color: isSelected ? Colors.white : Colors.white54),
+                 Icon(style['icon'] as IconData, size: 32, color: isSelected ? AppTheme.inkColor : AppTheme.mutedInkColor),
                  const SizedBox(height: 12),
                  Text(
                    style['label'] as String, 
                    style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      color: isSelected ? Colors.white : Colors.white70,
+                      color: isSelected ? AppTheme.inkColor : AppTheme.mutedInkColor,
                    ),
                    textAlign: TextAlign.center,
                  ),
@@ -468,14 +469,15 @@ class _CreateCharacterScreenState extends ConsumerState<CreateCharacterScreen> {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).primaryColor : Colors.white.withOpacity(0.1),
+          color: isSelected ? Theme.of(context).primaryColor : AppTheme.panelColor,
           borderRadius: BorderRadius.circular(25),
-          border: Border.all(color: isSelected ? Colors.transparent : Colors.white24),
+          border: Border.all(color: isSelected ? Colors.transparent : AppTheme.hairlineColor),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: isSelected ? Colors.white : Colors.white70,
+            // White on the filled rose chip, muted ink on the pale one.
+            color: isSelected ? Colors.white : AppTheme.mutedInkColor,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
           ),
         ),

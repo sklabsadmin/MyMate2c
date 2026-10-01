@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
 import '../../../core/services/storage_service.dart';
+import '../../../core/theme/app_theme.dart';
 
 /// Character profile card, opened from the chat header.
 ///
@@ -56,17 +57,18 @@ class CharacterProfileScreen extends ConsumerWidget {
     );
   }
 
-  // Palette is deliberately its own thing rather than the app's purple: the
-  // profile is a moment of stillness away from the chat, and the navy/gold
-  // reads closer to a museum label than a messaging UI.
-  static const _bg = Color(0xFF0D1B2A);
-  static const _ink = Color(0xFFE8D5B7);
-  static const _gold = Color(0xFFFFD700);
-  static const _muted = Color(0xFFA8B5C4);
-  static const _body = Color(0xFFDCD0BE);
-  static const _chip = Color(0xFF1E3450);
-  static const _chipInk = Color(0xFFCDDCED);
-  static const _rule = Color(0xFF2A4059);
+  // The profile is a moment of stillness away from the chat, and should read
+  // closer to a museum label than a messaging UI: navy-plum ink on white
+  // paper, fine rules, and the verse in gold. Mapped onto the app's light
+  // palette so the card sits with the rest of the white theme.
+  static const _bg = Colors.white;
+  static const _ink = AppTheme.inkColor;
+  static const _gold = AppTheme.goldInkColor;
+  static const _muted = AppTheme.mutedInkColor;
+  static const _body = AppTheme.mutedInkColor;
+  static const _chip = AppTheme.panelColor;
+  static const _chipInk = AppTheme.inkColor;
+  static const _rule = AppTheme.hairlineColor;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -86,7 +88,7 @@ class CharacterProfileScreen extends ConsumerWidget {
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF060F18),
+      backgroundColor: AppTheme.backgroundColor,
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
