@@ -331,14 +331,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               icon: Icons.privacy_tip_outlined,
               title: 'Privacy Policy',
               onTap: () =>
-                  _launchUrl('https://sites.google.com/view/mymateapp'),
+                  _launchUrl('https://chat.deeploveechoes.com/privacy'),
             ),
             _buildSettingsTile(
               context,
               icon: Icons.description_outlined,
               title: 'Terms of Use',
               onTap: () =>
-                  _launchUrl('https://sites.google.com/view/mymate-terms'),
+                  _launchUrl('https://chat.deeploveechoes.com/terms'),
             ),
 
             const SizedBox(height: 30),
