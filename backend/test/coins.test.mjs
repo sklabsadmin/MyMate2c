@@ -634,3 +634,60 @@ test('a custom character, keyed by its chat, remembers its laurel too', async (t
     assert.deepEqual(wallet.keepsakes.map((k) => [k.item, k.ref]),
         [['laurel', 'Lysander (A Poet of Athens)']]);
 });
+
+test('a character on the Inworld engine is handed the gift and remembers the keepsake', async (t) => {
+    // Oedipus replies through Inworld, not the persona path every other
+    // gift test exercises. The gift is narrated onto the last user message
+    // (Inworld keeps only user/assistant turns) and the keepsake note goes
+    // into Inworld's own system prompt; both are read off the request
+    // Inworld actually receives.
+    const { env, db } = coinsEnv({ INWORLD_API_KEY: 'test-inworld-key' });
+    const inworldBodies = [];
+    stubFetch(t, (url, init) => {
+        if (url.includes('inworld.ai')) {
+            inworldBodies.push(JSON.parse(String(init.body)));
+            return new Response(JSON.stringify({
+                choices: [{ message: { role: 'assistant', content: 'You honour me, stranger.' } }],
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return openAiOk(); // the cleanup pass
+    });
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 2000, 'adjust', 'admin')"
+    ).run(USER);
+    const worker = await loadWorker();
+    const send = async (gift) => {
+        const request = new Request('https://mythos.test/api/chat', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-user-id': USER,
+                'x-character-id': 'oedipus',
+                'x-chat-id': 'Oedipus (King of Thebes)',
+                'x-visit-id': 'v_test',
+            },
+            body: JSON.stringify({ messages: [{ role: 'user', content: 'For you.' }], ...(gift ? { gift } : {}) }),
+        });
+        const pending = [];
+        const res = await worker.fetch(request, env, { waitUntil(p) { pending.push(p); }, passThroughOnException() {} });
+        const text = await res.text();
+        await Promise.all(pending);
+        return { status: res.status, json: JSON.parse(text) };
+    };
+    const systemOf = (body) => body.messages.find((m) => m.role === 'system').content;
+    const lastUserOf = (body) => [...body.messages].reverse().find((m) => m.role === 'user').content;
+
+    const given = await send({ id: 'laurel_inworld01', item: 'laurel' });
+    assert.equal(given.status, 200);
+    assert.equal(given.json.wallet.gift.charged, true);
+    assert.equal(given.json.wallet.balance, 508); // 2000 - 1500 + 8
+    const first = inworldBodies.at(-1);
+    assert.ok(lastUserOf(first).includes('golden laurel wreath'), 'the gift is narrated to Inworld');
+    assert.ok(systemOf(first).includes('crowned you with a golden laurel'), 'the keepsake is remembered at once');
+
+    await send(null);
+    assert.ok(systemOf(inworldBodies.at(-1)).includes('crowned you with a golden laurel'),
+        'and on the next plain turn');
+    assert.ok(!lastUserOf(inworldBodies.at(-1)).includes('golden laurel wreath'),
+        'a plain turn is not narrated as another gift');
+});
