@@ -386,8 +386,10 @@ class _KeepsakeRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Just the gift's name: this is already their profile, so
+                // "Golden Laurel for Penelope" would say her name twice.
                 Text(
-                  tributeHistoryLabel(keepsake.item, characterName),
+                  option?.label ?? tributeHistoryLabel(keepsake.item, null),
                   style: GoogleFonts.outfit(
                     fontSize: 13,
                     fontWeight: FontWeight.w500,

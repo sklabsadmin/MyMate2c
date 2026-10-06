@@ -3452,7 +3452,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // scenario exactly as the worker's gift target falls back to the chat
       // id, so a custom character's laurel is recognised too.
       characterId: _characterKey,
-      onTribute: _sendTribute,
+      // No tributes while the entry card is still up: a gift is a chat turn,
+      // and it would play out (reply, then idle nudges) behind a card that
+      // covers the conversation. The sheet still shows the balance and the
+      // way to buy more; the gifts appear once they have stepped in.
+      onTribute: _entryGateActive ? null : _sendTribute,
       // Null where nothing can be bought (web): the sheet then hides its buy
       // button and keeps unaffordable tributes disabled.
       onGetCoins: RevenueCatService.isSupported
