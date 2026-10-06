@@ -14,7 +14,7 @@ import '../coin_wallet.dart';
 /// One gift in the catalogue. The price is NOT here: it arrives with every
 /// wallet read, because the server owns what things cost.
 class TributeOption {
-  /// The API key the worker prices — roses | ambrosia | pendant | star.
+  /// The API key the worker prices — roses | ambrosia | pendant | laurel.
   final String item;
   final String label;
   final String detail;
@@ -33,6 +33,11 @@ class TributeOption {
   final String heldBadge;
   final String heldDetail;
 
+  /// The gift as the stage direction names it — "*gives [giving] to Zeus*".
+  /// Null reads the label in lower case, which suits a plural or a mass noun
+  /// (roses, ambrosia) but not a single thing (a pendant).
+  final String? giving;
+
   const TributeOption(
     this.item,
     this.label,
@@ -41,7 +46,10 @@ class TributeOption {
     this.once = false,
     this.heldBadge = 'Given',
     this.heldDetail = 'Theirs since you gave it.',
+    this.giving,
   });
+
+  String get givingPhrase => giving ?? label.toLowerCase();
 }
 
 /// The catalogue, in ascending price. The asset names match the item keys the
@@ -53,24 +61,26 @@ const List<TributeOption> kTributeOptions = [
       'assets/images/gift_ambrosia.png'),
   TributeOption('pendant', 'Pendant', 'Theirs to wear. Given once.',
       'assets/images/gift_pendant.png',
-      once: true, heldBadge: 'Worn', heldDetail: 'Worn since you gave it.'),
-  // gift_star.png is a drawn stand-in until Adam's artwork replaces it.
-  TributeOption('star', 'A Star', 'Their name in the heavens. Given once.',
-      'assets/images/gift_star.png',
       once: true,
-      heldBadge: 'Given',
-      heldDetail: 'Shining in their name since you gave it.'),
+      heldBadge: 'Worn',
+      heldDetail: 'Worn since you gave it.',
+      giving: 'a pendant'),
+  // gift_laurel.png is a drawn stand-in until Adam's artwork replaces it.
+  TributeOption('laurel', 'Golden Laurel',
+      'The crown of gods and heroes. Given once.',
+      'assets/images/gift_laurel.png',
+      once: true,
+      heldBadge: 'Crowned',
+      heldDetail: 'Crowned with it since you gave it.',
+      giving: 'a golden laurel'),
 ];
 
-/// The name a gift goes by in the history and on a profile: "Roses for
-/// Penelope", or the star's own "Penelope's Star". [characterName] is null for
-/// a character the roster does not know (a custom one), which drops the name.
+/// The name a gift goes by in the history and on a profile: "Golden Laurel
+/// for Penelope". [characterName] is null for a character the roster does not
+/// know (a custom one), which drops the name.
 String tributeHistoryLabel(String item, String? characterName) {
   final option = kTributeOptions.where((o) => o.item == item).firstOrNull;
   if (option == null) return 'Tribute';
-  if (item == 'star') {
-    return characterName == null ? 'A Star' : "$characterName's Star";
-  }
   return characterName == null
       ? option.label
       : '${option.label} for $characterName';

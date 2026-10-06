@@ -3450,7 +3450,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // So the sheet can tell whether THIS character already holds a
       // keepsake. The character key, not the bare id: it falls back to the
       // scenario exactly as the worker's gift target falls back to the chat
-      // id, so a custom character's star is recognised too.
+      // id, so a custom character's laurel is recognised too.
       characterId: _characterKey,
       onTribute: _sendTribute,
       // Null where nothing can be bought (web): the sheet then hides its buy
@@ -3522,7 +3522,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // worker narrates the same gift to the character separately, in words the
     // model is told to answer rather than echo.
     final text =
-        '*gives ${option.label.toLowerCase()} to $_characterDisplayName*';
+        '*gives ${option.givingPhrase} to $_characterDisplayName*';
 
     _addMessage(
       ChatMessage(
@@ -3729,7 +3729,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             );
         // The chat response moves only the balance. A keepsake also changes
         // what the sheet and the profile show, and that needs a full read —
-        // otherwise the star still looks for sale until the next launch.
+        // otherwise the laurel still looks for sale until the next launch.
         final keepsake = kTributeOptions
             .any((o) => o.item == gift['item'] && o.once);
         if (keepsake) ref.read(coinWalletProvider.notifier).refresh();

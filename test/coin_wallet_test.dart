@@ -140,16 +140,16 @@ void main() {
     expect(giftRewardAsset('hercules', 'roses'), isNotNull);
   });
 
-  test('the pendant and the star are the gifts given once, and the sheet knows it', () {
+  test('the pendant and the laurel are the gifts given once, and the sheet knows it', () {
     // once:true is what makes the row read "Worn"/"Given" instead of a price,
     // and it must match the server's COINS.gifts — where a keepsake's ledger
     // id is derived from (user, character) so it cannot be bought twice.
     final once = kTributeOptions.where((o) => o.once).map((o) => o.item);
-    expect(once, ['pendant', 'star']);
-    // Ascending price, so the 1500 star sits at the bottom of the sheet.
+    expect(once, ['pendant', 'laurel']);
+    // Ascending price, so the 1500 laurel sits at the bottom of the sheet.
     expect(kTributeOptions.map((o) => o.item),
-        ['roses', 'ambrosia', 'pendant', 'star']);
-    expect(AppConfig.tributeHeartScore['star'], greaterThan(
+        ['roses', 'ambrosia', 'pendant', 'laurel']);
+    expect(AppConfig.tributeHeartScore['laurel'], greaterThan(
         AppConfig.tributeHeartScore['pendant']!));
   });
 
@@ -161,17 +161,17 @@ void main() {
         'pendants': ['odysseus'],
         'keepsakes': [
           {'item': 'pendant', 'ref': 'odysseus', 'at': '2026-10-01 08:00:00'},
-          {'item': 'star', 'ref': 'penelope', 'at': '2026-10-05 12:34:56'},
+          {'item': 'laurel', 'ref': 'penelope', 'at': '2026-10-05 12:34:56'},
         ],
       },
     })!;
-    expect(state.holds('star', 'penelope'), isTrue);
-    // A star given to Penelope is nobody else's, and is not a pendant.
-    expect(state.holds('star', 'odysseus'), isFalse);
+    expect(state.holds('laurel', 'penelope'), isTrue);
+    // A laurel given to Penelope is nobody else's, and is not a pendant.
+    expect(state.holds('laurel', 'odysseus'), isFalse);
     expect(state.holds('pendant', 'penelope'), isFalse);
-    final star = state.keepsakesFor('penelope').single;
+    final laurel = state.keepsakesFor('penelope').single;
     // Ledger time is UTC; the profile shows it in local time.
-    expect(star.givenAt, DateTime.utc(2026, 10, 5, 12, 34, 56));
+    expect(laurel.givenAt, DateTime.utc(2026, 10, 5, 12, 34, 56));
   });
 
   test('a pendant known only from the old pendants list still counts as held', () {
@@ -185,10 +185,11 @@ void main() {
 
   test('gifts are named in the history, never as a bare "gift"', () {
     expect(tributeHistoryLabel('roses', 'Penelope'), 'Roses for Penelope');
-    expect(tributeHistoryLabel('star', 'Penelope'), "Penelope's Star");
+    expect(tributeHistoryLabel('laurel', 'Penelope'),
+        'Golden Laurel for Penelope');
     // A custom character the roster does not know drops the name, not the gift.
     expect(tributeHistoryLabel('roses', null), 'Roses');
-    expect(tributeHistoryLabel('star', null), 'A Star');
+    expect(tributeHistoryLabel('laurel', null), 'Golden Laurel');
     // An item this build does not sell still reads as something.
     expect(tributeHistoryLabel('lyre', 'Penelope'), 'Tribute');
   });
@@ -217,5 +218,15 @@ void main() {
     });
     expect(state!.tributePrices, isEmpty);
     expect(state.pendants, isEmpty);
+  });
+
+  test('a single gift is handed over with an article, a plural without', () {
+    // "*gives golden laurel to Zeus*" reads like a telegram.
+    String giving(String item) =>
+        kTributeOptions.firstWhere((o) => o.item == item).givingPhrase;
+    expect(giving('roses'), 'roses');
+    expect(giving('ambrosia'), 'ambrosia');
+    expect(giving('pendant'), 'a pendant');
+    expect(giving('laurel'), 'a golden laurel');
   });
 }

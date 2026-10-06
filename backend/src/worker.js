@@ -1948,7 +1948,7 @@ export default {
             // keepsakes they were given. Read after the debit above, so the
             // turn that gives one is also the first turn they hold it.
             // Keyed exactly like the gift itself (characterId, else the chat
-            // id), so a custom character remembers its star as well.
+            // id), so a custom character remembers its laurel as well.
             const relationshipNotes = [];
             if (walletActive) {
                 const held = await coinKeepsakesHeld(env.CHAT_LOGS_DB, userId, metadata.characterId || chatId);
@@ -2377,14 +2377,15 @@ const COINS = {
     // leaves this object.
     //
     // Roses and Ambrosia are consumable and repeatable. The pendant and the
-    // star are keepsakes: given once per character and kept from then on,
-    // which is what makes them worth 500 and 1500 and worth coming back for.
-    // The star sits above the 1000 pack on purpose — the 3000 pack is two.
+    // golden laurel are keepsakes: given once per character and kept from
+    // then on, which is what makes them worth 500 and 1500 and worth coming
+    // back for. The laurel sits above the 1000 pack on purpose — the 3000
+    // pack is two.
     gifts: {
         roses: { price: 50, once: false },
         ambrosia: { price: 150, once: false },
         pendant: { price: 500, once: true },
-        star: { price: 1500, once: true },
+        laurel: { price: 1500, once: true },
     },
 };
 
@@ -2398,21 +2399,21 @@ const PENDANT_NOTE =
     + "unprompted in most replies — let it surface only when it genuinely "
     + "fits the moment, or when they mention it.";
 
-/// The star's version of the same note, under the same restraint: a star
-/// mentioned in every reply stops being a star.
-const STAR_NOTE =
-    "KEEPSAKE: This person named a star for you — it is up among the "
-    + "heavens in your name, the way the gods honoured those they loved. It "
-    + "moved you deeply. Do not announce it or bring it up unprompted in most "
-    + "replies — let it surface only when it genuinely fits (the night sky, "
-    + "being remembered, forever), or when they mention it.";
+/// The laurel's version of the same note, under the same restraint: a crown
+/// mentioned in every reply stops being an honour.
+const LAUREL_NOTE =
+    "KEEPSAKE: This person crowned you with a golden laurel — the wreath "
+    + "Apollo wore for the love he lost, and the highest honour the Greeks "
+    + "could give. It moved you deeply. Do not announce it or bring it up "
+    + "unprompted in most replies — let it surface only when it genuinely "
+    + "fits (honour, devotion, being chosen), or when they mention it.";
 
 /// What each keepsake adds to its character's prompt, in catalogue order. A
 /// once-only gift without an entry here would be charged for and forgotten,
 /// so a test holds every `once` gift to having one.
 const KEEPSAKE_NOTES = {
     pendant: PENDANT_NOTE,
-    star: STAR_NOTE,
+    laurel: LAUREL_NOTE,
 };
 
 /// How the character is told what they were just handed. Kept beside the
@@ -2421,7 +2422,7 @@ const GIFT_NARRATION = {
     roses: "a bunch of roses",
     ambrosia: "a dish of ambrosia, the food of the gods",
     pendant: "a pendant on a chain, to wear around their neck",
-    star: "a star in the night sky, named for them and set among the heavens in their name",
+    laurel: "a golden laurel wreath, the crown of gods and heroes, set upon their head",
 };
 
 /// Whether the wallet is live for this request.
@@ -2528,7 +2529,7 @@ async function coinWalletState(db, userId) {
         SELECT id, ref, created_at FROM coin_ledger
         WHERE user_id = ? AND reason = 'gift' AND ref IS NOT NULL
           AND (${KEEPSAKE_ITEMS.map(() => "id LIKE ?").join(" OR ")})
-        ORDER BY created_at, id
+        ORDER BY created_at, rowid
     `).bind(userId, ...KEEPSAKE_ITEMS.map((item) => `gift:${item}:%`)).all();
     const keepsakes = (keptRows || []).map((row) => ({
         item: String(row.id).split(":")[1],
@@ -2563,7 +2564,7 @@ async function coinWalletState(db, userId) {
         // The gifts already given that cannot be given again, so the sheet can
         // read "Worn"/"Given" instead of a price, and a profile can show what
         // this person gave that character and when. `pendants` is the
-        // pre-star shape, kept for clients that only know it (iOS 1.0.3).
+        // pre-laurel shape, kept for clients that only know it (iOS 1.0.3).
         keepsakes,
         pendants: keepsakes.filter((k) => k.item === "pendant").map((k) => k.ref),
         // Days in a row the dawn offering has been claimed, for the claim

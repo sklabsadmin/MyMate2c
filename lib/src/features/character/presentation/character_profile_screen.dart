@@ -354,7 +354,7 @@ class _AskButton extends StatelessWidget {
 }
 
 /// One keepsake on the profile: the painted gift, its name, and when it was
-/// given ("Penelope's Star · given 5 Oct 2026").
+/// given ("Golden Laurel for Penelope · Given 5 Oct 2026").
 class _KeepsakeRow extends StatelessWidget {
   final Keepsake keepsake;
   final String characterName;

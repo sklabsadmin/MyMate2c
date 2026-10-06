@@ -44,10 +44,10 @@ class CoinGrant {
       };
 }
 
-/// A once-only gift this person gave one character — the pendant, the star.
+/// A once-only gift this person gave one character — the pendant, the laurel.
 /// Server-derived from the ledger, like everything else in the wallet.
 class Keepsake {
-  /// Catalogue key: pendant | star.
+  /// Catalogue key: pendant | laurel.
   final String item;
   final String characterId;
 
@@ -86,7 +86,7 @@ class CoinWalletState {
 
   /// Character ids this person has already given a pendant to. Derived by the
   /// server from the ledger, so it cannot drift from what was charged. The
-  /// pre-star shape; [keepsakes] supersedes it where the server sends both.
+  /// pre-laurel shape; [keepsakes] supersedes it where the server sends both.
   final List<String> pendants;
 
   /// Every keepsake given, oldest first, with who holds it and when.
