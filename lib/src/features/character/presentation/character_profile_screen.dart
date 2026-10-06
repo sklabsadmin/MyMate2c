@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../wallet/coin_wallet.dart';
+import '../../wallet/presentation/coins_sheet.dart';
 
 /// Character profile card, opened from the chat header.
 ///
@@ -82,11 +85,16 @@ class CharacterProfileScreen extends ConsumerWidget {
         }
         return KeyEventResult.ignored;
       },
-      child: _buildScaffold(context),
+      child: _buildScaffold(context, ref),
     );
   }
 
-  Widget _buildScaffold(BuildContext context) {
+  Widget _buildScaffold(BuildContext context, WidgetRef ref) {
+    // The keepsakes this person gave this character. Read from the wallet the
+    // app already holds, so an unpriced or disabled wallet simply shows none.
+    final keepsakes =
+        ref.watch(coinWalletProvider).value?.keepsakesFor(characterKey) ??
+            const <Keepsake>[];
     return Scaffold(
       backgroundColor: AppTheme.backgroundColor,
       body: SafeArea(
@@ -198,6 +206,20 @@ class CharacterProfileScreen extends ConsumerWidget {
                               ],
                             ),
                           ),
+                          // In the character's voice, like the sections
+                          // around it. Only there once something was given:
+                          // an empty "Gifts From You" would read as a hint.
+                          if (keepsakes.isNotEmpty)
+                            _section(
+                              'Gifts From You',
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  for (final k in keepsakes)
+                                    _KeepsakeRow(keepsake: k, characterName: name),
+                                ],
+                              ),
+                            ),
                           _section(
                             'Ask Me About',
                             Column(
@@ -326,6 +348,64 @@ class _AskButton extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// One keepsake on the profile: the painted gift, its name, and when it was
+/// given ("Penelope's Star · given 5 Oct 2026").
+class _KeepsakeRow extends StatelessWidget {
+  final Keepsake keepsake;
+  final String characterName;
+
+  const _KeepsakeRow({required this.keepsake, required this.characterName});
+
+  @override
+  Widget build(BuildContext context) {
+    final option =
+        kTributeOptions.where((o) => o.item == keepsake.item).firstOrNull;
+    final given = keepsake.givenAt;
+    final when = given == null
+        ? (option?.heldDetail ?? '')
+        : 'Given ${DateFormat('d MMM y').format(given.toLocal())}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 32,
+            height: 32,
+            child: option == null
+                ? const Icon(Icons.card_giftcard,
+                    size: 22, color: CharacterProfileScreen._gold)
+                : Image.asset(option.asset, fit: BoxFit.contain),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tributeHistoryLabel(keepsake.item, characterName),
+                  style: GoogleFonts.outfit(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: CharacterProfileScreen._ink,
+                  ),
+                ),
+                if (when.isNotEmpty)
+                  Text(
+                    when,
+                    style: GoogleFonts.outfit(
+                      fontSize: 11,
+                      color: CharacterProfileScreen._muted,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,8 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../../../core/data/characters.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
@@ -11,7 +14,7 @@ import '../coin_wallet.dart';
 /// One gift in the catalogue. The price is NOT here: it arrives with every
 /// wallet read, because the server owns what things cost.
 class TributeOption {
-  /// The API key the worker prices — roses | ambrosia | pendant.
+  /// The API key the worker prices — roses | ambrosia | pendant | star.
   final String item;
   final String label;
   final String detail;
@@ -21,8 +24,14 @@ class TributeOption {
   /// deploy and this app has had a payload emergency before.
   final String asset;
 
-  /// Given once per character and worn from then on, rather than consumed.
+  /// A keepsake: given once per character and kept from then on, rather than
+  /// consumed.
   final bool once;
+
+  /// What a keepsake's row says once the character holds it, in place of the
+  /// price and the description. Only read when [once].
+  final String heldBadge;
+  final String heldDetail;
 
   const TributeOption(
     this.item,
@@ -30,19 +39,42 @@ class TributeOption {
     this.detail,
     this.asset, {
     this.once = false,
+    this.heldBadge = 'Given',
+    this.heldDetail = 'Theirs since you gave it.',
   });
 }
 
-/// The MVP catalogue, in ascending price. The asset names match the item keys
-/// the worker prices, so the mapping is mechanical rather than remembered.
+/// The catalogue, in ascending price. The asset names match the item keys the
+/// worker prices, so the mapping is mechanical rather than remembered.
 const List<TributeOption> kTributeOptions = [
   TributeOption('roses', 'Roses', 'A small kindness — they will notice.',
       'assets/images/gift_roses.png'),
   TributeOption('ambrosia', 'Ambrosia', 'Food of the gods, offered by hand.',
       'assets/images/gift_ambrosia.png'),
   TributeOption('pendant', 'Pendant', 'Theirs to wear. Given once.',
-      'assets/images/gift_pendant.png', once: true),
+      'assets/images/gift_pendant.png',
+      once: true, heldBadge: 'Worn', heldDetail: 'Worn since you gave it.'),
+  // gift_star.png is a drawn stand-in until Adam's artwork replaces it.
+  TributeOption('star', 'A Star', 'Their name in the heavens. Given once.',
+      'assets/images/gift_star.png',
+      once: true,
+      heldBadge: 'Given',
+      heldDetail: 'Shining in their name since you gave it.'),
 ];
+
+/// The name a gift goes by in the history and on a profile: "Roses for
+/// Penelope", or the star's own "Penelope's Star". [characterName] is null for
+/// a character the roster does not know (a custom one), which drops the name.
+String tributeHistoryLabel(String item, String? characterName) {
+  final option = kTributeOptions.where((o) => o.item == item).firstOrNull;
+  if (option == null) return 'Tribute';
+  if (item == 'star') {
+    return characterName == null ? 'A Star' : "$characterName's Star";
+  }
+  return characterName == null
+      ? option.label
+      : '${option.label} for $characterName';
+}
 
 /// What a character sends back for a gift, by character then gift.
 ///
@@ -211,12 +243,12 @@ Future<void> showCoinsSheet(
                       return _TributeRow(
                         option: option,
                         price: price,
-                        // A pendant already given reads "Worn" instead of a
-                        // price — it cannot be bought twice, and offering it
-                        // again would look like a way to waste 500 coins.
-                        worn: option.once &&
-                            (wallet?.pendants ?? const [])
-                                .contains(characterId),
+                        // A keepsake already given reads "Worn"/"Given"
+                        // instead of a price — it cannot be bought twice, and
+                        // offering it again would look like a way to waste
+                        // the coins.
+                        held: option.once &&
+                            (wallet?.holds(option.item, characterId) ?? false),
                         enabled: affordable,
                         // Priced but unaffordable, where coins can be bought:
                         // the row stays live and leads to the store, saying
@@ -309,10 +341,10 @@ class _TributeRow extends StatelessWidget {
   final TributeOption option;
   final int price;
   final bool enabled;
-  final bool worn;
+  final bool held;
 
   /// Coins still needed, when the row is unaffordable but can lead to the
-  /// store. 0 means "not that case" (affordable, worn, or nowhere to buy).
+  /// store. 0 means "not that case" (affordable, held, or nowhere to buy).
   final int shortfall;
   final VoidCallback onTap;
 
@@ -321,19 +353,19 @@ class _TributeRow extends StatelessWidget {
     required this.price,
     required this.enabled,
     required this.onTap,
-    this.worn = false,
+    this.held = false,
     this.shortfall = 0,
   });
 
   @override
   Widget build(BuildContext context) {
     final gold = Theme.of(context).colorScheme.secondary;
-    // A worn pendant is not a disabled row — it is a finished one. Same gold
-    // as an affordable gift, so the sheet reads as an achievement rather than
-    // something switched off.
-    final toStore = shortfall > 0 && !worn;
-    final live = (enabled || toStore) && !worn;
-    final ink = worn
+    // A keepsake already given is not a disabled row — it is a finished one.
+    // Same gold as an affordable gift, so the sheet reads as an achievement
+    // rather than something switched off.
+    final toStore = shortfall > 0 && !held;
+    final live = (enabled || toStore) && !held;
+    final ink = held
         ? AppTheme.goldInkColor
         : enabled || toStore
             ? AppTheme.inkColor
@@ -341,7 +373,7 @@ class _TributeRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
-        color: worn
+        color: held
             ? gold.withOpacity(0.10)
             : enabled
                 ? gold.withOpacity(0.14)
@@ -355,7 +387,7 @@ class _TributeRow extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: worn
+                color: held
                     ? gold.withOpacity(0.45)
                     : enabled
                         ? gold.withOpacity(0.7)
@@ -373,7 +405,7 @@ class _TributeRow extends StatelessWidget {
                   width: 40,
                   height: 40,
                   child: Opacity(
-                    opacity: worn || enabled ? 1.0 : toStore ? 0.6 : 0.35,
+                    opacity: held || enabled ? 1.0 : toStore ? 0.6 : 0.35,
                     child: Image.asset(option.asset, fit: BoxFit.contain),
                   ),
                 ),
@@ -390,15 +422,15 @@ class _TributeRow extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        worn
-                            ? 'Worn since you gave it.'
+                        held
+                            ? option.heldDetail
                             : toStore
                                 ? 'Needs $shortfall more coins — tap to get them'
                                 : option.detail,
                         style: GoogleFonts.lato(
                           color: toStore
                               ? AppTheme.primaryColor
-                              : enabled || worn
+                              : enabled || held
                                   ? AppTheme.mutedInkColor
                                   : AppTheme.faintInkColor,
                           fontSize: 12,
@@ -409,9 +441,9 @@ class _TributeRow extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (worn)
+                if (held)
                   Text(
-                    'Worn',
+                    option.heldBadge,
                     style: GoogleFonts.lato(
                       color: AppTheme.goldInkColor,
                       fontWeight: FontWeight.w800,
@@ -487,14 +519,16 @@ class _RecentRow extends StatelessWidget {
     final delta = row['delta'] is int
         ? row['delta'] as int
         : int.tryParse('${row['delta']}') ?? 0;
-    final label = CoinGrant('${row['reason']}', delta).label;
+    final label = delta < 0 && '${row['reason']}' == 'gift'
+        ? _giftRowLabel(row)
+        : CoinGrant('${row['reason']}', delta).label;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
           Expanded(
             child: Text(
-              delta < 0 && '${row['reason']}' == 'gift' ? 'Tribute' : label,
+              label,
               style: GoogleFonts.lato(
                   color: AppTheme.mutedInkColor, fontSize: 12.5),
               overflow: TextOverflow.ellipsis,
@@ -514,4 +548,23 @@ class _RecentRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// "Roses for Penelope" for a gift row in the history. The ledger row carries
+/// the item in meta_json and the character in ref; a row missing either (or
+/// written before items were recorded) still reads as a plain "Tribute".
+String _giftRowLabel(Map<String, dynamic> row) {
+  String? item;
+  final meta = row['meta_json'];
+  try {
+    final decoded = meta is String ? jsonDecode(meta) : meta;
+    if (decoded is Map && decoded['item'] is String) {
+      item = decoded['item'] as String;
+    }
+  } catch (_) {
+    item = null;
+  }
+  if (item == null) return 'Tribute';
+  final name = characterById(row['ref'] as String?)?['name'] as String?;
+  return tributeHistoryLabel(item, name);
 }

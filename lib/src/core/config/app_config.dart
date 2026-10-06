@@ -196,6 +196,7 @@ class AppConfig {
     'roses': 1,
     'ambrosia': 3,
     'pendant': 10,
+    'star': 30,
   };
 
   /// The app is designed as a portrait, phone-shaped experience — two card

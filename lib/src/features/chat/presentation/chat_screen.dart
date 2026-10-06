@@ -3447,8 +3447,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       context,
       ref: ref,
       characterName: _characterDisplayName,
-      // So the sheet can tell whether THIS character already wears a pendant.
-      characterId: widget.characterId,
+      // So the sheet can tell whether THIS character already holds a
+      // keepsake. The character key, not the bare id: it falls back to the
+      // scenario exactly as the worker's gift target falls back to the chat
+      // id, so a custom character's star is recognised too.
+      characterId: _characterKey,
       onTribute: _sendTribute,
       // Null where nothing can be bought (web): the sheet then hides its buy
       // button and keeps unaffordable tributes disabled.
@@ -3724,6 +3727,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         ref.read(userScoreProvider.notifier).add(
               AppConfig.tributeHeartScore[gift['item']] ?? 0,
             );
+        // The chat response moves only the balance. A keepsake also changes
+        // what the sheet and the profile show, and that needs a full read —
+        // otherwise the star still looks for sale until the next launch.
+        final keepsake = kTributeOptions
+            .any((o) => o.item == gift['item'] && o.once);
+        if (keepsake) ref.read(coinWalletProvider.notifier).refresh();
       }
       // Some characters answer a gift with a photograph as well as words.
       // Queued here and sent after the reply's bubbles below, so it arrives

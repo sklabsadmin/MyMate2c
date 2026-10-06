@@ -439,8 +439,93 @@ test('the wallet quotes the catalogue, so the client never invents a price', asy
     const { env } = coinsEnv();
     const res = await callSync(env, { localDate: '2026-08-21' });
     assert.deepEqual(res.json.wallet.prices.gift,
-        { roses: 50, ambrosia: 150, pendant: 500 });
+        { roses: 50, ambrosia: 150, pendant: 500, star: 1500 });
     assert.deepEqual(res.json.wallet.pendants, []);
+    assert.deepEqual(res.json.wallet.keepsakes, []);
+});
+
+test('a star is given once per character, and the second giving is free', async (t) => {
+    // Same guard as the pendant, at three times the price: a retry or a
+    // second tap must not take another 1500.
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 2000, 'adjust', 'admin')"
+    ).run(USER);
+
+    const first = await callChat(env, { gift: { id: 'star_aaaa0001', item: 'star' } });
+    assert.equal(first.status, 200);
+    assert.equal(first.json.wallet.balance, 508); // 2000 - 1500 + 8
+    assert.equal(first.json.wallet.gift.charged, true);
+
+    const second = await callChat(env, { gift: { id: 'star_bbbb0002', item: 'star' } });
+    assert.equal(second.status, 200);
+    assert.equal(second.json.wallet.gift.charged, false);
+    assert.equal(rowCount(db, "reason = 'gift'"), 1);
+    assert.equal(second.json.wallet.balance, 516); // reply grant only
+    assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
+});
+
+test('a star the wallet cannot cover is refused with what it needs', async (t) => {
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 1499, 'adjust', 'admin')"
+    ).run(USER);
+
+    const res = await callChat(env, { gift: { id: 'star_poor0001', item: 'star' } });
+    assert.equal(res.status, 402);
+    assert.equal(res.json.wallet.needed, 1500);
+    assert.equal(rowCount(db, "reason = 'gift'"), 0);
+    assert.equal(cachedBalance(db, USER), 1499);
+});
+
+test('keepsakes are listed with who holds them and when, and pendants keeps its old shape', async (t) => {
+    // The profile's "Gifts From You" reads this list; iOS 1.0.3 only knows
+    // `pendants`, which must keep listing pendants and nothing else.
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 3000, 'adjust', 'admin')"
+    ).run(USER);
+
+    await callChat(env, { gift: { id: 'pendant_kp000001', item: 'pendant' } });
+    await callChat(env, { gift: { id: 'star_kp00000002', item: 'star' } });
+    await callChat(env, { gift: { id: 'roses_kp0000003', item: 'roses' } });
+
+    const wallet = (await callSync(env)).json.wallet;
+    assert.deepEqual(wallet.pendants, ['odysseus']);
+    assert.deepEqual(wallet.keepsakes.map((k) => [k.item, k.ref]),
+        [['pendant', 'odysseus'], ['star', 'odysseus']]);
+    for (const k of wallet.keepsakes) assert.ok(k.at, 'each keepsake carries when it was given');
+});
+
+test('the character is told about the keepsakes they hold, and only those', async (t) => {
+    // The lasting payoff of a keepsake is the note in the prompt. Captured
+    // from the upstream request itself, so this fails if the note is built
+    // but never sent.
+    const { env, db } = coinsEnv();
+    const prompts = [];
+    stubFetch(t, (url, init) => {
+        prompts.push(init && init.body ? String(init.body) : '');
+        return openAiOk();
+    });
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 3000, 'adjust', 'admin')"
+    ).run(USER);
+
+    await callChat(env, { message: 'Before any gift.' });
+    assert.ok(!prompts.at(-1).includes('KEEPSAKE'), 'no keepsake, no note');
+
+    await callChat(env, { gift: { id: 'star_note000001', item: 'star' } });
+    assert.ok(prompts.at(-1).includes('named a star for you'),
+        'the turn that gives the star is the first turn it is remembered');
+    assert.ok(!prompts.at(-1).includes('wearing a pendant'), 'a star is not a pendant');
+
+    await callChat(env, { gift: { id: 'pendant_note0002', item: 'pendant' } });
+    const last = prompts.at(-1);
+    assert.ok(last.includes('named a star for you') && last.includes('wearing a pendant'),
+        'both keepsakes are remembered together');
 });
 
 test('a gift the catalogue does not sell is refused, not silently free', async (t) => {
@@ -502,4 +587,50 @@ test('a missed day resets the streak — three claims are not three in a row', a
     // A brand-new wallet has no streak, not a streak of zero-with-a-line.
     const fresh = await callGet(env, { userId: 'user_1700000000999' });
     assert.equal(fresh.json.wallet.streak_days, 0);
+});
+
+test('a custom character, keyed by its chat, remembers its star too', async (t) => {
+    // Custom characters send no x-character-id, so the gift lands on the chat
+    // id. The memory must be looked up the same way, or the star is charged
+    // for and then forgotten.
+    const { env, db } = coinsEnv();
+    const prompts = [];
+    stubFetch(t, (url, init) => {
+        prompts.push(init && init.body ? String(init.body) : '');
+        return openAiOk();
+    });
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES ('seed', ?, 2000, 'adjust', 'admin')"
+    ).run(USER);
+    const worker = await loadWorker();
+    const send = async (gift) => {
+        const request = new Request('https://mythos.test/api/chat', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-user-id': USER,
+                'x-chat-id': 'Lysander (A Poet of Athens)',
+                'x-scenario': 'Lysander (A Poet of Athens)',
+                'x-visit-id': 'v_test',
+            },
+            body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello.' }], ...(gift ? { gift } : {}) }),
+        });
+        const pending = [];
+        const res = await worker.fetch(request, env, { waitUntil(p) { pending.push(p); }, passThroughOnException() {} });
+        const text = await res.text();
+        await Promise.all(pending);
+        return { status: res.status, json: JSON.parse(text) };
+    };
+
+    const given = await send({ id: 'star_custom0001', item: 'star' });
+    assert.equal(given.status, 200);
+    assert.equal(given.json.wallet.gift.charged, true);
+    assert.ok(prompts.at(-1).includes('named a star for you'));
+
+    await send(null);
+    assert.ok(prompts.at(-1).includes('named a star for you'),
+        'the next plain turn still remembers it');
+    const wallet = (await callSync(env)).json.wallet;
+    assert.deepEqual(wallet.keepsakes.map((k) => [k.item, k.ref]),
+        [['star', 'Lysander (A Poet of Athens)']]);
 });

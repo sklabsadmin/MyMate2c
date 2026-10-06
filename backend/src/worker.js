@@ -1944,12 +1944,15 @@ export default {
                 }
             }
 
-            // What this character carries from past conversations. Only the
-            // pendant, today — and it is read after the debit above, so the
-            // turn that gives one is also the first turn they wear it.
+            // What this character carries from past conversations: the
+            // keepsakes they were given. Read after the debit above, so the
+            // turn that gives one is also the first turn they hold it.
+            // Keyed exactly like the gift itself (characterId, else the chat
+            // id), so a custom character remembers its star as well.
             const relationshipNotes = [];
-            if (walletActive && await coinPendantWorn(env.CHAT_LOGS_DB, userId, metadata.characterId)) {
-                relationshipNotes.push(PENDANT_NOTE);
+            if (walletActive) {
+                const held = await coinKeepsakesHeld(env.CHAT_LOGS_DB, userId, metadata.characterId || chatId);
+                for (const item of held) relationshipNotes.push(KEEPSAKE_NOTES[item]);
             }
 
             // 4. Generate the reply. Which engine handles this is decided purely by
@@ -1998,7 +2001,7 @@ export default {
                     messages: persona
                         ? applyPersonaToMessages(outboundMessages, persona, metadata.language, relationshipNotes,
                             env.PERSONA_TIGHTEN !== "false")
-                        : outboundMessages,
+                        : appendNotesToMessages(outboundMessages, relationshipNotes),
                     temperature: 0.7,
                     max_tokens: parseInt(env.MAX_TOKENS || "300") // Use Env Var or default to 300
                 };
@@ -2373,13 +2376,15 @@ const COINS = {
     // carry the whole economy. The client names the gift; the price never
     // leaves this object.
     //
-    // Roses and Ambrosia are consumable and repeatable. The pendant is not:
-    // it is given once per character and worn from then on, which is what
-    // makes it worth 500 and worth coming back for.
+    // Roses and Ambrosia are consumable and repeatable. The pendant and the
+    // star are keepsakes: given once per character and kept from then on,
+    // which is what makes them worth 500 and 1500 and worth coming back for.
+    // The star sits above the 1000 pack on purpose — the 3000 pack is two.
     gifts: {
         roses: { price: 50, once: false },
         ambrosia: { price: 150, once: false },
         pendant: { price: 500, once: true },
+        star: { price: 1500, once: true },
     },
 };
 
@@ -2393,12 +2398,30 @@ const PENDANT_NOTE =
     + "unprompted in most replies — let it surface only when it genuinely "
     + "fits the moment, or when they mention it.";
 
+/// The star's version of the same note, under the same restraint: a star
+/// mentioned in every reply stops being a star.
+const STAR_NOTE =
+    "KEEPSAKE: This person named a star for you — it is up among the "
+    + "heavens in your name, the way the gods honoured those they loved. It "
+    + "moved you deeply. Do not announce it or bring it up unprompted in most "
+    + "replies — let it surface only when it genuinely fits (the night sky, "
+    + "being remembered, forever), or when they mention it.";
+
+/// What each keepsake adds to its character's prompt, in catalogue order. A
+/// once-only gift without an entry here would be charged for and forgotten,
+/// so a test holds every `once` gift to having one.
+const KEEPSAKE_NOTES = {
+    pendant: PENDANT_NOTE,
+    star: STAR_NOTE,
+};
+
 /// How the character is told what they were just handed. Kept beside the
 /// catalogue so a new gift cannot ship with a price and no words.
 const GIFT_NARRATION = {
     roses: "a bunch of roses",
     ambrosia: "a dish of ambrosia, the food of the gods",
     pendant: "a pendant on a chain, to wear around their neck",
+    star: "a star in the night sky, named for them and set among the heavens in their name",
 };
 
 /// Whether the wallet is live for this request.
@@ -2497,13 +2520,21 @@ async function coinWalletState(db, userId) {
         SELECT id, created_at, delta, kind, reason, ref, meta_json FROM coin_ledger
         WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 20
     `).bind(userId).all();
-    // Which characters already wear a pendant. Derived from the ledger rather
-    // than stored anywhere: the once-per-character gift key IS the record, so
-    // there is nothing to keep in step with it.
-    const { results: worn } = await db.prepare(`
-        SELECT DISTINCT ref FROM coin_ledger
-        WHERE user_id = ? AND reason = 'gift' AND id LIKE 'gift:pendant:%' AND ref IS NOT NULL
-    `).bind(userId).all();
+    // The keepsakes given, and to whom. Derived from the ledger rather than
+    // stored anywhere: the once-per-character gift key IS the record, so
+    // there is nothing to keep in step with it. Client gift ids cannot
+    // contain a colon, so only once-only keys match these prefixes.
+    const { results: keptRows } = KEEPSAKE_ITEMS.length === 0 ? { results: [] } : await db.prepare(`
+        SELECT id, ref, created_at FROM coin_ledger
+        WHERE user_id = ? AND reason = 'gift' AND ref IS NOT NULL
+          AND (${KEEPSAKE_ITEMS.map(() => "id LIKE ?").join(" OR ")})
+        ORDER BY created_at, id
+    `).bind(userId, ...KEEPSAKE_ITEMS.map((item) => `gift:${item}:%`)).all();
+    const keepsakes = (keptRows || []).map((row) => ({
+        item: String(row.id).split(":")[1],
+        ref: row.ref,
+        at: row.created_at,
+    }));
     const prices = {};
     for (const [item, gift] of Object.entries(COINS.gifts)) prices[item] = gift.price;
     return {
@@ -2530,8 +2561,11 @@ async function coinWalletState(db, userId) {
             profile: COINS.profileBonus,
         },
         // The gifts already given that cannot be given again, so the sheet can
-        // read "Worn" instead of a price.
-        pendants: (worn || []).map((row) => row.ref),
+        // read "Worn"/"Given" instead of a price, and a profile can show what
+        // this person gave that character and when. `pendants` is the
+        // pre-star shape, kept for clients that only know it (iOS 1.0.3).
+        keepsakes,
+        pendants: keepsakes.filter((k) => k.item === "pendant").map((k) => k.ref),
         // Days in a row the dawn offering has been claimed, for the claim
         // screen's streak line. Counted from the ledger every read, so it can
         // never disagree with what was actually claimed.
@@ -2566,15 +2600,22 @@ async function coinStreakDays(db, userId) {
     return streak;
 }
 
-/// Whether this person has already given this character a pendant — the one
-/// piece of relationship state a gift leaves behind. Answered from the
-/// deterministic ledger id, so it cannot disagree with what was charged.
-async function coinPendantWorn(db, userId, characterId) {
-    if (!characterId) return false;
-    const row = await db.prepare(
-        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
-    ).bind(`gift:pendant:${userId}:${characterId}`).first();
-    return Boolean(row);
+/// The once-only gifts in the catalogue, in catalogue order.
+const KEEPSAKE_ITEMS = Object.entries(COINS.gifts)
+    .filter(([, gift]) => gift.once)
+    .map(([item]) => item);
+
+/// Which keepsakes this person has given this character, in catalogue order —
+/// the relationship state a gift leaves behind. Answered from the
+/// deterministic ledger ids, so it cannot disagree with what was charged.
+async function coinKeepsakesHeld(db, userId, characterId) {
+    if (!characterId || KEEPSAKE_ITEMS.length === 0) return [];
+    const ids = KEEPSAKE_ITEMS.map((item) => `gift:${item}:${userId}:${characterId}`);
+    const { results } = await db.prepare(
+        `SELECT id FROM coin_ledger WHERE id IN (${ids.map(() => "?").join(", ")})`
+    ).bind(...ids).all();
+    const present = new Set((results || []).map((row) => row.id));
+    return KEEPSAKE_ITEMS.filter((item, i) => present.has(ids[i]));
 }
 
 /// Applies the grants a sync can carry: welcome (once ever) and the dawn
@@ -5097,6 +5138,18 @@ function buildPersonaSystemPrompt(persona, language, notes = [], tighten = true)
  * conversation history that follows intact. If no system message is present
  * the persona prompt is prepended instead.
  */
+/// The relationship notes for a character with no server persona (a custom
+/// one): its messages pass through as the client wrote them, so the notes go
+/// onto the end of the client's system message, or become one if there is
+/// none. Untouched when there are no notes, which is nearly every turn.
+function appendNotesToMessages(messages, notes = []) {
+    if (!notes.length || !Array.isArray(messages)) return messages;
+    const block = notes.join("\n");
+    const idx = messages.findIndex((m) => m && m.role === "system" && typeof m.content === "string");
+    if (idx === -1) return [{ role: "system", content: block }, ...messages];
+    return messages.map((m, i) => i === idx ? { ...m, content: `${m.content}\n\n${block}` } : m);
+}
+
 function applyPersonaToMessages(messages, persona, language, notes = [], tighten = true) {
     const personaPrompt = buildPersonaSystemPrompt(persona, language, notes, tighten);
     const rest = Array.isArray(messages)

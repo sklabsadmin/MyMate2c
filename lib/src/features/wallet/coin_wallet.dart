@@ -36,10 +36,36 @@ class CoinGrant {
         'reply' => 'Conversation',
         'link' => 'Account linked',
         'profile' => 'Profile complete',
+        // A support credit or correction made from the admin side.
+        'admin' => 'Adjustment',
         // Money rows (ledger reason 'pack', kind purchase or refund).
         'pack' => delta < 0 ? 'Refund' : 'Coin pack',
         _ => reason,
       };
+}
+
+/// A once-only gift this person gave one character — the pendant, the star.
+/// Server-derived from the ledger, like everything else in the wallet.
+class Keepsake {
+  /// Catalogue key: pendant | star.
+  final String item;
+  final String characterId;
+
+  /// When it was given, or null where the server did not say (a pendant read
+  /// from the older `pendants` list).
+  final DateTime? givenAt;
+
+  const Keepsake(this.item, this.characterId, {this.givenAt});
+
+  /// Ledger timestamps are SQLite CURRENT_TIMESTAMP: UTC, space-separated.
+  static DateTime? parseAt(Object? raw) {
+    if (raw == null) return null;
+    final s = '$raw'.trim();
+    if (s.isEmpty) return null;
+    final iso = s.contains('T') ? s : s.replaceFirst(' ', 'T');
+    return DateTime.tryParse(
+        iso.endsWith('Z') || iso.contains('+') ? iso : '${iso}Z');
+  }
 }
 
 class CoinWalletState {
@@ -59,8 +85,12 @@ class CoinWalletState {
   final List<Map<String, dynamic>> recent;
 
   /// Character ids this person has already given a pendant to. Derived by the
-  /// server from the ledger, so it cannot drift from what was charged.
+  /// server from the ledger, so it cannot drift from what was charged. The
+  /// pre-star shape; [keepsakes] supersedes it where the server sends both.
   final List<String> pendants;
+
+  /// Every keepsake given, oldest first, with who holds it and when.
+  final List<Keepsake> keepsakes;
 
   /// What each faucet pays, by server key (daily/reply/link/profile). Like
   /// [tributePrices], the client holds no opinion of its own — an empty map
@@ -99,6 +129,7 @@ class CoinWalletState {
     this.tributePrices = const {},
     this.recent = const [],
     this.pendants = const [],
+    this.keepsakes = const [],
     this.grantValues = const {},
     this.streakDays = 0,
     this.lastGranted = const [],
@@ -108,11 +139,31 @@ class CoinWalletState {
     this.packs = const {},
   });
 
+  /// The keepsakes [characterId] holds from this person, oldest first. A
+  /// pendant known only from the older `pendants` list is included, undated.
+  List<Keepsake> keepsakesFor(String? characterId) {
+    if (characterId == null || characterId.isEmpty) return const [];
+    final held = [
+      for (final k in keepsakes)
+        if (k.characterId == characterId) k,
+    ];
+    if (pendants.contains(characterId) &&
+        !held.any((k) => k.item == 'pendant')) {
+      held.insert(0, Keepsake('pendant', characterId));
+    }
+    return held;
+  }
+
+  /// Whether [characterId] already holds the once-only gift [item].
+  bool holds(String item, String? characterId) =>
+      keepsakesFor(characterId).any((k) => k.item == item);
+
   CoinWalletState copyWith({
     int? balance,
     List<CoinGrant>? lastGranted,
     List<Map<String, dynamic>>? recent,
     List<String>? pendants,
+    List<Keepsake>? keepsakes,
   }) {
     return CoinWalletState(
       enabled: enabled,
@@ -124,6 +175,7 @@ class CoinWalletState {
       tributePrices: tributePrices,
       recent: recent ?? this.recent,
       pendants: pendants ?? this.pendants,
+      keepsakes: keepsakes ?? this.keepsakes,
       grantValues: grantValues,
       streakDays: streakDays,
       lastGranted: lastGranted ?? this.lastGranted,
@@ -165,6 +217,14 @@ class CoinWalletState {
           : const [],
       pendants: (wallet['pendants'] is List)
           ? [for (final id in wallet['pendants'] as List) '$id']
+          : const [],
+      keepsakes: (wallet['keepsakes'] is List)
+          ? [
+              for (final k in wallet['keepsakes'] as List)
+                if (k is Map && k['item'] != null && k['ref'] != null)
+                  Keepsake('${k['item']}', '${k['ref']}',
+                      givenAt: Keepsake.parseAt(k['at'])),
+            ]
           : const [],
       grantValues: wallet['grants'] is Map
           ? (wallet['grants'] as Map)
