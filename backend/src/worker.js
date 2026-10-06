@@ -2192,12 +2192,19 @@ export default {
                     // user let two strangers gifting in the same millisecond
                     // collapse onto one row — the second one free. A prefix
                     // of its own, so nothing that reads `gift:` keys as
-                    // keepsakes (the keepsakes read, migration 0018's
+                    // keepsakes (the keepsakes read, migration 0025's
                     // trigger) can mistake one for the other.
                     const spendId = gift.once
                         ? `gift:${giftItem}:${userId}:${giftTarget}`
                         : `tribute:${userId}:${giftId}`;
-                    const spend = await coinSpend(env.CHAT_LOGS_DB, {
+                    // The key only covers a keepsake THIS id paid for. One
+                    // carried in by a sign-in was paid for under the
+                    // anonymous id, so its key differs and would charge
+                    // again — hence the holding is asked first, and a held
+                    // keepsake answers exactly as a replayed key does.
+                    const alreadyHeld = gift.once
+                        && (await coinKeepsakesHeld(env.CHAT_LOGS_DB, userId, giftTarget)).includes(giftItem);
+                    const spend = alreadyHeld ? { ok: true, alreadyApplied: true } : await coinSpend(env.CHAT_LOGS_DB, {
                         id: spendId,
                         userId,
                         amount: giftAmount,
@@ -3346,21 +3353,18 @@ async function coinWalletState(db, userId) {
         SELECT id, created_at, delta, kind, reason, ref, meta_json FROM coin_ledger
         WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 20
     `).bind(userId).all();
-    // The keepsakes given, and to whom. Derived from the ledger rather than
-    // stored anywhere: the once-per-character gift key IS the record, so
-    // there is nothing to keep in step with it. Client gift ids cannot
-    // contain a colon, so only once-only keys match these prefixes.
-    const { results: keptRows } = KEEPSAKE_ITEMS.length === 0 ? { results: [] } : await db.prepare(`
-        SELECT id, ref, created_at FROM coin_ledger
-        WHERE user_id = ? AND reason = 'gift' AND ref IS NOT NULL
-          AND (${KEEPSAKE_ITEMS.map(() => "id LIKE ?").join(" OR ")})
-        ORDER BY created_at, rowid
-    `).bind(userId, ...KEEPSAKE_ITEMS.map((item) => `gift:${item}:%`)).all();
-    const keepsakes = (keptRows || []).map((row) => ({
-        item: String(row.id).split(":")[1],
-        ref: row.ref,
-        at: row.created_at,
-    }));
+    // The keepsakes held, and by whom. From coin_keepsakes rather than the
+    // gift rows themselves, because a keepsake follows a sign-in and its
+    // ledger row cannot (0025 explains). `at` is when it was first given,
+    // which a merge carries unchanged.
+    const { results: keptRows } = await db.prepare(`
+        SELECT item, ref, given_at FROM coin_keepsakes
+        WHERE user_id = ? AND moved_to IS NULL
+        ORDER BY given_at, id
+    `).bind(userId).all();
+    const keepsakes = (keptRows || [])
+        .filter((row) => KEEPSAKE_ITEMS.includes(row.item))
+        .map((row) => ({ item: row.item, ref: row.ref, at: row.given_at }));
     const prices = {};
     for (const [item, gift] of Object.entries(COINS.gifts)) prices[item] = gift.price;
     return {
@@ -3521,17 +3525,19 @@ const KEEPSAKE_ITEMS = Object.entries(COINS.gifts)
     .filter(([, gift]) => gift.once)
     .map(([item]) => item);
 
-/// Which keepsakes this person has given this character, in catalogue order —
-/// the relationship state a gift leaves behind. Answered from the
-/// deterministic ledger ids, so it cannot disagree with what was charged.
+/// Which keepsakes this person holds for this character, in catalogue order —
+/// the relationship state a gift leaves behind. Holding, not paying: a
+/// keepsake given before sign-in is held by the account after it, though its
+/// ledger row stays under the anonymous id (0025). The gift row writes the
+/// holding in the same statement (a trigger), so it cannot disagree with
+/// what was charged.
 async function coinKeepsakesHeld(db, userId, characterId) {
     if (!characterId || KEEPSAKE_ITEMS.length === 0) return [];
-    const ids = KEEPSAKE_ITEMS.map((item) => `gift:${item}:${userId}:${characterId}`);
     const { results } = await db.prepare(
-        `SELECT id FROM coin_ledger WHERE id IN (${ids.map(() => "?").join(", ")})`
-    ).bind(...ids).all();
-    const present = new Set((results || []).map((row) => row.id));
-    return KEEPSAKE_ITEMS.filter((item, i) => present.has(ids[i]));
+        `SELECT item FROM coin_keepsakes WHERE user_id = ? AND ref = ? AND moved_to IS NULL`
+    ).bind(userId, characterId).all();
+    const present = new Set((results || []).map((row) => row.item));
+    return KEEPSAKE_ITEMS.filter((item) => present.has(item));
 }
 
 /// Applies the grants a sync can carry: welcome (once ever) and the dawn
@@ -3640,7 +3646,10 @@ async function coinChatSettlement(db, { userId, requestId, responseOk, visitId }
 /// away (E1 in the brief). The trigger reads meta_json so lifetime_purchased
 /// follows the coins (0017); the ledger rows are still the only write.
 /// Returns the balance moved (0 when there was nothing, or rows existed).
-async function coinMoveBalance(db, fromWallet, fromId, toId, { outId, inId, reason }) {
+///
+/// `extra` statements ride in the same batch as the two ledger rows, so
+/// whatever must cross with the coins (keepsakes, 0025) crosses atomically.
+async function coinMoveBalance(db, fromWallet, fromId, toId, { outId, inId, reason, extra = [] }) {
     const balance = fromWallet ? Number(fromWallet.balance) : 0;
     if (balance === 0) return 0;
     const freeUnspent = Math.max(0,
@@ -3657,6 +3666,7 @@ async function coinMoveBalance(db, fromWallet, fromId, toId, { outId, inId, reas
             VALUES (?, ?, ?, 'merge', ?, ?, ?)
         `).bind(inId, toId, balance, reason, fromId,
             paid !== 0 ? JSON.stringify({ paid }) : null),
+        ...extra,
     ]);
     return d1Changes(out) > 0 ? balance : 0;
 }
@@ -3674,6 +3684,12 @@ async function coinMergedOwner(db, userId) {
         ? row.ref : userId;
 }
 
+/// Keepsakes move under the same verdict, and in the same batch as the coins:
+/// copied onto the account (keeping when they were given) and marked moved on
+/// the anonymous side, so a second account signing in from the same device
+/// finds nothing left to take. They move even when the balance was zero —
+/// the laurel buyer has often spent every coin on it. A refused merge leaves
+/// them exactly where the coins stay. See migration 0025.
 async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket = null } = {}) {
     const anonWallet = await db.prepare(
         `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on, last_daily_at, claim_token_hash FROM coin_wallets WHERE user_id = ?`
@@ -3688,10 +3704,32 @@ async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket =
         }
     }
 
-    if (allowed && balance !== 0) {
-        await coinMoveBalance(db, anonWallet, anonId, accountUserId, {
-            outId: `merge:out:${anonId}`, inId: `merge:in:${accountUserId}:${anonId}`, reason: "link",
-        });
+    if (allowed) {
+        // Copy, then mark — in that order, inside the batch, so the copy
+        // still sees the holdings it is about to retire. OR IGNORE: if the
+        // account already holds the same keepsake for the same character, it
+        // keeps its own. Inert on a re-run: nothing unmoved is left to copy.
+        const keepsakeMoves = [
+            db.prepare(`
+                INSERT OR IGNORE INTO coin_keepsakes (user_id, item, ref, given_at, gift_id, from_user_id)
+                SELECT ?, item, ref, given_at, gift_id, user_id FROM coin_keepsakes
+                WHERE user_id = ? AND moved_to IS NULL
+                ORDER BY given_at, id
+            `).bind(accountUserId, anonId),
+            db.prepare(
+                `UPDATE coin_keepsakes SET moved_to = ? WHERE user_id = ? AND moved_to IS NULL`
+            ).bind(accountUserId, anonId),
+        ];
+        if (balance !== 0) {
+            await coinMoveBalance(db, anonWallet, anonId, accountUserId, {
+                outId: `merge:out:${anonId}`, inId: `merge:in:${accountUserId}:${anonId}`, reason: "link",
+                extra: keepsakeMoves,
+            });
+        } else {
+            // The laurel buyer has often spent every coin on it: keepsakes
+            // cross even when there is no balance to move.
+            await db.batch(keepsakeMoves);
+        }
     }
 
     // The bonus goes before the clock copy below on purpose: a brand-new
@@ -7587,6 +7625,9 @@ async function exportAllTables(env, params) {
         ["linked_accounts", "linked_at", "linked_at",
             "id, linked_at, user_id, provider, provider_id, email, display_name, " +
             "merged_anon_id, apple_client_id, client_platform"],
+        // Not a cache: a keepsake carried across a sign-in exists only here
+        // (0025), so this is the one table that says who holds what.
+        ["coin_keepsakes", "created_at", "created_at"],
     ];
 
     const tables = {};
