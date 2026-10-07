@@ -516,3 +516,17 @@ Version: this is the second money release; suggest it lands as **2.2.0**.
   Remove it after approval (`wrangler secret delete RC_SANDBOX_CREDITS`).
 - Small Business Program date in RevenueCat (2026-09-29) affects reporting
   only; confirm enrolment or click Remove.
+
+## Update 2026-10-07 — known risk: a refund keeps the keepsakes
+
+Decided with Adam (2026-10-07): **noted, not fixed, for launch.** A refund
+reverses the coins (balance goes negative, 0017) but not what they bought.
+Buy the 3000 pack, crown two characters with a Golden Laurel, have Apple
+refund it: the balance reads -3000, both laurels stay held and keep shaping
+every reply, and free income (~180/day at most) clears the debt in ~17 days.
+The exposure is one pack per refund, and Apple refunds are rare, so this
+waits. Watch `rc_events` for `CANCELLATION` rows against users with
+keepsakes. If it turns up: suspend keepsakes while the balance is negative
+(no note in the prompt, no "Crowned"/"Worn", nothing re-sellable) and
+restore them when the debt clears — the `coin_keepsakes` table on
+`feat/keepsake-merge` is where that state belongs.

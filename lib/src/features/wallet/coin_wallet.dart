@@ -189,6 +189,49 @@ class CoinWalletState {
     );
   }
 
+  /// The slice of the wallet worth keeping between launches: the balance,
+  /// the prices, and the keepsakes — without the last, a cold start offered
+  /// a crowned character's laurel for sale again until the network answered.
+  Map<String, dynamic> toCacheJson() => {
+        'enabled': enabled,
+        'balance': balance,
+        'prices': tributePrices,
+        'pendants': pendants,
+        'keepsakes': [
+          for (final k in keepsakes)
+            {
+              'item': k.item,
+              'ref': k.characterId,
+              'at': k.givenAt?.toUtc().toIso8601String(),
+            },
+        ],
+      };
+
+  /// The cached slice back, or null for anything that is not an enabled
+  /// wallet. Tolerant of older caches that carry only balance and prices.
+  static CoinWalletState? fromCacheJson(Map<String, dynamic> data) {
+    if (data['enabled'] != true) return null;
+    return CoinWalletState(
+      enabled: true,
+      balance: _asInt(data['balance']),
+      tributePrices: (data['prices'] is Map)
+          ? (data['prices'] as Map)
+              .map((k, v) => MapEntry(k.toString(), _asInt(v)))
+          : const {},
+      pendants: (data['pendants'] is List)
+          ? [for (final id in data['pendants'] as List) '$id']
+          : const [],
+      keepsakes: (data['keepsakes'] is List)
+          ? [
+              for (final k in data['keepsakes'] as List)
+                if (k is Map && k['item'] != null && k['ref'] != null)
+                  Keepsake('${k['item']}', '${k['ref']}',
+                      givenAt: Keepsake.parseAt(k['at'])),
+            ]
+          : const [],
+    );
+  }
+
   /// Parses a /api/wallet response body. Returns null for shapes that carry
   /// no wallet at all (unrecognised id → `wallet: null`), and a disabled
   /// state for `enabled: false`.
@@ -608,15 +651,7 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
       if (raw == null) return null;
       final data = jsonDecode(raw);
       if (data is! Map) return null;
-      if (data['enabled'] != true) return null;
-      return CoinWalletState(
-        enabled: true,
-        balance: CoinWalletState._asInt(data['balance']),
-        tributePrices: (data['prices'] is Map)
-            ? (data['prices'] as Map)
-                .map((k, v) => MapEntry(k.toString(), CoinWalletState._asInt(v)))
-            : const {},
-      );
+      return CoinWalletState.fromCacheJson(Map<String, dynamic>.from(data));
     } catch (_) {
       return null;
     }
@@ -625,11 +660,7 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
   Future<void> _writeCache(CoinWalletState s) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kCacheKey, jsonEncode({
-        'enabled': s.enabled,
-        'balance': s.balance,
-        'prices': s.tributePrices,
-      }));
+      await prefs.setString(_kCacheKey, jsonEncode(s.toCacheJson()));
     } catch (_) {
       // Restricted storage: the chip just re-syncs next launch.
     }

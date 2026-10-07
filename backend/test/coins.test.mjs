@@ -57,9 +57,13 @@ function stubFetch(t, handler) {
     return calls;
 }
 
-async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.' } = {}) {
+async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.', metadata } = {}) {
     const worker = await loadWorker();
-    const body = { messages: [{ role: 'user', content: message }], ...(gift ? { gift } : {}) };
+    const body = {
+        messages: [{ role: 'user', content: message }],
+        ...(gift ? { gift } : {}),
+        ...(metadata ? { metadata } : {}),
+    };
     const request = new Request('https://mythos.test/api/chat', {
         method: 'POST',
         headers: {
@@ -690,4 +694,134 @@ test('a character on the Inworld engine is handed the gift and remembers the kee
         'and on the next plain turn');
     assert.ok(!lastUserOf(inworldBodies.at(-1)).includes('golden laurel wreath'),
         'a plain turn is not narrated as another gift');
+});
+
+// --- Gift reactions: a thank-you is owed until the visitor has seen it ------
+
+const USER2 = 'user_1700000000456';
+
+function seed(db, userId, coins) {
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES (?, ?, ?, 'adjust', 'admin')"
+    ).run(`seed:${userId}`, userId, coins);
+}
+
+/// Stubs fetch with a script of per-call outcomes ('ok' | 'down'), repeating
+/// the last one, and captures every upstream request body.
+function scriptedFetch(t, script) {
+    const bodies = [];
+    let n = 0;
+    stubFetch(t, (url, init) => {
+        bodies.push(init && init.body ? String(init.body) : '');
+        const step = script[Math.min(n++, script.length - 1)];
+        return step === 'down' ? openAiDown() : openAiOk();
+    });
+    return bodies;
+}
+
+test('repeatable gift ids are scoped to the user, so two strangers in the same millisecond both pay', async (t) => {
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    seed(db, USER, 100);
+    seed(db, USER2, 100);
+
+    const a = await callChat(env, { gift: { id: 'roses_same0001', item: 'roses' } });
+    const b = await callChat(env, { gift: { id: 'roses_same0001', item: 'roses' }, userId: USER2 });
+    assert.equal(a.json.wallet.gift.charged, true);
+    assert.equal(b.json.wallet.gift.charged, true, 'the second stranger is not riding the first one\'s key');
+    assert.equal(rowCount(db, "reason = 'gift'"), 2);
+});
+
+test('a gift whose reply failed is thanked for on the next turn, until the client says it was seen', async (t) => {
+    const { env, db } = coinsEnv();
+    const bodies = scriptedFetch(t, ['down', 'ok', 'ok']);
+    seed(db, USER, 200);
+
+    // The giving turn: charged, then the model falls over. The coins stay
+    // spent (the gift was given), the client is told so, and nothing is
+    // marked as thanked because nothing was said.
+    const given = await callChat(env, { gift: { id: 'roses_fail0001', item: 'roses' } });
+    assert.equal(given.status, 500);
+    assert.equal(cachedBalance(db, USER), 150);
+    assert.equal(given.json.wallet.gift.charged, true);
+    assert.equal(given.json.wallet.thanked, undefined);
+
+    // The next plain turn carries the thanks, and says which gift it is for.
+    const next = await callChat(env, { message: 'Are you there?' });
+    assert.equal(next.status, 200);
+    assert.ok(bodies.at(-1).includes('OWED THANKS') && bodies.at(-1).includes('bunch of roses'),
+        'the character is told to thank them now');
+    assert.deepEqual(next.json.wallet.thanked, [`tribute:${USER}:roses_fail0001`]);
+
+    // The client drew those bubbles and says so on its next request: settled.
+    const after = await callChat(env, {
+        message: 'Good.',
+        metadata: { giftAcks: [`tribute:${USER}:roses_fail0001`] },
+    });
+    assert.ok(!bodies.at(-1).includes('OWED THANKS'), 'acknowledged thanks are not repeated');
+    assert.equal(after.json.wallet.thanked, undefined);
+});
+
+test('replaying a gift id after a failed reply narrates again for free; once seen, it is plain chat', async (t) => {
+    const { env, db } = coinsEnv();
+    const bodies = scriptedFetch(t, ['down', 'ok', 'ok', 'ok']);
+    seed(db, USER, 200);
+    const gift = { id: 'roses_retry0001', item: 'roses' };
+    const narrated = (body) => body.includes('The visitor just gave you');
+
+    await callChat(env, { gift }); // charged, reply failed
+    const retry = await callChat(env, { gift }); // the client's retry, same id
+    assert.equal(retry.status, 200);
+    assert.equal(retry.json.wallet.gift.charged, false, 'nothing was taken twice');
+    assert.ok(narrated(bodies.at(-1)), 'the thanks still owed, the gift is narrated again');
+    assert.deepEqual(retry.json.wallet.thanked, [`tribute:${USER}:roses_retry0001`]);
+    assert.equal(rowCount(db, "reason = 'gift'"), 1);
+
+    // Seen and acknowledged; the same id sent a third time buys nothing and
+    // says nothing — a free re-narration would be the roses again for 0.
+    await callChat(env, { message: 'Thank you.', metadata: { giftAcks: [`tribute:${USER}:roses_retry0001`] } });
+    const replay = await callChat(env, { gift });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.json.wallet.gift.charged, false);
+    assert.ok(!narrated(bodies.at(-1)), 'an acknowledged gift is not narrated on replay');
+    assert.equal(replay.json.wallet.thanked, undefined);
+    assert.equal(cachedBalance(db, USER), ledgerSum(db, USER));
+});
+
+test('owed thanks stop after the attempt cap, so a silent client cannot make a character thank forever', async (t) => {
+    const { env, db } = coinsEnv();
+    const bodies = scriptedFetch(t, ['down', 'down', 'down', 'down', 'ok']);
+    seed(db, USER, 200);
+
+    await callChat(env, { gift: { id: 'roses_loop00001', item: 'roses' } }); // attempt 1, failed
+    for (let i = 0; i < 3; i++) {
+        await callChat(env, { message: `turn ${i}` }); // attempts 2, 3, 4 — all failed
+        assert.ok(bodies.at(-1).includes('OWED THANKS'), `still owed on re-try ${i + 1}`);
+    }
+    await callChat(env, { message: 'last' });
+    assert.ok(!bodies.at(-1).includes('OWED THANKS'), 'after the cap the character lets it go');
+});
+
+test('a keepsake given to one character is not thanked for by another', async (t) => {
+    const { env, db } = coinsEnv();
+    const bodies = scriptedFetch(t, ['down', 'ok']);
+    seed(db, USER, 2000);
+
+    await callChat(env, { gift: { id: 'laurel_x0000001', item: 'laurel' } }); // to odysseus, failed
+    const worker = await loadWorker();
+    const request = new Request('https://mythos.test/api/chat', {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-user-id': USER,
+            'x-character-id': 'penelope',
+            'x-visit-id': 'v_test',
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello.' }] }),
+    });
+    const pending = [];
+    const res = await worker.fetch(request, env, { waitUntil(p) { pending.push(p); }, passThroughOnException() {} });
+    await res.text();
+    await Promise.all(pending);
+    assert.ok(!bodies.at(-1).includes('OWED THANKS'), 'Penelope owes nothing for a laurel given to Odysseus');
 });

@@ -30,6 +30,50 @@ class OpenAIService {
   /// so matching on content afterwards would be guesswork.
   String? lastLogId;
 
+  /// Gift ids whose thank-you rode on the last successful reply, as the
+  /// worker reported them (`wallet.thanked`). Once the chat screen has drawn
+  /// that reply it passes them to [acknowledgeGifts]; until then the worker
+  /// treats the thanks as still owed and says it again next turn.
+  List<String> lastThanked = const [];
+
+  /// Acknowledgements waiting to ride on the next request. Persisted, because
+  /// the thanks was seen whether or not the app survives to the next send;
+  /// cleared only once a response proves the worker read them.
+  static const String _kPendingAcksKey = 'gift_acks_pending_v1';
+  List<String>? _pendingAcks;
+
+  Future<List<String>> _loadPendingAcks() async {
+    if (_pendingAcks != null) return _pendingAcks!;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kPendingAcksKey);
+      final decoded = raw == null ? null : jsonDecode(raw);
+      _pendingAcks = decoded is List ? [for (final id in decoded) '$id'] : [];
+    } catch (_) {
+      _pendingAcks = [];
+    }
+    return _pendingAcks!;
+  }
+
+  Future<void> _savePendingAcks() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kPendingAcksKey, jsonEncode(_pendingAcks ?? []));
+    } catch (_) {
+      // Restricted storage: the acks still ride this session's requests.
+    }
+  }
+
+  /// The reply carrying the thanks for these gifts has been drawn on screen.
+  Future<void> acknowledgeGifts(List<String> giftIds) async {
+    if (giftIds.isEmpty) return;
+    final pending = await _loadPendingAcks();
+    for (final id in giftIds) {
+      if (!pending.contains(id)) pending.add(id);
+    }
+    await _savePendingAcks();
+  }
+
   /// The `wallet` block the worker attached to the most recent response, or
   /// null when there was none (feature off never sends one to draw; a network
   /// failure sends nothing at all). Read by the chat screen and forwarded to
@@ -114,6 +158,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
     lastFailureReason = null;
     lastLogId = null;
     lastWallet = null;
+    lastThanked = const [];
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
@@ -130,12 +175,16 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       }
 
       // Prepare Request Body
+      final acks = List<String>.from(await _loadPendingAcks());
       final requestBody = jsonEncode({
         "messages": _conversationHistory,
         // Model and params are enforced by Backend, but we send structure
         // A tribute rides on an ordinary turn; the worker prices it (the
         // client only ever names the size) and debits before calling anyone.
         if (gift != null) "gift": gift,
+        // Thanks already seen for earlier gifts, so the worker stops owing
+        // them. Settled below once a response shows the worker read them.
+        if (acks.isNotEmpty) "metadata": {"giftAcks": acks},
       });
 
       // Generate HMAC Headers
@@ -188,6 +237,15 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         ),
       );
 
+      // Any answer from the worker means it read the request, acks
+      // included — except a refusal from the gate in front of the handler
+      // (rate limit, bad signature), which never got that far.
+      if (acks.isNotEmpty &&
+          (response.statusCode == 200 || response.statusCode == 402)) {
+        _pendingAcks?.removeWhere(acks.contains);
+        await _savePendingAcks();
+      }
+
       if (response.statusCode == 200) {
         final data = response.data;
         // A sibling of `choices`, added by the worker rather than by OpenAI.
@@ -198,6 +256,10 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         }
         if (data is Map<String, dynamic> && data['wallet'] is Map) {
           lastWallet = Map<String, dynamic>.from(data['wallet'] as Map);
+          final thanked = lastWallet!['thanked'];
+          if (thanked is List) {
+            lastThanked = [for (final id in thanked) '$id'];
+          }
         }
         final choices = data is Map<String, dynamic> ? data['choices'] : null;
         if (choices is! List || choices.isEmpty) {
@@ -254,6 +316,13 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         return "";
       } else {
         lastFailureReason = 'http_${response.statusCode}';
+        // A reply that failed upstream still carries the wallet: a gift on
+        // this turn was charged before the model fell over, and the chip
+        // must drop to match. The thanks is owed and comes next turn.
+        final data = response.data;
+        if (data is Map<String, dynamic> && data['wallet'] is Map) {
+          lastWallet = Map<String, dynamic>.from(data['wallet'] as Map);
+        }
         return _thinkingTroubleMessage(debugDetail: _responseErrorMessage(response.data));
       }
     } catch (e) {

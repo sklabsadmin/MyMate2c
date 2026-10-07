@@ -3452,11 +3452,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // scenario exactly as the worker's gift target falls back to the chat
       // id, so a custom character's laurel is recognised too.
       characterId: _characterKey,
-      // No tributes while the entry card is still up: a gift is a chat turn,
-      // and it would play out (reply, then idle nudges) behind a card that
-      // covers the conversation. The sheet still shows the balance and the
-      // way to buy more; the gifts appear once they have stepped in.
-      onTribute: _entryGateActive ? null : _sendTribute,
+      // No tributes while the entry card or the claim screen is still up: a
+      // gift is a chat turn, and it would play out (reply, then idle nudges)
+      // behind a card that covers the conversation. The sheet still shows
+      // the balance and the way to buy more; the gifts appear once they have
+      // stepped in.
+      onTribute: _entryGateActive || _claimedGrants.isNotEmpty
+          ? null
+          : _sendTribute,
       // Null where nothing can be bought (web): the sheet then hides its buy
       // button and keeps unaffordable tributes disabled.
       onGetCoins: RevenueCatService.isSupported
@@ -3527,10 +3530,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // model is told to answer rather than echo.
     final text =
         '*gives ${option.givingPhrase} to $_characterDisplayName*';
+    logFunnelEvent(
+      'tribute',
+      detail: '${widget.characterId}#$item',
+      appUserId: _appUserId,
+    );
 
+    final giftMessageId = DateTime.now().toString();
     _addMessage(
       ChatMessage(
-        id: DateTime.now().toString(),
+        id: giftMessageId,
         text: text,
         isUser: true,
         timestamp: DateTime.now(),
@@ -3560,6 +3569,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     } finally {
       if (mounted && _isTyping) setState(() => _isTyping = false);
     }
+    // Refused for want of coins: nothing was given, so the bubble that says
+    // it was comes back out — of the screen and of the saved history, which
+    // is what the model's transcript is rebuilt from next time.
+    if (mounted && _aiService?.lastFailureReason == 'insufficient_coins') {
+      _retractMessage(giftMessageId);
+    }
+  }
+
+  /// Removes a message this screen added, from the list and from storage.
+  /// The delivery receipt stays as recorded: the bubble was drawn, and the
+  /// log is a record of what was shown, not of what stood.
+  void _retractMessage(String id) {
+    _bubbleIdByMessageId.remove(id);
+    setState(() => _messages.removeWhere((m) => m.id == id));
+    ref.read(storageServiceProvider).saveMessages(_messages, chatId: _chatId);
   }
 
   Future<void> _handleSend() async {
@@ -3845,6 +3869,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             : DeliveryOrigin.localFallback,
         bubbleId: bubbleIds[i],
       );
+    }
+
+    // Every bubble of a real reply is on screen: the thanks it carried for
+    // any gift has been seen, and the worker can stop owing it. Sent with the
+    // next request; a fallback reply thanked for nothing, so acks nothing.
+    final thanked = _aiService?.lastThanked ?? const <String>[];
+    if (fromServer && thanked.isNotEmpty) {
+      _aiService?.acknowledgeGifts(thanked);
     }
 
     // A gift's reward photograph, if this turn earned one — after the words,
@@ -5997,7 +6029,17 @@ class _ChatBubble extends StatelessWidget {
             child: SizedBox(
               width: 104,
               height: 104,
-              child: Image.asset(giftAsset, fit: BoxFit.contain),
+              // The path is persisted with the message, so art renamed in a
+              // later build must not blank an old bubble or throw.
+              child: Image.asset(
+                giftAsset,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.card_giftcard,
+                  size: 48,
+                  color: AppTheme.goldInkColor,
+                ),
+              ),
             ),
           ),
         ),

@@ -229,4 +229,29 @@ void main() {
     expect(giving('pendant'), 'a pendant');
     expect(giving('laurel'), 'a golden laurel');
   });
+
+  test('the launch cache keeps the keepsakes, so a cold start does not sell a laurel twice', () {
+    final live = CoinWalletState.fromResponse({
+      'enabled': true,
+      'wallet': {
+        'balance': 616,
+        'prices': {'gift': {'roses': 50, 'laurel': 1500}},
+        'pendants': ['odysseus'],
+        'keepsakes': [
+          {'item': 'laurel', 'ref': 'penelope', 'at': '2026-10-06 11:00:00'},
+        ],
+      },
+    })!;
+    final back = CoinWalletState.fromCacheJson(live.toCacheJson())!;
+    expect(back.balance, 616);
+    expect(back.tributePrices['laurel'], 1500);
+    expect(back.holds('laurel', 'penelope'), isTrue);
+    expect(back.holds('pendant', 'odysseus'), isTrue);
+    expect(back.keepsakesFor('penelope').single.givenAt,
+        DateTime.utc(2026, 10, 6, 11));
+    // An older cache without keepsakes still reads, and claims nothing.
+    final old = CoinWalletState.fromCacheJson({'enabled': true, 'balance': 5})!;
+    expect(old.keepsakes, isEmpty);
+    expect(CoinWalletState.fromCacheJson({'enabled': false}), isNull);
+  });
 }

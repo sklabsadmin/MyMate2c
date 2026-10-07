@@ -379,7 +379,15 @@ class _KeepsakeRow extends StatelessWidget {
             child: option == null
                 ? const Icon(Icons.card_giftcard,
                     size: 22, color: CharacterProfileScreen._gold)
-                : Image.asset(option.asset, fit: BoxFit.contain),
+                : Image.asset(
+                    option.asset,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.card_giftcard,
+                      size: 22,
+                      color: CharacterProfileScreen._gold,
+                    ),
+                  ),
           ),
           const SizedBox(width: 10),
           Expanded(

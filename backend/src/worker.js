@@ -1845,6 +1845,20 @@ export default {
             let outboundMessages = body.messages;
             let giftApplied = null;
             let walletOffWithGift = false;
+            // Gift ids whose thank-you rides on THIS reply: the gift being
+            // given now, plus any still owed from earlier turns. Returned as
+            // wallet.thanked so the client can acknowledge them once the
+            // bubbles have been drawn — which is the only thing that settles
+            // a thank-you (see migration 0019).
+            const thankedGiftIds = [];
+            // The client's acknowledgements first, before anything decides
+            // what is still owed: the ids of earlier thanks it has shown.
+            if (walletActive) {
+                const giftAcks = Array.isArray(bodyMetadata.giftAcks)
+                    ? bodyMetadata.giftAcks.filter((x) => typeof x === "string" && x.length <= 200).slice(0, 20)
+                    : [];
+                if (giftAcks.length) await giftReactionsAcknowledge(env.CHAT_LOGS_DB, userId, giftAcks);
+            }
             if (body.gift && typeof body.gift === "object") {
                 const giftId = typeof body.gift.id === "string" ? body.gift.id : "";
                 const giftItem = typeof body.gift.item === "string" ? body.gift.item : "";
@@ -1877,10 +1891,19 @@ export default {
                     // that as alreadyApplied and answers ok — which is exactly
                     // right here: they are already wearing it, and nothing was
                     // taken for saying so twice.
+                    //
+                    // A repeatable gift is keyed by (user, client id): the
+                    // client id is a millisecond clock, and a key without the
+                    // user let two strangers gifting in the same millisecond
+                    // collapse onto one row — the second one free. A prefix
+                    // of its own, so nothing that reads `gift:` keys as
+                    // keepsakes (the keepsakes read, migration 0018's
+                    // trigger) can mistake one for the other.
+                    const spendId = gift.once
+                        ? `gift:${giftItem}:${userId}:${giftTarget}`
+                        : `tribute:${userId}:${giftId}`;
                     const spend = await coinSpend(env.CHAT_LOGS_DB, {
-                        id: gift.once
-                            ? `gift:${giftItem}:${userId}:${giftTarget}`
-                            : `gift:${giftId}`,
+                        id: spendId,
                         userId,
                         amount: giftAmount,
                         reason: "gift",
@@ -1924,6 +1947,21 @@ export default {
                         // that did not happen.
                         charged: !spend.alreadyApplied,
                     };
+                    // The character is told about the gift when it was just
+                    // paid for, or when it was paid for earlier and the thanks
+                    // never reached the visitor (a retry with the same id,
+                    // the one case the idempotent key exists for). A replay of
+                    // an id whose thanks was already seen is answered as plain
+                    // chat: a free re-narration would be the gift again for
+                    // nothing. The reaction row is what remembers which.
+                    const narrate = !spend.alreadyApplied
+                        || await giftReactionOwed(env.CHAT_LOGS_DB, userId, spendId);
+                    if (narrate) {
+                        await giftReactionAttempt(env.CHAT_LOGS_DB, {
+                            giftId: spendId, userId, ref: giftTarget, item: giftItem, requestId,
+                        });
+                        thankedGiftIds.push(spendId);
+                    }
                     // Both engine paths strip system messages (personas replace
                     // them, Inworld keeps only user/assistant), so the offering
                     // is narrated onto the last user message — the one part of
@@ -1931,7 +1969,9 @@ export default {
                     // itself stays untouched: request_messages_json records
                     // what the client sent, not what we staged.
                     const giftLabel = GIFT_NARRATION[giftItem] || "a tribute";
-                    const lastUser = [...body.messages].reverse().findIndex((m) => m && m.role === "user");
+                    const lastUser = narrate
+                        ? [...body.messages].reverse().findIndex((m) => m && m.role === "user")
+                        : -1;
                     if (lastUser !== -1) {
                         const idx = body.messages.length - 1 - lastUser;
                         outboundMessages = body.messages.map((m, i) => i === idx
@@ -1951,8 +1991,25 @@ export default {
             // id), so a custom character remembers its laurel as well.
             const relationshipNotes = [];
             if (walletActive) {
-                const held = await coinKeepsakesHeld(env.CHAT_LOGS_DB, userId, metadata.characterId || chatId);
+                const giftTarget = metadata.characterId || chatId;
+                const held = await coinKeepsakesHeld(env.CHAT_LOGS_DB, userId, giftTarget);
                 for (const item of held) relationshipNotes.push(KEEPSAKE_NOTES[item]);
+                // Thanks still owed from earlier gifts — a reply that failed
+                // upstream, or never reached the phone — are said again on
+                // this turn, in fresh words, until the client reports that
+                // the thanks was seen. Bounded by attempts and age so a
+                // client that never acknowledges cannot make a character
+                // thank forever.
+                const owed = await giftReactionsOwedFor(env.CHAT_LOGS_DB, userId, giftTarget, thankedGiftIds);
+                if (owed.length) {
+                    relationshipNotes.push(owedThanksNote(owed));
+                    for (const row of owed) {
+                        await giftReactionAttempt(env.CHAT_LOGS_DB, {
+                            giftId: row.gift_id, userId, ref: row.ref, item: row.item, requestId,
+                        });
+                        thankedGiftIds.push(row.gift_id);
+                    }
+                }
             }
 
             // 4. Generate the reply. Which engine handles this is decided purely by
@@ -2057,6 +2114,12 @@ export default {
                 });
                 if (wallet && giftApplied) {
                     wallet.gift = giftApplied;
+                }
+                // Only with a real reply: a failed one drew no thanks, so there
+                // is nothing for the client to acknowledge, and the next turn
+                // owes it again.
+                if (wallet && responseOk && thankedGiftIds.length) {
+                    wallet.thanked = thankedGiftIds;
                 }
             } else if (walletOffWithGift) {
                 wallet = { enabled: false };
@@ -2599,6 +2662,96 @@ async function coinStreakDays(db, userId) {
         else break;
     }
     return streak;
+}
+
+// ---------------------------------------------------------------------------
+// Gift reactions — a thank-you is owed until the visitor has seen it.
+//
+// The spend lands before the model is called, so a reply that fails upstream
+// or never reaches the phone leaves the visitor paid up and unthanked, and
+// the reaction is the gift's whole visible effect. Rather than refund (which
+// would make a replay of the same id free, and the keepsake is already held)
+// the thanks is carried as a debt: each later turn with that character is
+// told to thank them again, in fresh words, until the client acknowledges
+// the thanks was drawn. Migration 0019. Every helper here swallows its own
+// failure, on the settlement's rule: bookkeeping must not take a reply down.
+// ---------------------------------------------------------------------------
+
+/// The giving turn plus this many more tries, then the character lets it go.
+const GIFT_THANKS_MAX_ATTEMPTS = 4;
+
+/// Thanks older than this are no longer owed, however they went.
+const GIFT_THANKS_WINDOW_DAYS = 7;
+
+function owedThanksNote(rows) {
+    const gifts = rows.map((row) => GIFT_NARRATION[row.item] || "a tribute");
+    const list = gifts.length === 1
+        ? gifts[0]
+        : `${gifts.slice(0, -1).join(", ")} and ${gifts[gifts.length - 1]}`;
+    return `OWED THANKS: This person recently gave you ${list}, and your thanks did not `
+        + "reach them. Begin this reply by thanking them for it — warmly, in character, "
+        + "in words you have not used before — then continue the conversation. Do not "
+        + "mention coins, balances, apps, or anything outside the fiction.";
+}
+
+/// Records that this reply carries the thanks for [giftId]: a new row for a
+/// gift just charged, or one more attempt on a row still owed.
+async function giftReactionAttempt(db, { giftId, userId, ref, item, requestId }) {
+    try {
+        await db.prepare(`
+            INSERT INTO gift_reactions (gift_id, user_id, ref, item, attempt_log_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(gift_id) DO UPDATE SET
+                attempt_log_id = excluded.attempt_log_id,
+                attempts = attempts + 1
+        `).bind(giftId, userId, ref, item, requestId).run();
+    } catch (e) {
+        console.error(JSON.stringify({ event: "gift_reaction_write_failed", giftId, error: e && e.message ? e.message : String(e) }));
+    }
+}
+
+/// Whether the thanks for one gift is still owed — the replay case: the same
+/// id sent again after its reply failed.
+async function giftReactionOwed(db, userId, giftId) {
+    try {
+        const row = await db.prepare(`
+            SELECT 1 AS present FROM gift_reactions
+            WHERE gift_id = ? AND user_id = ? AND acknowledged_at IS NULL AND attempts < ?
+        `).bind(giftId, userId, GIFT_THANKS_MAX_ATTEMPTS).first();
+        return Boolean(row);
+    } catch (e) {
+        return false;
+    }
+}
+
+/// Every gift to [ref] whose thanks is still owed, oldest first, leaving out
+/// [exclude] (the gift this very turn is already thanking for).
+async function giftReactionsOwedFor(db, userId, ref, exclude = []) {
+    try {
+        const { results } = await db.prepare(`
+            SELECT gift_id, ref, item FROM gift_reactions
+            WHERE user_id = ? AND ref = ? AND acknowledged_at IS NULL AND attempts < ?
+              AND given_at >= datetime('now', ?)
+            ORDER BY given_at, gift_id
+        `).bind(userId, ref, GIFT_THANKS_MAX_ATTEMPTS, `-${GIFT_THANKS_WINDOW_DAYS} days`).all();
+        return (results || []).filter((row) => !exclude.includes(row.gift_id));
+    } catch (e) {
+        return [];
+    }
+}
+
+/// The client saw the thanks: those gifts are settled. Scoped to the user,
+/// so nobody can acknowledge a stranger's gift away.
+async function giftReactionsAcknowledge(db, userId, giftIds) {
+    try {
+        await db.prepare(`
+            UPDATE gift_reactions SET acknowledged_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND acknowledged_at IS NULL
+              AND gift_id IN (${giftIds.map(() => "?").join(", ")})
+        `).bind(userId, ...giftIds).run();
+    } catch (e) {
+        console.error(JSON.stringify({ event: "gift_reaction_ack_failed", error: e && e.message ? e.message : String(e) }));
+    }
 }
 
 /// The once-only gifts in the catalogue, in catalogue order.
