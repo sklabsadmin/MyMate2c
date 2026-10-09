@@ -100,6 +100,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// sends, so someone who puts their phone down is not nagged indefinitely.
   Timer? _idleTimer;
   int _idleNudges = 0;
+  int? _lastIdlePrompt;
   static const Duration _idleAfter = Duration(seconds: 14);
 
   /// Only one nudge before the first message: the starter prompts are on
@@ -3419,24 +3420,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     _idleNudges++;
+    // Never the same line twice running: with eight prompts a random pick
+    // repeated often enough to read as the app stuttering.
+    var pick = Random().nextInt(_idlePrompts.length);
+    if (pick == _lastIdlePrompt && _idlePrompts.length > 1) {
+      pick = (pick + 1) % _idlePrompts.length;
+    }
+    _lastIdlePrompt = pick;
     _addMessage(
       ChatMessage(
         id: 'idle_${DateTime.now().millisecondsSinceEpoch}',
-        text: _idlePrompts[Random().nextInt(_idlePrompts.length)],
+        text: _idlePrompts[pick],
         isUser: false,
         timestamp: DateTime.now(),
       ),
       origin: DeliveryOrigin.idleNudge,
     );
     _scrollToBottom();
-    _startIdleTimer();
+    // One nudge per silence. The countdown used to re-arm here, so a visitor
+    // who stayed quiet got a second line 14s after the first — two unprompted
+    // bubbles in a row reads as nagging, not patience. The timer starts again
+    // only once they have spoken and the reply has landed.
   }
 
-  /// Puts the caret back in the message box. Deferred to the next frame so it
-  /// runs after the widget tree settles from the bubble that just appeared,
-  /// which would otherwise steal it straight back.
+  /// Keeps the caret in the message box across a bubble arriving. Deferred to
+  /// the next frame so it runs after the widget tree settles from the bubble
+  /// that just appeared, which would otherwise steal it straight back.
+  ///
+  /// Only when the box already had the caret. It used to grab focus after
+  /// every reply regardless, so the keyboard and the question strip rose over
+  /// the thread each time a character spoke and hid most of what they said.
+  /// Someone mid-typing keeps their place; someone reading is left reading.
   void _refocusInput() {
-    if (!mounted) return;
+    if (!mounted || !_inputFocus.hasFocus) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _inputFocus.requestFocus();
     });
@@ -4394,7 +4410,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   teach: !_userHasSent,
                   // Only offered where there is actually a portrait to send.
                   onPhoto: (widget.characterImage?.isNotEmpty ?? false)
-                      ? () => _sendStarter(_photoPrompt)
+                      ? _confirmPhoto
                       : null,
                   onGift: (AppConfig.coinsUiEnabled &&
                           (ref.watch(coinWalletProvider).value?.enabled ??
@@ -4672,6 +4688,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// because it is posted as the visitor's own message, and it has to be one
   /// that [_wantsPhoto] matches so it resolves to the portrait, not the model.
   static const String _photoPrompt = 'What do you look like?';
+
+  /// The Photo button asks before it acts. It used to post the request the
+  /// moment it was tapped, so a stray tap dropped a portrait into the thread
+  /// with no way to say "not now" — one short confirm, then the same starter.
+  Future<void> _confirmPhoto() async {
+    final ask = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: Text(
+          'Ask $_characterDisplayName for a photo?',
+          style: const TextStyle(color: AppTheme.inkColor),
+        ),
+        content: const Text(
+          "They'll send a portrait into the conversation.",
+          style: TextStyle(color: AppTheme.mutedInkColor),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Ask'),
+          ),
+        ],
+      ),
+    );
+    if (ask == true && mounted) _sendStarter(_photoPrompt);
+  }
 
   /// Sends a tapped starter as though it had been typed, so it goes through
   /// the same gate, history and logging as any other message.
