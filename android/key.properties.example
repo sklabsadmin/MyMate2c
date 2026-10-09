@@ -1,0 +1,11 @@
+# Copy to android/key.properties (gitignored) and fill in. storeFile is
+# relative to android/app/. Generate the keystore once, keep it somewhere
+# safe outside the repo, and never lose it: Play ties the app to it.
+#
+#   keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA \
+#     -keysize 2048 -validity 10000 -alias upload
+#
+storeFile=upload-keystore.jks
+storePassword=CHANGE_ME
+keyAlias=upload
+keyPassword=CHANGE_ME
