@@ -3,10 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'core/theme/app_theme.dart';
 
+import 'core/services/app_clip.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/services/background_chat_service.dart';
 import 'core/data/characters.dart';
+import 'features/app_clip/presentation/app_clip_strip.dart';
 import 'features/auth/presentation/signed_out_screen.dart';
 
 
@@ -117,6 +119,9 @@ class _AIAppState extends ConsumerState<AIApp> {
   }
 
   void _onStateChanged(AppLifecycleState state) {
+    // The Clip never schedules notifications (see main.dart), so it has none
+    // to cancel either.
+    if (AppClip.isActive) return;
     if (state == AppLifecycleState.resumed) {
       // User is back, cancel "I miss you" notifications
       NotificationService().cancelAllNotifications();
@@ -190,7 +195,13 @@ class _AIAppState extends ConsumerState<AIApp> {
       // rather than a work-in-progress build.
       // Onboarding was a single tap-through with no setup behind it, so there
       // is no first-run path any more: everyone starts on the dashboard.
-      initialLocation: AppConfig.showMaintenanceGate ? '/wip' : '/dashboard',
+      // The App Clip opens on the chat its invocation link named; the gate
+      // still comes first when it is on.
+      initialLocation: AppConfig.showMaintenanceGate
+          ? '/wip'
+          : AppClip.isActive
+              ? AppClip.initialLocation
+              : '/dashboard',
       navigatorKey: _rootNavigatorKey,
       // With real path URLs, an unknown path (a mistyped campaign link like
       // /c/zeuss) reaches the router instead of being ignored as a hash
@@ -372,6 +383,10 @@ class _AIAppState extends ConsumerState<AIApp> {
       theme: AppTheme.romanticTheme,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
+      // Under everything in the Clip, a strip pointing at the full app.
+      builder: AppClip.isActive
+          ? (context, child) => AppClipStrip(child: child ?? const SizedBox())
+          : null,
     );
   }
 }

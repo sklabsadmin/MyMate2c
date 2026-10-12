@@ -36,6 +36,15 @@ target 'Runner' do
   end
 end
 
+# The App Clip links the same Flutter engine and plugin pods as the app. It
+# cannot inherit them from Runner (it is a sibling app, not a test bundle), so
+# it gets its own install; Podfile.lock pins both to the same versions.
+target 'MythosLiveClip' do
+  use_frameworks!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)

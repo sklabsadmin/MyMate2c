@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 
+import 'app_clip.dart';
+
 /// How a purchase attempt ended, as far as the client can tell. Note what is
 /// NOT here: "coins credited". The store settles the payment, RevenueCat
 /// verifies it and tells the worker by webhook, and the worker writes the
@@ -85,6 +87,9 @@ class RevenueCatService {
   /// Whether purchases can happen on this platform in this build.
   static bool get isSupported {
     if (kIsWeb || _disabled) return false;
+    // In-app purchase is reserved for the full app; the Clip's coin UI hides
+    // its buy affordances and the strip points at the App Store instead.
+    if (AppClip.isActive) return false;
     if (defaultTargetPlatform == TargetPlatform.iOS) return true;
     if (defaultTargetPlatform == TargetPlatform.android) {
       return _androidKey.isNotEmpty;

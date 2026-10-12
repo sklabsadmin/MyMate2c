@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Marks the bundle as an App Clip. Xcode's "On Demand Install Capable"
+	     capability. -->
+	<key>com.apple.developer.on-demand-install-capable</key>
+	<true/>
+	<!-- Exactly one entry: the full app. $(AppIdentifierPrefix) is the team id
+	     plus a dot, filled in at signing, so this does not hardcode a team. -->
+	<key>com.apple.developer.parent-application-identifiers</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.sklabs.mythoslive</string>
+	</array>
+	<!-- The domains whose links invoke the Clip. Both custom domains of the
+	     worker, since campaign links have been shared under both. Each must
+	     serve /.well-known/apple-app-site-association with an appclips entry
+	     (web/.well-known/apple-app-site-association). -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>appclips:chat.deeploveechoes.com</string>
+		<string>appclips:chat.deeplovepoems.com</string>
+	</array>
+</dict>
+</plist>

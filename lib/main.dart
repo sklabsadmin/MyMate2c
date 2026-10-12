@@ -7,6 +7,7 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'src/core/services/app_clip.dart';
 import 'src/core/services/device_identity.dart';
 import 'src/core/services/delivery_log.dart';
 import 'src/core/services/revenue_cat_service.dart';
@@ -55,6 +56,10 @@ Future<void> main() async {
       print("❌ CRITICAL: APP_SECRET is MISSING! HMAC signatures will fail.");
     }
 
+    // Is this the iOS App Clip? Decides what follows: no store, no
+    // notifications, and the router opens on the link the Clip came from.
+    await AppClip.detect();
+
     // Identity first: a reinstall gets its device id (and paid wallet) back
     // from the keychain before anything can mint a fresh one.
     await DeviceIdentity.restore();
@@ -67,8 +72,11 @@ Future<void> main() async {
       RevenueCatService().init(DeliveryLog.ensureUserId(prefs));
     }
 
-    // Initialize Local Notifications
-    await NotificationService().init();
+    // Initialize Local Notifications. Not in the Clip: an App Clip may only
+    // post ephemeral notifications, and nothing here is worth that prompt.
+    if (!AppClip.isActive) {
+      await NotificationService().init();
+    }
 
     runApp(const ProviderScope(child: AIApp()));
   }, (error, stack) async {

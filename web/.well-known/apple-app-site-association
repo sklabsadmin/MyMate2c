@@ -1,0 +1,15 @@
+{
+  "appclips": {
+    "apps": ["TEAMID.com.sklabs.mythoslive.Clip"]
+  },
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["TEAMID.com.sklabs.mythoslive"],
+        "components": [
+          { "/": "/c/*", "comment": "Campaign links open the installed app" }
+        ]
+      }
+    ]
+  }
+}
