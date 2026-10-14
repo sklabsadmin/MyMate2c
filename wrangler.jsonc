@@ -120,6 +120,15 @@
     // someone on a dead host. Consider pointing it at a real user-facing domain
     // rather than workers.dev, so the fallback lands where visitors already are.
     "APP_ORIGIN": "https://mythoslive.sklabs-admin.workers.dev",
+    // Ops alerts (worker.js, raiseOpsAlert): an email when OpenAI or Inworld
+    // answers "out of credit". Sent through the ALERT_EMAIL binding below;
+    // throttled to one email per provider per hour via the ops_alerts table.
+    // The sender's domain must be enabled for Cloudflare Email Sending once:
+    //   npx wrangler email sending enable deeplovepoems.com
+    // Leave either blank to keep detection (an `ops_alert` log line) without
+    // the email.
+    "ALERT_EMAIL_TO": "adamlang@me.com",
+    "ALERT_EMAIL_FROM": "alerts@deeplovepoems.com",
     // Google Sign-In (Settings > Continue with Google). Client ID is not
     // secret; GOOGLE_CLIENT_SECRET is set via `wrangler secret put`.
     "GOOGLE_CLIENT_ID": "791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com"
@@ -138,6 +147,11 @@
   },
   "compatibility_flags": [
     "nodejs_compat"
+  ],
+  // Cloudflare Email Sending. No key: the binding is the credential. Only the
+  // ops alert above uses it.
+  "send_email": [
+    { "name": "ALERT_EMAIL" }
   ],
   "d1_databases": [
     {

@@ -1910,7 +1910,7 @@ export default {
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
                 try {
-                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes);
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes, ctx);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
                     responseStatus = 200;
                     responseOk = true;
@@ -1919,6 +1919,16 @@ export default {
                     responseData = { error: "AI response failed. Please try again." };
                     responseStatus = (e instanceof AIError) ? e.status : 502;
                     responseOk = false;
+                    // The pipeline wraps every upstream failure as a 502, so
+                    // the provider's own verdict rides on the AIError.
+                    noteProviderFailure(env, ctx, {
+                        provider: (e instanceof AIError && e.provider) || "inworld",
+                        status: (e instanceof AIError && e.upstreamStatus) || responseStatus,
+                        body: (e instanceof AIError && e.upstreamBody) || null,
+                        errorText: technicalError,
+                        requestId,
+                        character: inworldCharacter.id,
+                    });
                 }
             } else {
                 // Proxy to OpenAI with Fixed Model. Enforce model: gpt-4o-mini
@@ -1947,6 +1957,16 @@ export default {
                 responseData = await openAiResponse.json();
                 responseStatus = openAiResponse.status;
                 responseOk = openAiResponse.ok;
+                if (!responseOk) {
+                    noteProviderFailure(env, ctx, {
+                        provider: "openai",
+                        status: responseStatus,
+                        body: responseData,
+                        errorText: extractErrorMessage(responseData),
+                        requestId,
+                        character: metadata.characterId || null,
+                    });
+                }
             }
 
             const replyLatencyMs = Date.now() - replyStartedAt;
@@ -4627,6 +4647,195 @@ class AIError extends Error {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ops alerts: email when a provider says we are out of credit.
+//
+// Every character answers "having trouble thinking" the moment OpenAI's
+// balance hits zero, and nothing in the logs distinguishes that from an
+// ordinary bad minute until someone reads the response bodies. This turns the
+// provider's own verdict into an email, throttled through ops_alerts so an
+// outage that fails every turn produces one message an hour, not one per turn.
+//
+// Transport is the Cloudflare Email Sending binding (ALERT_EMAIL in
+// wrangler.jsonc); the sending domain has to be enabled once with
+// `wrangler email sending enable <domain>`. Recipient and sender come from
+// ALERT_EMAIL_TO / ALERT_EMAIL_FROM. With any of the three missing the
+// detection still runs and logs an `ops_alert` line for `wrangler tail`, it
+// just cannot post.
+// ---------------------------------------------------------------------------
+
+const OPS_ALERT_RESEND_MS = 60 * 60 * 1000;
+
+/// Words a provider uses when the problem is money rather than load. Kept
+/// deliberately narrow: "rate limit" is a different outage with a different
+/// fix, and OpenAI returns both as 429.
+const FUNDS_EXHAUSTED_PATTERN =
+    /insufficient[_ ]quota|exceeded your current quota|insufficient[_ ](funds|credits?|balance)|out of (credits?|funds)|billing (hard limit|details|issue|problem)|payment required|(account|credits?)[^.]*(suspended|deactivated|exhausted|depleted)|no (remaining )?credits?|add (funds|credits?)|top up/i;
+
+/// Reads a provider's failed response and says whether it is an out-of-funds
+/// failure. Returns { kind, reason } or null.
+function detectFundsExhausted({ status, body, errorText }) {
+    const err = body && typeof body === "object" ? body.error : null;
+    const code = err && typeof err === "object"
+        ? String(err.code || err.type || "")
+        : "";
+    const message = [
+        errorText,
+        err && typeof err === "object" ? err.message : (typeof err === "string" ? err : null),
+        body && typeof body === "object" && typeof body.message === "string" ? body.message : null,
+    ].filter((s, i, all) => typeof s === "string" && s && all.indexOf(s) === i).join(" | ");
+
+    if (status === 402) {
+        return { kind: "out_of_funds", reason: `HTTP 402 Payment Required${message ? `: ${message}` : ""}` };
+    }
+    if (/insufficient_quota|billing_not_active|account_deactivated/i.test(code)) {
+        return { kind: "out_of_funds", reason: `${code}: ${message || "(no message)"}` };
+    }
+    if (FUNDS_EXHAUSTED_PATTERN.test(message)) {
+        return { kind: "out_of_funds", reason: `HTTP ${status}: ${message}` };
+    }
+    return null;
+}
+
+/// Called wherever a provider answered with a failure. Cheap when the failure
+/// is not about money (one regex), and never throws: alerting must not be able
+/// to take down the request it is reporting on.
+function noteProviderFailure(env, ctx, { provider, status, body, errorText, requestId, character, stage }) {
+    let verdict;
+    try {
+        verdict = detectFundsExhausted({ status, body, errorText });
+    } catch (_) {
+        return;
+    }
+    if (!verdict) return;
+
+    const detail = {
+        provider,
+        kind: verdict.kind,
+        reason: verdict.reason,
+        status,
+        requestId: requestId || null,
+        character: character || null,
+        stage: stage || "chat",
+    };
+    const work = raiseOpsAlert(env, detail).catch((e) => {
+        console.error("ops_alert failed", e && e.message ? e.message : String(e));
+    });
+    if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(work);
+    }
+}
+
+function opsAlertKey(detail) {
+    return `${detail.provider}:${detail.kind}`;
+}
+
+/// Updates the throttle row and sends the email if the key has not been
+/// emailed inside OPS_ALERT_RESEND_MS. The row is written before the send so
+/// a concurrent burst of failing turns mostly collapses into one email; the
+/// odd duplicate on the very first failure is acceptable, a silent outage is
+/// not. Likewise a missing ops_alerts table (migration not applied yet) or a
+/// D1 error falls through to "send": the throttle is a nicety, the alert is
+/// the point.
+async function raiseOpsAlert(env, detail) {
+    const key = opsAlertKey(detail);
+    const nowIso = new Date().toISOString();
+    let shouldSend = true;
+    let seenCount = 1;
+    let firstSeenAt = nowIso;
+
+    const db = env.CHAT_LOGS_DB;
+    if (db) {
+        try {
+            const row = await db.prepare(
+                "SELECT first_seen_at, last_sent_at, seen_count FROM ops_alerts WHERE alert_key = ?"
+            ).bind(key).first();
+            if (row) {
+                seenCount = (row.seen_count || 0) + 1;
+                firstSeenAt = row.first_seen_at || nowIso;
+                const lastSent = row.last_sent_at ? Date.parse(row.last_sent_at) : NaN;
+                shouldSend = !(lastSent > 0) || (Date.now() - lastSent) >= OPS_ALERT_RESEND_MS;
+                await db.prepare(
+                    `UPDATE ops_alerts
+                        SET last_seen_at = ?, seen_count = seen_count + 1, last_detail = ?,
+                            last_sent_at = CASE WHEN ? THEN ? ELSE last_sent_at END,
+                            sent_count = sent_count + CASE WHEN ? THEN 1 ELSE 0 END
+                      WHERE alert_key = ?`
+                ).bind(nowIso, JSON.stringify(detail), shouldSend ? 1 : 0, nowIso, shouldSend ? 1 : 0, key).run();
+            } else {
+                await db.prepare(
+                    `INSERT INTO ops_alerts (alert_key, first_seen_at, last_seen_at, last_sent_at, seen_count, sent_count, last_detail)
+                     VALUES (?, ?, ?, ?, 1, 1, ?)`
+                ).bind(key, nowIso, nowIso, nowIso, JSON.stringify(detail)).run();
+            }
+        } catch (e) {
+            console.error("ops_alerts throttle unavailable, sending anyway:", e && e.message ? e.message : String(e));
+            shouldSend = true;
+        }
+    }
+
+    console.log(JSON.stringify({
+        event: "ops_alert",
+        key,
+        sent: shouldSend,
+        seenCount,
+        firstSeenAt,
+        ...detail,
+    }));
+
+    if (!shouldSend) return { sent: false, throttled: true };
+
+    return sendOpsAlertEmail(env, { ...detail, key, seenCount, firstSeenAt, at: nowIso });
+}
+
+function providerDisplayName(provider) {
+    if (provider === "openai") return "OpenAI";
+    if (provider === "inworld") return "Inworld";
+    return provider;
+}
+
+async function sendOpsAlertEmail(env, alert) {
+    const to = env.ALERT_EMAIL_TO;
+    const from = env.ALERT_EMAIL_FROM;
+    const binding = env.ALERT_EMAIL;
+    if (!binding || typeof binding.send !== "function" || !to || !from) {
+        console.error("ops_alert not emailed: ALERT_EMAIL binding, ALERT_EMAIL_TO or ALERT_EMAIL_FROM missing");
+        return { sent: false, reason: "not_configured" };
+    }
+
+    const name = providerDisplayName(alert.provider);
+    const subject = `[Mythos Live] ${name} is out of credit (HTTP ${alert.status})`;
+    const lines = [
+        `${name} refused a request because the account is out of funds.`,
+        "",
+        `Reason:      ${alert.reason}`,
+        `HTTP status: ${alert.status}`,
+        `Stage:       ${alert.stage}`,
+        `Character:   ${alert.character || "-"}`,
+        `Request id:  ${alert.requestId || "-"}`,
+        `First seen:  ${alert.firstSeenAt}`,
+        `This email:  ${alert.at}`,
+        `Failures since first seen: ${alert.seenCount}`,
+        "",
+        "Every chat turn through this provider is failing until credit is added.",
+        "No further email for this provider for an hour; the counter keeps running.",
+        "",
+        "Recent failures: https://logs.deeplovepoems.com/admin/logs?status=ai_error",
+    ];
+    const text = lines.join("\n");
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    const html = `<pre style="font: 14px/1.5 ui-monospace, Menlo, monospace">${esc(text)}</pre>`;
+
+    const result = await binding.send({
+        to,
+        from: { email: from, name: "Mythos Live alerts" },
+        subject,
+        text,
+        html,
+    });
+    return { sent: true, messageId: result && result.messageId ? result.messageId : null };
+}
+
 function buildInworldSystemPrompt(character, notes = []) {
     return [
         `You are ${character.name}.`,
@@ -4706,7 +4915,11 @@ async function callInworldChat(env, character, normalizedMessages, notes = []) {
             }
             const data = await response.json().catch(() => ({}));
             const details = (data.error && data.error.message) || data.message || `Inworld request failed with status ${response.status}`;
-            throw new AIError(502, details);
+            const err = new AIError(502, details);
+            err.provider = "inworld";
+            err.upstreamStatus = response.status;
+            err.upstreamBody = data;
+            throw err;
         }
 
         const data = await response.json().catch(() => ({}));
@@ -4726,7 +4939,7 @@ async function callInworldChat(env, character, normalizedMessages, notes = []) {
     throw new AIError(502, "Inworld request failed");
 }
 
-async function cleanupInworldReply(env, rawReply, characterName) {
+async function cleanupInworldReply(env, rawReply, characterName, ctx = null, requestId = null) {
     if (!env.OPENAI_API_KEY) {
         // No cleanup key configured — show the raw in-character reply as-is.
         return rawReply;
@@ -4766,6 +4979,18 @@ async function cleanupInworldReply(env, rawReply, characterName) {
     const data = await response.json().catch(() => ({}));
     const cleaned = extractAssistantMessage(data);
 
+    if (!response.ok) {
+        noteProviderFailure(env, ctx, {
+            provider: "openai",
+            status: response.status,
+            body: data,
+            errorText: extractErrorMessage(data),
+            requestId,
+            character: characterName,
+            stage: "inworld_cleanup",
+        });
+    }
+
     if (!response.ok || typeof cleaned !== "string" || !cleaned.trim()) {
         return rawReply;
     }
@@ -4784,13 +5009,13 @@ async function cleanupInworldReply(env, rawReply, characterName) {
  * which is insert time for the whole request. requestId here matches
  * conversation_logs.id so a log line can be joined back to its row.
  */
-async function runInworldPipeline(env, character, clientMessages, requestId, notes = []) {
+async function runInworldPipeline(env, character, clientMessages, requestId, notes = [], ctx = null) {
     const normalizedMessages = normalizeInworldMessages(clientMessages);
 
     const startedAt = Date.now();
     const rawReply = await callInworldChat(env, character, normalizedMessages, notes);
     const generatedAt = Date.now();
-    const cleanedReply = await cleanupInworldReply(env, rawReply, character.name);
+    const cleanedReply = await cleanupInworldReply(env, rawReply, character.name, ctx, requestId);
     const finishedAt = Date.now();
 
     console.log(JSON.stringify({
