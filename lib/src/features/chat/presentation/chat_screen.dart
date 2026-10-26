@@ -6,9 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../core/services/auth_service.dart';
+import '../../auth/presentation/sign_in_sheet.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
@@ -3976,19 +3975,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _startIdleTimer();
   }
 
-  Future<void> _launchGoogleAuth() async {
-    final returnTo = Uri.base.toString();
-    final prefs = await SharedPreferences.getInstance();
-    final anonId = prefs.getString('user_id');
-    final ticket = await CoinWalletService().mergeTicket();
-    final authUrl =
-        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
-    if (authUrl.isEmpty) return;
-    // Same-tab navigation so the browser keeps the user-gesture context and
-    // doesn't popup-block the OAuth redirect.
-    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
-  }
-
   void _showLoginGate() {
     final name = _characterDisplayName;
     showModalBottomSheet(
@@ -4063,25 +4049,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 ),
               ],
               const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(sheetContext);
-                    _launchGoogleAuth();
-                  },
-                  icon: const Icon(Icons.g_mobiledata, size: 28),
-                  label: const Text('Continue with Google'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: theme.primaryColor,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    textStyle: GoogleFonts.lato(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
+              SignInButtons(
+                onChoose: (provider) {
+                  Navigator.pop(sheetContext);
+                  runSignIn(context, ref, provider);
+                },
               ),
               const SizedBox(height: 12),
               SizedBox(

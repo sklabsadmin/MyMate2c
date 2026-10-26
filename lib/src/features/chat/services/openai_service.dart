@@ -3,6 +3,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/device_identity.dart';
 import '../../../core/services/analytics.dart';
 import '../data/chat_prompt.dart';
@@ -205,6 +206,9 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         'x-user-id': userId,
         'x-chat-id': scenario ?? 'default',
         'x-language': _currentLanguage,
+        // Signed in natively: the worker reads who this is from the session,
+        // exactly as the web's cookie does, and ignores x-user-id.
+        ...AuthSession.header(),
       };
       if (scenario != null) {
         headers['x-scenario'] = scenario;

@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/services/auth_service.dart';
 import '../../core/services/delivery_log.dart';
 import '../../core/services/device_identity.dart';
 
@@ -326,6 +327,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -362,6 +364,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -399,6 +402,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -457,6 +461,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(requestNew: true),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,

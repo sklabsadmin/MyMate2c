@@ -1,11 +1,8 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
 import '../../../core/models/user_profile.dart';
@@ -13,6 +10,7 @@ import '../../../core/services/auth_service.dart';
 import '../../../core/services/profile_sync_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../auth/presentation/sign_in_sheet.dart';
 import '../../wallet/coin_wallet.dart';
 
 /// "My Profile" — the player's own details, reached from the bottom nav.
@@ -219,8 +217,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
 
     final authed = ref.read(authProvider).value?.authenticated ?? false;
     if (!authed) {
-      // The Google suggestion is web-only: native has no sign-in path yet.
-      if (kIsWeb && !_signInSuggested) {
+      if (AuthNotifier.signInAvailable && !_signInSuggested) {
         _signInSuggested = true;
         await _suggestSignIn();
         return;
@@ -229,7 +226,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       return;
     }
 
-    // Signed in: push to the worker, keyed server-side to the Google account.
+    // Signed in: push to the worker, keyed server-side to the account.
     final synced = await ref.read(profileSyncServiceProvider).push(_current);
     if (!mounted) return;
     if (synced && AppConfig.coinsUiEnabled) {
@@ -254,87 +251,27 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   /// doesn't follow the user to another device. Google sign-in is what makes
   /// it portable, because linked_accounts gives a stable identifier for the
   /// same person across devices — an anonymous `user_<timestamp>` does not.
+  /// Offers sign-in once after a signed-out save. On the web this redirects
+  /// and the profile syncs on return; natively it completes in place, so the
+  /// profile just saved is pushed to the new account straight away.
   Future<void> _suggestSignIn() async {
-    final theme = Theme.of(context);
-    final signIn = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        side: BorderSide(color: AppTheme.hairlineColor),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Saved on this device',
-                style:
-                    theme.textTheme.titleMedium?.copyWith(color: AppTheme.inkColor),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'Sign in with Google to keep your profile if you clear your '
-                'browser, and to have it follow you to your phone.',
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: AppTheme.mutedInkColor, height: 1.4),
-              ),
-              const SizedBox(height: 22),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(sheetContext).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: theme.primaryColor,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(25),
-                    ),
-                  ),
-                  child: const Text(
-                    'Continue with Google',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: () => Navigator.of(sheetContext).pop(false),
-                  child: const Text(
-                    'Not now',
-                    style: TextStyle(color: AppTheme.mutedInkColor),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    final outcome = await showSignInSheet(
+      context,
+      ref,
+      title: 'Saved on this device',
+      message: 'Sign in to keep your profile safe and have it follow you '
+          'to your other devices.',
     );
-
-    if (signIn != true || !mounted) return;
-    await _launchGoogleAuth();
-  }
-
-  Future<void> _launchGoogleAuth() async {
-    final returnTo = Uri.base.toString();
-    final prefs = await SharedPreferences.getInstance();
-    final anonId = prefs.getString('user_id');
-    final ticket = await CoinWalletService().mergeTicket();
-    final authUrl =
-        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
-    if (authUrl.isEmpty) return;
-    // Same-tab navigation so the browser keeps the user-gesture context and
-    // doesn't popup-block the OAuth redirect. Mirrors chat_screen's login gate.
-    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
+    if (outcome == null || outcome == SignInOutcome.cancelled) {
+      _toast('Saved on this device');
+      return;
+    }
+    if (outcome != SignInOutcome.signedIn || !mounted) return;
+    final synced = await ref.read(profileSyncServiceProvider).push(_current);
+    if (!mounted) return;
+    if (synced && AppConfig.coinsUiEnabled) {
+      ref.read(coinWalletProvider.notifier).refresh();
+    }
   }
 
   @override

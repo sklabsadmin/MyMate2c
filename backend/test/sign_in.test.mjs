@@ -12,7 +12,7 @@ import { freshDb, d1, loadWorker } from './harness.mjs';
 import { resetJwksCache } from '../src/identity.js';
 
 const { subtle } = webcrypto;
-const BUNDLE_ID = 'com.aiboyfriend.mymate';
+const BUNDLE_ID = 'com.sklabs.mythoslive';
 const SERVICES_ID = 'com.deeploveechoes.chat.signin';
 const GOOGLE_WEB = 'web-client.apps.googleusercontent.com';
 const GOOGLE_IOS = 'ios-client.apps.googleusercontent.com';
