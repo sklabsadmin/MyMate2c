@@ -65,6 +65,10 @@ class SignInButtons extends StatelessWidget {
   }
 }
 
+/// True while a sign-in is running. A second tap during the Apple/Google
+/// sheet would otherwise start a second sheet and report a spurious failure.
+bool _signInInFlight = false;
+
 /// Runs a sign-in and tells the person how it went. Returns the outcome so
 /// callers can carry on (re-sync a profile, close a sheet) only on success.
 Future<SignInOutcome> runSignIn(
@@ -73,10 +77,20 @@ Future<SignInOutcome> runSignIn(
   SignInProvider provider, {
   String? returnTo,
 }) async {
+  if (_signInInFlight) return SignInOutcome.cancelled;
+  _signInInFlight = true;
   final messenger = ScaffoldMessenger.maybeOf(context);
-  final outcome = await ref
-      .read(authProvider.notifier)
-      .signIn(provider, returnTo: returnTo);
+  final SignInOutcome outcome;
+  try {
+    outcome = await ref
+        .read(authProvider.notifier)
+        .signIn(provider, returnTo: returnTo);
+  } finally {
+    _signInInFlight = false;
+  }
+  // The screen may have closed while the Apple/Google sheet was up; its ref
+  // is then dead, and there is nobody left to tell.
+  if (!context.mounted) return outcome;
   switch (outcome) {
     case SignInOutcome.signedIn:
       final who = ref.read(authProvider).value;

@@ -95,9 +95,17 @@ class SignedOutScreen extends ConsumerWidget {
                     const SizedBox(height: 32),
                     if (AuthNotifier.signInAvailable)
                       SignInButtons(
-                        onChoose: (provider) => runSignIn(
-                            context, ref, provider,
-                            returnTo: _returnTo),
+                        onChoose: (provider) async {
+                          final outcome = await runSignIn(
+                              context, ref, provider,
+                              returnTo: _returnTo);
+                          // Native completes in place (the web navigates
+                          // away): leave the "signed out" page ourselves.
+                          if (outcome == SignInOutcome.signedIn &&
+                              context.mounted) {
+                            context.go('/dashboard');
+                          }
+                        },
                       ),
                     const SizedBox(height: 12),
                     // Signed-out browsing is still allowed (20 free replies per

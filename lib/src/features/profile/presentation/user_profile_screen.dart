@@ -262,6 +262,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       message: 'Sign in to keep your profile safe and have it follow you '
           'to your other devices.',
     );
+    if (!mounted) return;
     if (outcome == null || outcome == SignInOutcome.cancelled) {
       _toast('Saved on this device');
       return;

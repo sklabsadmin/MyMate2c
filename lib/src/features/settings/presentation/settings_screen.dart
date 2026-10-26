@@ -214,9 +214,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             context,
             icon: auth.provider == 'apple' ? Icons.apple : Icons.g_mobiledata,
             title: 'Signed in with ${auth.providerLabel}',
-            subtitle: who != null
-                ? who
-                : 'Your chats and coins are saved to your account.',
+            subtitle: who ?? 'Your chats and coins are saved to your account.',
             iconColor: Colors.pinkAccent,
             onTap: () {},
             trailing: const Icon(Icons.check_circle, color: Color(0xFF15803D)),
@@ -231,6 +229,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             iconColor: AppTheme.mutedInkColor,
             onTap: _signOut,
           ),
+          // Only Apple and Google accounts can be deleted in-app; the worker
+          // refuses anything else (a legacy web Instagram session).
+          if (auth.provider == 'apple' || auth.provider == 'google')
           _buildSettingsTile(
             context,
             icon: Icons.delete_forever_outlined,

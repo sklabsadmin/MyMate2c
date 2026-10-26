@@ -227,9 +227,20 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
           return AuthState.fromUser(data['user'] as Map);
         }
         // The worker answered and does not accept the token: expired, or the
-        // account was deleted elsewhere. Forget it so the app stops sending it.
-        if (!kIsWeb) await _forgetLocalSession();
+        // account was deleted elsewhere. Forget it so the app stops sending
+        // it, and move RevenueCat and the coin chip back to the device id —
+        // main() configured RevenueCat under the account at launch.
+        if (!kIsWeb && AuthSession.isSignedIn) {
+          await _forgetLocalSession();
+          final prefs = await SharedPreferences.getInstance();
+          await _afterIdentityChange(DeliveryLog.ensureUserId(prefs));
+        }
         return AuthState.signedOut;
+      }
+      // Any other answer (rate limit, a captive-portal page) says nothing
+      // about the token: keep it, and keep showing the account.
+      if (!kIsWeb && AuthSession.isSignedIn) {
+        return await AuthSession.cachedUser() ?? AuthState.signedOut;
       }
     } catch (_) {
       // Offline or unreachable. Natively the token is still good as far as
@@ -382,7 +393,7 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
   }
 
   static String _randomNonce([int length = 32]) {
-    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._';
     final random = Random.secure();
     return List.generate(length, (_) => chars[random.nextInt(chars.length)]).join();
   }
@@ -457,6 +468,10 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
   /// re-reads the wallet the worker now resolves.
   Future<void> _afterIdentityChange(String? userId) async {
     if (userId != null && userId.isNotEmpty) {
+      // init() hands back the configure still in flight from main() (it is
+      // not awaited there), so identify() cannot run against an
+      // unconfigured SDK and silently do nothing.
+      await RevenueCatService().init(userId);
       await RevenueCatService().identify(userId);
     }
     if (AppConfig.coinsUiEnabled) {
