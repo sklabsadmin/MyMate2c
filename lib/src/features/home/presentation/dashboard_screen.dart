@@ -2,7 +2,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/revenue_cat_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -284,7 +283,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             // exactly as it was.
                             if (coinsLive)
                               CoinChip(
-                                balance: coinWallet!.balance,
+                                balance: coinWallet.balance,
                                 onTap: () => showCoinsSheet(
                                   context,
                                   ref: ref,
@@ -575,7 +574,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               cardWidth / tallestRatio,
             );
             final aspectRatio = cardWidth / cardHeight;
-            final rowStride = cardHeight + spacing;
 
             final totalRows = (itemCount / 2).ceil();
             final contentHeight =

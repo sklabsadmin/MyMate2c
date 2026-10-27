@@ -81,8 +81,6 @@ class CustomCharactersNotifier extends Notifier<List<Map<String, dynamic>>> {
 }
 
 class StorageService {
-  static const String _kChatHistoryKey = 'chat_history_v1';
-
   // --- Free-reply counter (per character, persisted) ---
   // Counts successful AI replies per character so the login gate can trigger
   // at AppConfig.freeRepliesPerCharacter. Keyed by characterId (or scenario
