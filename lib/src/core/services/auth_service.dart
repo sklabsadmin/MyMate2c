@@ -312,7 +312,7 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
         data: jsonEncode({
           ...body,
           'anon_id': anonId,
-          if (ticket != null) 'anon_ticket': ticket,
+          'anon_ticket': ?ticket,
         }),
         options: Options(
           headers: {'Content-Type': 'application/json'},
