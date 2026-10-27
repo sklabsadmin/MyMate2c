@@ -14,7 +14,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../features/wallet/coin_wallet.dart';
 import '../config/app_config.dart';
 import 'delivery_log.dart';
+import 'device_identity.dart';
 import 'revenue_cat_service.dart';
+import 'storage_service.dart';
 
 /// Which account a person signs in with.
 enum SignInProvider { google, apple }
@@ -210,6 +212,12 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
     final url = AppConfig.apiUrl('/auth/me');
     if (url.isEmpty) return AuthState.signedOut;
     if (!kIsWeb && !AuthSession.isSignedIn) return AuthState.signedOut;
+    if (!kIsWeb && await _appleCredentialRevoked()) {
+      await _forgetLocalSession();
+      final prefs = await SharedPreferences.getInstance();
+      await _afterIdentityChange(DeliveryLog.ensureUserId(prefs));
+      return AuthState.signedOut;
+    }
     try {
       final res = await Dio().get(
         url,
@@ -250,6 +258,27 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
       }
     }
     return AuthState.signedOut;
+  }
+
+  /// The person removed Mythos Live under iOS Settings → Apple Account →
+  /// Sign in with Apple (or the Apple ID is gone). Apple's guidance is to
+  /// check on launch and sign out locally; the account and its coins stay on
+  /// the server for the next sign-in. False for Google sessions, off iOS, and
+  /// whenever the check itself fails — an unknown answer must not sign anyone
+  /// out.
+  Future<bool> _appleCredentialRevoked() async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) return false;
+    final id = AuthSession.userId;
+    if (id == null || !id.startsWith('apple:')) return false;
+    try {
+      final credential =
+          await SignInWithApple.getCredentialState(id.substring('apple:'.length));
+      return credential == CredentialState.revoked ||
+          credential == CredentialState.notFound;
+    } catch (e) {
+      debugPrint('[Auth] Apple credential state check failed: $e');
+      return false;
+    }
   }
 
   /// Re-check /auth/me (e.g. after an OAuth redirect completes).
@@ -449,6 +478,18 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
       return true;
     }
     await _forgetLocalSession();
+    // The account is gone, so this phone's copy of it goes too: chats and
+    // profile, and the anonymous device id it was once merged from. The next
+    // id is minted fresh, so RevenueCat moves to a new customer and nothing
+    // left on the device leads back to the deleted account.
+    try {
+      final storage = ref.read(storageServiceProvider);
+      await storage.clearAllChatHistory();
+      await storage.clearUserProfile();
+    } catch (e) {
+      debugPrint('[Auth] local wipe after delete failed: $e');
+    }
+    await DeviceIdentity.startFresh();
     state = const AsyncData(AuthState.signedOut);
     await _afterIdentityChange(DeliveryLog.ensureUserId(prefs));
     return true;

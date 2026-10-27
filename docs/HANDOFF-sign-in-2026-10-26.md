@@ -117,7 +117,10 @@ iOS (device, sandbox account for purchases):
    again on the next purchase.
 5. Sign in on a second device with the same account → both devices' coins
    end up in one wallet.
-6. Delete account → confirm → signed out. iOS Settings → Apple ID → Sign in
+6. iOS Settings → Apple Account → Sign in with Apple → remove Mythos Live →
+   relaunch → app is signed out; signing in with Apple again restores the
+   account and coins.
+7. Delete account → confirm → signed out, chats cleared, back on home. iOS Settings → Apple ID → Sign in
    with Apple should no longer list Mythos Live (revoked). Signing in again
    starts a fresh account.
 
@@ -128,12 +131,35 @@ Backend: `npm test` (12 new tests in `backend/test/sign_in.test.mjs` — real
 RS256/ES256 crypto, forged/expired/foreign tokens refused, nonce, merge
 rules, the web Apple flow, deletion).
 
+## Build
+
+Version **1.0.6+98** (+97 is taken by the Android branch
+`claude/competent-mendel-a4d1d2`). If a later build number was uploaded from
+the Mac, bump past it.
+
 ## App Review notes (paste into the submission)
 
-- Sign-in is optional; the app is fully usable without an account.
-- Sign in with Apple is offered alongside Google everywhere (4.8).
-- Account deletion: Settings → Account → Delete account. Deletes the account
-  and its data and revokes the Sign in with Apple token (5.1.1(v)).
+> Sign-in is optional and not required for any feature. Sign in with Apple and
+> Google are offered together in Settings → Account, after saving a profile,
+> and once after a first coin purchase ("Protect your coins"). Signed-in users
+> can delete their account in Settings → Account → Delete Account; this
+> deletes the account and its data and revokes the Sign in with Apple token.
+
+## App Store Connect → App Privacy (update before submitting)
+
+Data now **linked to the user's identity** when they sign in: Name, Email
+Address, User ID, Purchase History, Other User Content (conversations,
+profile). Privacy policy (`web/privacy.html`) and support page
+(`web/support.html`) are updated on this branch and go live with
+`npm run deploy`.
+
+## Also on this branch (from the 1.0.6 spec review)
+
+- On launch, an Apple session whose credential was revoked (iOS Settings →
+  Apple Account → Sign in with Apple → remove Mythos Live) signs out locally.
+- After Delete Account the phone wipes its chats and profile, mints a fresh
+  anonymous device id (so RevenueCat moves to a new customer), and returns to
+  the home screen.
 
 ## Not done / follow-ups
 

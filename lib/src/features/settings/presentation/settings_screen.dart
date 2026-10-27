@@ -165,8 +165,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           '${auth.username != null ? ' (${auth.username})' : ''}, '
           'your saved conversations, your profile'
           '${AppConfig.coinsUiEnabled ? ', and your coins${coins > 0 ? ' ($coins)' : ''}' : ''}. '
-          'Coins you bought are not refunded. This cannot be undone.\n\n'
-          'You can keep using Mythos Live without an account afterwards.',
+          'Coin purchases are made through Apple and can\'t be refunded by us. '
+          'This cannot be undone.\n\n'
+          'We keep an anonymous record of past purchases for accounting; it is '
+          'no longer linked to you. You can keep using Mythos Live without an '
+          'account afterwards.',
           style: GoogleFonts.lato(color: AppTheme.mutedInkColor, height: 1.4),
         ),
         actions: [
@@ -177,7 +180,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Delete account',
+            child: const Text('Delete Account',
                 style: TextStyle(
                     color: Color(0xFFB91C1C), fontWeight: FontWeight.w700)),
           ),
@@ -190,7 +193,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final ok = await ref.read(authProvider.notifier).deleteAccount();
     if (!mounted) return;
     setState(() => _deleting = false);
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    // Back to the guest home screen: the account, and this device's copy of
+    // it, are gone. (The web reloads on /signed-out instead.)
+    if (ok && !kIsWeb) context.go('/dashboard');
+    messenger.showSnackBar(
       SnackBar(
         content: Text(ok
             ? 'Your account has been deleted.'
@@ -235,7 +242,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildSettingsTile(
             context,
             icon: Icons.delete_forever_outlined,
-            title: _deleting ? 'Deleting account…' : 'Delete account',
+            title: _deleting ? 'Deleting account…' : 'Delete Account',
             subtitle: 'Permanently delete your account and its data',
             iconColor: const Color(0xFFB91C1C),
             onTap: _deleting ? () {} : () => _confirmDeleteAccount(auth),
