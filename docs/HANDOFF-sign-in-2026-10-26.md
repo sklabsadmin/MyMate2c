@@ -147,6 +147,35 @@ rules, the web Apple flow, deletion).
   official "G" from Google's sign-in branding kit (TODO in
   `sign_in_sheet.dart`).
 - **Apple and Google are separate accounts.** Someone who signs in with Google
-  on the web and Apple on the phone gets two wallets. No account linking yet.
+  on the web and Apple on the phone gets two wallets. No account linking yet —
+  see the backlog item below.
 - **Private relay email:** if Mythos Live ever emails users, the sending
   domain must be registered with Apple's private email relay first.
+
+## Backlog: account linking to match Character.AI (scheduled after the week of 2026-10-26)
+
+Goal: one person = one account, whichever way they sign in. Character.AI's
+model: Google, Apple, or one-time email link; one account per email; extra
+sign-in methods can be added in profile settings.
+
+1. **Auto-link on verified matching email.** When a sign-in arrives from a
+   new provider identity whose email is verified (Google `email_verified`;
+   Apple-issued emails are always verified) and matches an existing account,
+   attach it to that account instead of creating a new one. Skip
+   `@privaterelay.appleid.com` addresses — they never match anything.
+2. **"Add another sign-in method" in Settings → Account.** While signed in,
+   link Apple/Google (and email, once 3 exists). Covers Hide My Email users.
+   If the identity being linked already has its own account, merge it: wallet
+   via `coinMergeWallet`, chat logs, profile (keep the current one).
+3. **Email one-time link (or code) as a third method**, like Character.AI. Needs an
+   email-sending service on the worker.
+
+Design notes:
+- Introduce an internal account id (`acct_<uuid>`) that `linked_accounts`
+  maps provider identities to, so the account no longer *is* `google:`/`apple:`.
+  Migrate existing ids in place (wallets, ledger, logs, profiles, RevenueCat).
+- Sessions for a merged-away id must resolve to the surviving account.
+- RevenueCat: reconcile/refunds must still find purchases made under the old
+  customer id.
+- Link bonus (+100) paid once per person, not per provider.
+- Account deletion deletes every linked identity and revokes Apple for each.
