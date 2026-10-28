@@ -303,6 +303,18 @@ class AppConfig {
   /// [ticket] is the wallet merge ticket (CoinWalletService.mergeTicket): a
   /// claimed anonymous wallet only follows the sign-in when the redirect
   /// carries one. Without it the account still links; the coins stay put.
+  /// Sign in with Apple on the web; same contract as [googleAuthUrl].
+  static String appleAuthUrl(String returnTo, {String? anonId, String? ticket}) {
+    return apiUrl(
+      '/auth/apple/start',
+      queryParameters: {
+        'return_to': returnTo,
+        if (anonId != null && anonId.isNotEmpty) 'anon_id': anonId,
+        if (ticket != null && ticket.isNotEmpty) 'anon_ticket': ticket,
+      },
+    );
+  }
+
   static String googleAuthUrl(String returnTo, {String? anonId, String? ticket}) {
     return apiUrl(
       '/auth/google/start',

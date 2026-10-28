@@ -1,11 +1,11 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/data/characters.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
@@ -305,9 +305,9 @@ Future<void> showCoinsSheet(
                   '${wallet != null && wallet.replyGrantCap > 0 ? ' (${wallet.replyGrantsToday}/${wallet.replyGrantCap} today)' : ''}',
                   _grant(grants, 'reply'),
                 ),
-                if (kIsWeb)
-                  _EarnRow(Icons.account_circle_outlined, 'Sign in with Google',
-                      _grant(grants, 'link')),
+                if (AuthNotifier.signInAvailable)
+                  _EarnRow(Icons.account_circle_outlined,
+                      'Sign in with Apple or Google', _grant(grants, 'link')),
                 _EarnRow(Icons.badge_outlined, 'Complete your profile',
                     _grant(grants, 'profile')),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[

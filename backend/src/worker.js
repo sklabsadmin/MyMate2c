@@ -9,6 +9,13 @@
  */
 
 import { CHARACTER_STARTERS, DEFAULT_STARTERS, SHARED_TAPS } from "./starters.generated.js";
+import {
+    verifyGoogleIdToken,
+    verifyAppleIdToken,
+    appleKeyConfigured,
+    appleExchangeCode,
+    appleRevoke,
+} from "./identity.js";
 
 export default {
     async fetch(request, env, ctx) {
@@ -52,15 +59,35 @@ export default {
             return finishGoogleAuth(request, env, url);
         }
 
+        // Sign in with Apple on the web. Apple delivers the result as a
+        // cross-site form POST (response_mode=form_post, required whenever
+        // name or email is requested), so the callback is a POST.
+        if (request.method === "GET" && url.pathname === "/auth/apple/start") {
+            return startAppleAuth(request, env, url);
+        }
+
+        if (request.method === "POST" && url.pathname === "/auth/apple/callback") {
+            return finishAppleAuth(request, env, url);
+        }
+
+        // The app's sign-in: the native Google / Apple SDK hands the app an
+        // identity token, the app posts it here, and gets back a session
+        // token it sends as `Authorization: Bearer`. See handleNativeSignIn.
+        if (request.method === "POST" && url.pathname === "/auth/native") {
+            return handleNativeSignIn(request, env);
+        }
+
+        // In-app account deletion (App Review 5.1.1(v)). Identity from the
+        // session only.
+        if (request.method === "POST" && url.pathname === "/api/account/delete") {
+            return handleAccountDelete(request, env);
+        }
+
         if (request.method === "GET" && url.pathname === "/auth/me") {
             const session = await getSessionFromRequest(request, env);
             return jsonResponse({
                 authenticated: Boolean(session),
-                user: session ? (
-                    session.provider === "google"
-                        ? { provider: "google", id: session.googleId, username: session.name || session.email, picture: session.picture || null }
-                        : { provider: "instagram", id: session.instagramId, username: session.username }
-                ) : null,
+                user: session ? sessionUserView(session) : null,
             }, { headers: corsHeaders(request) });
         }
 
@@ -1576,7 +1603,7 @@ export default {
 
             const session = await getSessionFromRequest(request, env);
             const userId = session
-                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
+                ? sessionUserId(session)
                 : request.headers.get("x-user-id") || "anonymous";
 
             if (!coinsActive(env, request, userId)) {
@@ -1696,7 +1723,7 @@ export default {
             const timestamp = request.headers.get("x-timestamp");
             const session = await getSessionFromRequest(request, env);
             const userId = session
-                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
+                ? sessionUserId(session)
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
             const synthetic = isSyntheticTest(request);
@@ -2319,16 +2346,15 @@ async function finishGoogleAuth(request, env, url) {
             throw new Error("Google profile lookup failed");
         }
 
-        const sessionValue = await signSession(env, {
+        const sessionValue = await issueSession(env, {
             provider: "google",
-            googleId: profile.sub,
+            sub: String(profile.sub),
             email: profile.email || null,
             name: profile.name || null,
             // Google's avatar URL, so the app can show the account's own icon
             // instead of a generic placeholder once linked.
             picture: profile.picture || null,
-            exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
-        });
+        }, WEB_SESSION_TTL_S);
 
         await recordLinkedAccount(env, {
             userId: `google:${profile.sub}`,
@@ -2352,12 +2378,359 @@ async function finishGoogleAuth(request, env, url) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sign in with Apple (web) and the app's native sign-in.
+//
+// Identity is always the provider's `sub`, verified from a signed ID token
+// (identity.js) — never anything the client asserts. The resulting session is
+// the same HMAC'd payload whether it travels as the web's cookie or as the
+// app's `Authorization: Bearer` token (getSessionFromRequest), and the same
+// recordLinkedAccount runs for every provider, so the anonymous chat history
+// and coin wallet follow the person onto the account identically everywhere.
+// ---------------------------------------------------------------------------
+
+const ANON_ID_SHAPE = /^user_\d{13}$/;
+
+function cleanAnonId(value) {
+    const v = typeof value === "string" ? value.trim() : "";
+    return ANON_ID_SHAPE.test(v) ? v : null;
+}
+
+function cleanAnonTicket(value) {
+    const v = typeof value === "string" ? value.replace(/[^0-9a-f.]/g, "") : "";
+    return v || null;
+}
+
+function getAppleRedirectUri(request, env) {
+    if (env.APPLE_REDIRECT_URI) return env.APPLE_REDIRECT_URI;
+    return `${new URL(request.url).origin}/auth/apple/callback`;
+}
+
+/// Apple's only chance to tell us the person's name: the first authorization,
+/// as given/family name fields the client passes along. Never trusted for
+/// identity, only shown back to them.
+function appleDisplayName(given, family) {
+    const name = [given, family]
+        .map((p) => (typeof p === "string" ? p.trim() : ""))
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 80);
+    return name || null;
+}
+
+/// Swaps the authorization code for Apple's refresh token, which is what
+/// account deletion revokes. Never fails the sign-in: without the .p8 key, or
+/// if Apple is slow, the person still signs in and we log that revocation at
+/// deletion will have nothing to revoke.
+async function appleRefreshTokenFor(env, { code, clientId, redirectUri = null }) {
+    if (!code) return null;
+    if (!appleKeyConfigured(env)) {
+        console.warn(JSON.stringify({ event: "apple_key_missing", detail: "refresh token not stored; deletion cannot revoke" }));
+        return null;
+    }
+    try {
+        const tokens = await appleExchangeCode(env, { code, clientId, redirectUri });
+        return tokens.refresh_token || null;
+    } catch (e) {
+        console.error(JSON.stringify({ event: "apple_code_exchange_failed", error: e.message }));
+        return null;
+    }
+}
+
+async function startAppleAuth(request, env, url) {
+    if (!env.APPLE_SERVICES_ID) {
+        return jsonResponse({ error: "Apple sign-in is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+    const state = crypto.randomUUID();
+    const nonce = crypto.randomUUID();
+    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "apple=connected", request);
+    const anonId = cleanAnonId(url.searchParams.get("anon_id")) || "";
+    const anonTicket = cleanAnonTicket(url.searchParams.get("anon_ticket")) || "";
+
+    const authUrl = new URL("https://appleid.apple.com/auth/authorize");
+    authUrl.searchParams.set("client_id", env.APPLE_SERVICES_ID);
+    authUrl.searchParams.set("redirect_uri", getAppleRedirectUri(request, env));
+    authUrl.searchParams.set("response_type", "code id_token");
+    // Required by Apple whenever scope asks for name or email.
+    authUrl.searchParams.set("response_mode", "form_post");
+    authUrl.searchParams.set("scope", "name email");
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("nonce", nonce);
+
+    // SameSite=None (cookie() sets it on https): Apple's form POST back to us
+    // is a cross-site request, and a Lax cookie would not ride along.
+    return redirectResponse(authUrl.toString(), [
+        cookie("mymate_apple_state", [state, nonce, anonId, anonTicket, returnTo].join("|"), request, { maxAge: 600 }),
+    ]);
+}
+
+async function finishAppleAuth(request, env) {
+    const origin = new URL(request.url).origin;
+    const failed = (reason) => {
+        console.error(JSON.stringify({ event: "apple_auth_failed", error: reason }));
+        return redirectResponse(`${origin}/settings?apple=failed`, [
+            expiredCookie("mymate_apple_state", request),
+        ]);
+    };
+
+    let form;
+    try {
+        form = await request.formData();
+    } catch (_) {
+        return failed("unreadable form");
+    }
+    const stateCookie = getCookie(request, "mymate_apple_state");
+    if (form.get("error")) {
+        // user_cancelled_authorize: they closed the Apple sheet. Not an error
+        // worth an alarm — send them back where they were.
+        const back = stateCookie ? stateCookie.split("|").slice(4).join("|") : "";
+        return redirectResponse(back || `${origin}/settings`, [expiredCookie("mymate_apple_state", request)]);
+    }
+    if (!stateCookie) return failed("state cookie missing");
+    const [expectedState, nonce, anonId, anonTicket, ...rest] = stateCookie.split("|");
+    const returnTo = rest.join("|");
+    if (!expectedState || form.get("state") !== expectedState) return failed("state mismatch");
+
+    let identity;
+    try {
+        identity = await verifyAppleIdToken(env, String(form.get("id_token") || ""), {
+            rawNonce: nonce, nonceHashed: false,
+        });
+    } catch (e) {
+        return failed(`id token: ${e.message}`);
+    }
+
+    let displayName = null;
+    try {
+        const user = JSON.parse(String(form.get("user") || "null"));
+        displayName = appleDisplayName(user?.name?.firstName, user?.name?.lastName);
+    } catch (_) { /* only sent on the first authorization */ }
+
+    const refreshToken = await appleRefreshTokenFor(env, {
+        code: String(form.get("code") || ""),
+        clientId: env.APPLE_SERVICES_ID,
+        redirectUri: getAppleRedirectUri(request, env),
+    });
+
+    const userId = `apple:${identity.sub}`;
+    await recordLinkedAccount(env, {
+        userId,
+        provider: "apple",
+        providerId: identity.sub,
+        email: identity.email,
+        displayName,
+        anonId: anonId || null,
+        anonTicket: anonTicket || null,
+        appleRefreshToken: refreshToken,
+        appleClientId: refreshToken ? env.APPLE_SERVICES_ID : null,
+    });
+
+    const sessionValue = await issueSession(env, { ...identity, name: displayName }, WEB_SESSION_TTL_S);
+    return redirectResponse(returnTo || `${origin}/settings?apple=connected`, [
+        expiredCookie("mymate_apple_state", request),
+        cookie("mymate_session", sessionValue, request, { maxAge: WEB_SESSION_TTL_S }),
+    ]);
+}
+
+/// POST /auth/native — the app's sign-in.
+///
+/// Body: { provider: "google"|"apple", id_token, raw_nonce?, authorization_code?,
+///         given_name?, family_name?, anon_id?, anon_ticket? }
+///
+/// Answers { ok, token, expires_at, user }. The token is a session the app
+/// keeps in the keychain and sends as `Authorization: Bearer`. No cookie is
+/// set: the app is not a browser, and a cookie here would only confuse a web
+/// client that called this by mistake.
+async function handleNativeSignIn(request, env) {
+    const headers = corsHeaders(request);
+    let body;
+    try {
+        const raw = await request.text();
+        if (raw.length > 16384) {
+            return jsonResponse({ error: "Request too large" }, { status: 413, headers });
+        }
+        body = JSON.parse(raw);
+    } catch (_) {
+        return jsonResponse({ error: "Invalid JSON" }, { status: 400, headers });
+    }
+    const provider = body?.provider;
+    const idToken = typeof body?.id_token === "string" ? body.id_token : "";
+    if ((provider !== "google" && provider !== "apple") || !idToken) {
+        return jsonResponse({ error: "provider and id_token are required" }, { status: 400, headers });
+    }
+
+    let identity;
+    let displayName = null;
+    let refreshToken = null;
+    try {
+        if (provider === "google") {
+            if (!env.GOOGLE_IOS_CLIENT_ID && !env.GOOGLE_CLIENT_ID) {
+                return jsonResponse({ error: "Google sign-in is not configured" }, { status: 503, headers });
+            }
+            identity = await verifyGoogleIdToken(env, idToken);
+            displayName = identity.name;
+        } else {
+            if (!env.APPLE_BUNDLE_ID) {
+                return jsonResponse({ error: "Apple sign-in is not configured" }, { status: 503, headers });
+            }
+            // The nonce is what stops a token lifted from another app's
+            // sign-in being replayed here; the app always sends one.
+            const rawNonce = typeof body.raw_nonce === "string" ? body.raw_nonce : "";
+            if (!rawNonce) {
+                return jsonResponse({ error: "raw_nonce is required for Apple" }, { status: 400, headers });
+            }
+            identity = await verifyAppleIdToken(env, idToken, { rawNonce, nonceHashed: true });
+            displayName = appleDisplayName(body.given_name, body.family_name);
+        }
+    } catch (e) {
+        console.error(JSON.stringify({ event: "native_sign_in_rejected", provider, error: e.message }));
+        return jsonResponse({ error: "invalid_token" }, { status: 401, headers });
+    }
+
+    if (provider === "apple") {
+        refreshToken = await appleRefreshTokenFor(env, {
+            code: typeof body.authorization_code === "string" ? body.authorization_code : "",
+            clientId: identity.clientId,
+        });
+    }
+
+    const userId = `${provider}:${identity.sub}`;
+    await recordLinkedAccount(env, {
+        userId,
+        provider,
+        providerId: identity.sub,
+        email: identity.email,
+        displayName,
+        anonId: cleanAnonId(body.anon_id),
+        anonTicket: cleanAnonTicket(body.anon_ticket),
+        appleRefreshToken: refreshToken,
+        appleClientId: refreshToken ? identity.clientId : null,
+    });
+
+    // The name Apple sent once, or the one stored from that first time.
+    if (!displayName && env.CHAT_LOGS_DB) {
+        try {
+            const row = await env.CHAT_LOGS_DB.prepare(
+                `SELECT display_name FROM linked_accounts WHERE provider = ? AND provider_id = ?`
+            ).bind(provider, identity.sub).first();
+            displayName = row?.display_name || null;
+        } catch (_) { /* cosmetic */ }
+    }
+
+    const session = { ...identity, name: displayName };
+    const token = await issueSession(env, session, NATIVE_SESSION_TTL_S);
+    const issued = await verifySession(env, token);
+    return jsonResponse({
+        ok: true,
+        token,
+        expires_at: issued ? issued.exp : null,
+        user: sessionUserView(issued || session),
+    }, { headers });
+}
+
+/// POST /api/account/delete — deletes the signed-in account (App Review
+/// 5.1.1(v)). Identity from the session only.
+///
+/// Deleted: chat logs, delivery receipts, profile, gift reactions, the wallet
+/// balance, the linked-account rows (and with them Apple's refresh token,
+/// after revoking it), and the RevenueCat customer.
+/// Kept, with the user id replaced by an unlinkable pseudonym: coin ledger
+/// rows and RevenueCat event rows — purchase and refund records the business
+/// has to keep, which no longer say whose they were. Site visits keep their
+/// counts and lose the user id.
+async function handleAccountDelete(request, env) {
+    const headers = corsHeaders(request);
+    const session = await getSessionFromRequest(request, env);
+    if (!session || (session.provider !== "google" && session.provider !== "apple")) {
+        return jsonResponse({ error: "Sign in required" }, { status: 401, headers });
+    }
+    const db = env.CHAT_LOGS_DB;
+    if (!db) return jsonResponse({ error: "Storage is not configured" }, { status: 503, headers });
+    const userId = sessionUserId(session);
+
+    let links = [];
+    try {
+        links = (await db.prepare(
+            `SELECT provider, provider_id, merged_anon_id, apple_refresh_token, apple_client_id
+             FROM linked_accounts WHERE user_id = ?`
+        ).bind(userId).all()).results || [];
+    } catch (e) {
+        console.error(JSON.stringify({ event: "account_delete_lookup_failed", error: e.message }));
+        return jsonResponse({ error: "Could not delete the account, please try again" }, { status: 500, headers });
+    }
+
+    // Revoke first: if the deletion below fails the person can retry, and a
+    // second revoke of the same token is a no-op at Apple.
+    let appleRevoked = null;
+    for (const link of links) {
+        if (link.provider !== "apple" || !link.apple_refresh_token) continue;
+        try {
+            await appleRevoke(env, { token: link.apple_refresh_token, clientId: link.apple_client_id || env.APPLE_BUNDLE_ID });
+            appleRevoked = true;
+        } catch (e) {
+            appleRevoked = false;
+            console.error(JSON.stringify({ event: "apple_revoke_failed", error: e.message }));
+        }
+    }
+    if (session.provider === "apple" && appleRevoked === null) {
+        console.warn(JSON.stringify({ event: "apple_revoke_skipped", detail: "no refresh token on file" }));
+    }
+
+    const pseudonym = `deleted:${crypto.randomUUID()}`;
+    const anonIds = links.map((l) => l.merged_anon_id).filter(Boolean);
+    const visitIds = [userId, ...anonIds];
+    const now = Date.now();
+    try {
+        await db.batch([
+            db.prepare(`DELETE FROM conversation_logs WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM message_delivery WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM user_profiles WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM gift_reactions WHERE user_id = ?`).bind(userId),
+            db.prepare(`UPDATE coin_ledger SET user_id = ? WHERE user_id = ?`).bind(pseudonym, userId),
+            db.prepare(`DELETE FROM coin_wallets WHERE user_id = ?`).bind(userId),
+            db.prepare(`UPDATE rc_events SET user_id = ?, app_user_id = ? WHERE user_id = ? OR app_user_id = ?`)
+                .bind(pseudonym, pseudonym, userId, userId),
+            db.prepare(`UPDATE site_visits SET app_user_id = NULL WHERE app_user_id IN (${visitIds.map(() => "?").join(", ")})`)
+                .bind(...visitIds),
+            db.prepare(`DELETE FROM linked_accounts WHERE user_id = ?`).bind(userId),
+            db.prepare(`INSERT OR REPLACE INTO account_deletions (user_id, deleted_at) VALUES (?, ?)`).bind(userId, now),
+        ]);
+    } catch (e) {
+        console.error(JSON.stringify({ event: "account_delete_failed", error: e.message }));
+        return jsonResponse({ error: "Could not delete the account, please try again" }, { status: 500, headers });
+    }
+
+    // RevenueCat keeps the store receipts under our user id. Best effort: the
+    // account is already gone on our side either way.
+    if (env.RC_SECRET_KEY) {
+        try {
+            const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${env.RC_SECRET_KEY}` },
+            });
+            if (!res.ok && res.status !== 404) {
+                console.error(JSON.stringify({ event: "rc_delete_failed", status: res.status }));
+            }
+        } catch (e) {
+            console.error(JSON.stringify({ event: "rc_delete_failed", error: e.message }));
+        }
+    }
+
+    console.log(JSON.stringify({ event: "account_deleted", provider: session.provider, appleRevoked }));
+    const res = jsonResponse({ ok: true, apple_revoked: appleRevoked }, { headers });
+    res.headers.append("Set-Cookie", expiredCookie("mymate_session", request));
+    return res;
+}
+
 // Records that userId is now linked to (provider, providerId), and - if this
 // is the first time this account has linked and an anonId was supplied -
 // reattributes that anonymous user's existing conversation_logs rows to the
 // linked account so their prior history carries over. Never throws: a DB
 // hiccup here shouldn't fail an otherwise-successful login.
-async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null }) {
+async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null, appleRefreshToken = null, appleClientId = null }) {
     if (!env.CHAT_LOGS_DB) return;
 
     try {
@@ -2371,16 +2744,38 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider, provider_id) DO UPDATE SET
                 linked_at = CURRENT_TIMESTAMP,
-                email = excluded.email,
-                display_name = excluded.display_name
+                email = COALESCE(excluded.email, linked_accounts.email),
+                -- Apple sends the name on the first sign-in only; a later
+                -- sign-in must not blank it.
+                display_name = COALESCE(excluded.display_name, linked_accounts.display_name)
         `).bind(
             crypto.randomUUID(), userId, provider, providerId, email, displayName,
             existing ? existing.merged_anon_id : (anonId || null)
         ).run();
 
-        // Only merge once per account, and only if there's actually an
-        // anonymous id to merge from (skip if already merged before).
-        if (anonId && anonId !== userId && !existing?.merged_anon_id) {
+        // Separate statement so a database without migration 0020 still
+        // records the link; only the revocation token is lost there.
+        if (appleRefreshToken) {
+            try {
+                await env.CHAT_LOGS_DB.prepare(
+                    `UPDATE linked_accounts SET apple_refresh_token = ?, apple_client_id = ?
+                     WHERE provider = ? AND provider_id = ?`
+                ).bind(appleRefreshToken, appleClientId, provider, providerId).run();
+            } catch (e) {
+                console.error(JSON.stringify({ event: "apple_token_store_failed", error: e.message }));
+            }
+        }
+
+        // The first link merges whatever anonymous id it is given, as it
+        // always has. A LATER sign-in from another device (an iPad after the
+        // iPhone, a reinstall) merges only with proof the caller owns that
+        // device's wallet — the merge ticket — so repeat sign-ins cannot be
+        // used to sweep strangers' unclaimed ids into one account. Both the
+        // log move and coinMergeWallet are idempotent per anonymous id.
+        const firstLink = !existing?.merged_anon_id;
+        const proven = Boolean(anonId && anonTicket)
+            && await coinMergeTicketValid(env, anonId, anonTicket);
+        if (anonId && anonId !== userId && (firstLink || proven)) {
             await env.CHAT_LOGS_DB.prepare(
                 `UPDATE conversation_logs SET user_id = ? WHERE user_id = ?`
             ).bind(userId, anonId).run();
@@ -3309,7 +3704,7 @@ function corsHeaders(request) {
         // at all (preflight rejects it), so the tester drops the header to make
         // the request work and their traffic lands in the analytics tables —
         // which is how a "browsertest" user id got into conversation_logs.
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
         "Vary": "Origin",
     };
 }
@@ -3403,17 +3798,19 @@ function getCookie(request, name) {
  * Resolves the signed session into the identity a profile row is keyed by.
  *
  * Returns null for anonymous users and for Instagram sessions: only Google
- * gives the stable, cross-device identifier this table depends on. userId is
+ * and Apple give the stable, cross-device identifier this table depends on. userId is
  * composed exactly as recordLinkedAccount composes it, so user_profiles and
  * linked_accounts join on the same value.
  */
 async function getProfileIdentity(request, env) {
     const session = await getSessionFromRequest(request, env);
-    if (!session || session.provider !== "google" || !session.googleId) return null;
+    if (!session || (session.provider !== "google" && session.provider !== "apple")) return null;
+    const providerId = session.sub || session.googleId;
+    if (!providerId) return null;
     return {
-        userId: `google:${session.googleId}`,
-        provider: "google",
-        providerId: session.googleId,
+        userId: sessionUserId(session),
+        provider: session.provider,
+        providerId,
     };
 }
 
@@ -3553,10 +3950,86 @@ async function handlePutProfile(request, env) {
     });
 }
 
+/// The signed session, from the web's cookie or the app's bearer token —
+/// the same HMAC'd payload either way (signSession). Null when absent,
+/// forged, expired, or issued before the account was deleted.
 async function getSessionFromRequest(request, env) {
-    const value = getCookie(request, "mymate_session");
+    let value = getCookie(request, "mymate_session");
+    if (!value) {
+        const auth = request.headers.get("Authorization") || "";
+        const match = /^Bearer\s+(\S+)$/i.exec(auth);
+        if (match) value = match[1];
+    }
     if (!value) return null;
-    return verifySession(env, value);
+    const session = await verifySession(env, value);
+    if (!session) return null;
+    if (await sessionRevokedByDeletion(env, session)) return null;
+    return session;
+}
+
+/// True when this session's account was deleted after the session was issued.
+/// Only Google/Apple identities can be deleted in-app. Compared in ms so a
+/// re-sign-in in the same second as the deletion is not mistaken for an old
+/// session. A session without iat_ms predates this check and is treated as
+/// older than any deletion.
+async function sessionRevokedByDeletion(env, session) {
+    if (!env.CHAT_LOGS_DB || (session.provider !== "google" && session.provider !== "apple")) return false;
+    try {
+        const row = await env.CHAT_LOGS_DB.prepare(
+            `SELECT deleted_at FROM account_deletions WHERE user_id = ?`
+        ).bind(sessionUserId(session)).first();
+        if (!row) return false;
+        return !(typeof session.iat_ms === "number" && session.iat_ms > Number(row.deleted_at));
+    } catch (_) {
+        // Pre-migration database: no table, nothing has been deleted.
+        return false;
+    }
+}
+
+/// The user id a session speaks for, composed exactly as recordLinkedAccount
+/// composes it — so wallets, logs, profiles and linked_accounts all agree.
+function sessionUserId(session) {
+    if (session.provider === "google") return `google:${session.sub || session.googleId}`;
+    if (session.provider === "apple") return `apple:${session.sub}`;
+    return `instagram:${session.instagramId}`;
+}
+
+/// What /auth/me and /auth/native tell the client about who is signed in.
+function sessionUserView(session) {
+    if (session.provider === "google" || session.provider === "apple") {
+        return {
+            provider: session.provider,
+            id: sessionUserId(session),
+            username: session.name || session.email || null,
+            email: session.email || null,
+            picture: session.picture || null,
+        };
+    }
+    return { provider: "instagram", id: session.instagramId, username: session.username };
+}
+
+const WEB_SESSION_TTL_S = 60 * 60 * 24 * 30;
+// The app keeps its token in the keychain and has no cookie-style silent
+// renewal, so a longer life: being signed out of a phone every month is how
+// people lose track of which account holds their coins.
+const NATIVE_SESSION_TTL_S = 60 * 60 * 24 * 180;
+
+async function issueSession(env, identity, ttlS) {
+    const nowMs = Date.now();
+    const now = Math.floor(nowMs / 1000);
+    return signSession(env, {
+        provider: identity.provider,
+        sub: identity.sub,
+        // Kept so a session minted here still reads correctly in a worker
+        // rolled back to before `sub` existed.
+        ...(identity.provider === "google" ? { googleId: identity.sub } : {}),
+        email: identity.email || null,
+        name: identity.name || null,
+        picture: identity.picture || null,
+        iat: now,
+        iat_ms: nowMs,
+        exp: now + ttlS,
+    });
 }
 
 async function signSession(env, payload) {
@@ -4656,6 +5129,7 @@ function isSyntheticTest(request) {
 ///   user_<13-digit epoch ms>  anonymous, generated once by the client and
 ///                             kept in prefs (openai_service.dart)
 ///   google:<sub>              signed in with Google (worker, from the session)
+///   apple:<sub>               signed in with Apple (worker, same place)
 ///   instagram:<id>            signed in with Instagram (worker, same place)
 ///
 /// Anything else arrived as a hand-typed x-user-id — which in practice means a
@@ -4664,7 +5138,7 @@ function isSyntheticTest(request) {
 /// The 13 digits are deliberate rather than \d+: `user_1`, `user_test_smoke_1`
 /// and friends are exactly what the ad-hoc traffic looks like. (13 digits is
 /// correct for epoch-ms until the year 2286.)
-const REAL_USER_ID = /^(?:user_\d{13}|google:.+|instagram:.+)$/;
+const REAL_USER_ID = /^(?:user_\d{13}|google:.+|apple:.+|instagram:.+)$/;
 
 function isRealUserId(userId) {
     return typeof userId === "string" && REAL_USER_ID.test(userId);
@@ -4682,7 +5156,8 @@ function isRealUserId(userId) {
 /// a filter list.
 function realUserIdSql(column) {
     return `(${column} GLOB 'user_[0-9]*' AND length(${column}) = 18
-             OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
+             OR ${column} LIKE 'google:%' OR ${column} LIKE 'apple:%'
+             OR ${column} LIKE 'instagram:%')`;
 }
 
 /// Wall-clock time from arrival to the last thing the browser reported, as SQL.
@@ -9689,4 +10164,4 @@ ${visitTimelineJs()}
 
 /// Internals the worker suite drives directly where no route reaches them
 /// without a live OAuth exchange. Not part of the Worker's runtime surface.
-export const __test = { coinMergeWallet };
+export const __test = { coinMergeWallet, coinMergeTicket };

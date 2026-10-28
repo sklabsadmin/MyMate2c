@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.6+97
+version: 1.0.6+98
 
 environment:
   sdk: ^3.10.0
@@ -56,6 +56,10 @@ dependencies:
   flutter_local_notifications_platform_interface: ^12.0.0
   flutter_dotenv: ^6.0.0
   flutter_secure_storage: ^11.2.0
+  # Sign in with Google / Apple (native). The worker verifies the ID tokens;
+  # see lib/src/core/services/auth_service.dart and backend/src/identity.js.
+  google_sign_in: ^7.2.0
+  sign_in_with_apple: ^8.2.0
 
 dev_dependencies:
   flutter_test:
