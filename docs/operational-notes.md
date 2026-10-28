@@ -186,3 +186,30 @@ keep it that way.
   deliberate; same doc, item 1.
 - Six analyzer warnings and ~99 deprecated `withOpacity` infos, all pre-existing.
 - `.dev.vars` carries a duplicate `ADMIN_TOKEN` line; the last one wins.
+
+## Out-of-credit email alerts
+
+The worker emails `ALERT_EMAIL_TO` (wrangler.jsonc, currently adamlang@me.com)
+when OpenAI or Inworld refuses a request for money reasons: OpenAI's
+`insufficient_quota` 429, an HTTP 402 from anyone, or an error body that talks
+about quota, billing or balance. An ordinary rate-limit 429 does not count.
+Throttled to one email per provider per hour through the `ops_alerts` table
+(migration 0016, applied by `npm run deploy`); the email carries how many
+turns failed since the first one. Every detection also logs an `ops_alert`
+JSON line visible in `npx wrangler tail`, whether or not the email went out.
+
+Transport is Cloudflare Email Sending through the `ALERT_EMAIL` binding, so
+there is no API key. **One-time setup before the first email can leave:**
+the sender's domain has to be enabled for sending on the account:
+
+```bash
+npx wrangler email sending enable deeplovepoems.com
+```
+
+(`npx wrangler email sending list` shows what is enabled.) Until that is done
+the send fails, the failure is logged, and the chat request is unaffected —
+alerting can never take down the request it is reporting on.
+
+To change recipient or sender, edit the two vars and redeploy. The tests in
+`backend/test/ops_alerts.test.mjs` cover detection, throttling and the
+"email broken, chat still fine" case.

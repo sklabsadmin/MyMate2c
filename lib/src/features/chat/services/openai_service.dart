@@ -213,8 +213,8 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       if (scenario != null) {
         headers['x-scenario'] = scenario;
       }
-      if (_characterId != null && _characterId!.isNotEmpty) {
-        headers['x-character-id'] = _characterId!;
+      if (_characterId != null && _characterId.isNotEmpty) {
+        headers['x-character-id'] = _characterId;
       }
       // A gift is a spend, and a claimed wallet spends only for the device
       // that holds its secret. Sent on every turn (harmless without a gift)
