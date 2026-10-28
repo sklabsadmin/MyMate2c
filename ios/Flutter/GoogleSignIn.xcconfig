@@ -1,0 +1,14 @@
+// Google Sign-In for iOS.
+//
+// From Google Cloud Console > APIs & Services > Credentials, the OAuth client
+// of type "iOS" for bundle id com.sklabs.mythoslive (same project as the web
+// client the worker already uses as GOOGLE_CLIENT_ID). Client ids are not
+// secrets; they ship inside every app binary.
+//
+//   GOOGLE_IOS_CLIENT_ID       1234567890-abc123.apps.googleusercontent.com
+//   GOOGLE_REVERSED_CLIENT_ID  com.googleusercontent.apps.1234567890-abc123
+//
+// The worker must be given the same iOS client id as the secret
+// GOOGLE_IOS_CLIENT_ID, or it will refuse the tokens this app sends.
+GOOGLE_IOS_CLIENT_ID = REPLACE_ME.apps.googleusercontent.com
+GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.REPLACE_ME

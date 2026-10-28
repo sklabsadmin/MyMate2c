@@ -92,6 +92,23 @@ class DeviceIdentity {
     }
   }
 
+  /// After account deletion: this device starts over as a brand-new
+  /// anonymous user. Removes the device id and wallet claim from prefs AND
+  /// the keychain, so the next DeliveryLog.ensureUserId mints a fresh id and
+  /// nothing on this phone can be tied back to the deleted account.
+  static Future<void> startFresh() async {
+    _claim = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kUserId);
+      await prefs.remove(_kClaim);
+      await _vault?.delete(key: _kUserId);
+      await _vault?.delete(key: _kClaim);
+    } catch (e) {
+      if (kDebugMode) debugPrint('DeviceIdentity startFresh failed: $e');
+    }
+  }
+
   /// Forgets a token the server no longer accepts (a 403). The next sync then
   /// asks for a fresh one; the server grants that only if the old token was
   /// never used — the lost-response case — so this cannot help a stranger.

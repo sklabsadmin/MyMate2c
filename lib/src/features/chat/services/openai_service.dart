@@ -3,6 +3,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/device_identity.dart';
 import '../../../core/services/analytics.dart';
 import '../data/chat_prompt.dart';
@@ -112,7 +113,7 @@ class OpenAIService {
     String systemInstruction = ChatPrompt.systemInstruction;
     if (scenario != null && scenario.isNotEmpty) {
       systemInstruction +=
-          "\n\nCRITICAL ROLEPLAY INSTRUCTION:\n- CONTEXT: '$scenario'\n- YOUR ROLE: You are the boyfriend/male lead in this scenario. Adopt the personality fitting this context.\n- USER'S ROLE: The user is your partner.\n- Do NOT confuse these roles.";
+          "\n\nCRITICAL CHARACTER INSTRUCTION:\n- CONTEXT: '$scenario'\n- YOUR ROLE: You are the character named in this context. Adopt the personality fitting it.\n- USER'S ROLE: The user is themselves, talking with you.\n- Do NOT confuse these roles.";
     }
 
     final systemPrompt = '''$systemInstruction
@@ -162,7 +163,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
     // 1. FILTER: Block translation requests locally (First line of defense)
     const badPatterns = ["translate", "翻译", "to zh"];
     if (badPatterns.any((p) => message.toLowerCase().contains(p))) {
-      return "I'm your boyfriend, not a translator. Let's focus on us. 😘";
+      return "Let's keep talking — tell me more about you.";
     }
 
     try {
@@ -205,6 +206,9 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         'x-user-id': userId,
         'x-chat-id': scenario ?? 'default',
         'x-language': _currentLanguage,
+        // Signed in natively: the worker reads who this is from the session,
+        // exactly as the web's cookie does, and ignores x-user-id.
+        ...AuthSession.header(),
       };
       if (scenario != null) {
         headers['x-scenario'] = scenario;
@@ -298,7 +302,7 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
         return responseText;
       } else if (response.statusCode == 429) {
         lastFailureReason = 'rate_limited';
-        return "I need a moment, darling. We've been talking so fast!";
+        return "Give me a moment — I lost my train of thought. Say that again?";
       } else if (response.statusCode == 402) {
         // The tribute could not be afforded: the worker debited nothing and
         // called nobody. Not a reply and not the character's fault — the UI

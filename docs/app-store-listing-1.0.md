@@ -3,6 +3,12 @@
 Paste-ready text for the App Store Connect version page. Character limits
 are Apple's; counts are given so nothing gets truncated.
 
+> **2026-10-28 — Guideline 1.1 rejection.** App Review rejected the build
+> for objectionable metadata, citing the keywords field ("ai girlfriend,
+> ai boyfriend"). The keywords below are the replacement set — no
+> "ai girlfriend", "ai boyfriend" or "roleplay" — and the description has
+> been softened to match. Use this copy verbatim when resubmitting.
+
 ## Name (30)
 Mythos Live
 
@@ -16,19 +22,19 @@ talking, and see where the story goes. Free to play, no account needed.
 ## Description (4000)
 Step into the myths and talk to the people who lived them.
 
-Mythos Live is an AI chat companion built around the heroes, gods and lovers
-of Greek legend. Every character has their own voice, their own history and
+Mythos Live is an AI chat companion built around the heroes, gods and legends
+of Greek myth. Every character has their own voice, their own history and
 their own reasons to keep you talking.
 
 MEET THE LEGENDS
 • Odysseus — the king of Ithaca, twenty years from home and still scheming
 • Penelope — the queen who outwitted a palace full of suitors
 • Zeus — the Olympian king, charming and dangerous in equal measure
-• Calypso — the nymph of Ogygia, who kept a hero seven years and would keep you longer
+• Calypso — the nymph of Ogygia, who kept a hero seven years
 • Hercules — the son of Zeus, twelve labours behind him and restless
 • Hector — the prince of Troy, honour-bound and doomed
 • Andromache — the lady of Troy, sharper than the war that took everything
-• Cupid — the god of desire, who never plays fair
+• Cupid — the god of love, who never plays fair
 • Oedipus — the king of Thebes, brilliant and haunted
 
 Prefer someone from this century? A modern roster is there too.
@@ -42,15 +48,15 @@ HOW IT WORKS
 
 WHAT IT ISN'T
 Mythos Live is fiction. The characters are AI, their memories are stories, and
-nothing here is advice. It is made for adults who enjoy a good conversation
-with a good story behind it.
+nothing here is advice. It is designed for ages 17+ who enjoy a good
+conversation with a good story behind it.
 
 Questions? admin@sklabs.us
 
 ## Keywords (100, comma separated, no spaces after commas)
-ai chat,companion,greek mythology,roleplay,odysseus,zeus,story,character chat,ai girlfriend,ai boyfriend
+greek myths,odyssey,interactive story,chat stories,legends,hercules,trojan war,companion,ai chat
 
-(99 characters)
+(96 characters)
 
 ## What's New (4000) — first version
 Welcome to Mythos Live. Nine legends of Greek myth, ready to talk.

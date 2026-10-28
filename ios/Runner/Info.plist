@@ -39,7 +39,18 @@
 					<string>mythoslive</string>
 				</array>
 			</dict>
+			<dict>
+				<!-- Google Sign-In returns here. Value set in Flutter/GoogleSignIn.xcconfig. -->
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>$(GOOGLE_REVERSED_CLIENT_ID)</string>
+				</array>
+			</dict>
 		</array>
+		<key>GIDClientID</key>
+		<string>$(GOOGLE_IOS_CLIENT_ID)</string>
 		<key>CFBundleVersion</key>
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>ITSAppUsesNonExemptEncryption</key>

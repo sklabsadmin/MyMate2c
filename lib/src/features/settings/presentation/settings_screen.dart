@@ -1,4 +1,3 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,8 +9,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../auth/presentation/sign_in_sheet.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/device_identity.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -26,10 +27,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final Future<PackageInfo> _packageInfoFuture;
 
-  // Which account provider (if any) the current session is linked to, from
-  // GET /auth/me. Null until checked, or if not signed in.
-  String? _linkedProvider;
-  String? _linkedUsername;
+  bool _deleting = false;
 
   // The hidden "reset as new user" testing tool: seven taps on the version
   // row inside a few seconds. Deliberately undiscoverable — it abandons this
@@ -41,33 +39,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void initState() {
     super.initState();
     _packageInfoFuture = PackageInfo.fromPlatform();
-    if (kIsWeb) {
-      _checkAuthStatus();
-    }
-  }
-
-  Future<void> _checkAuthStatus() async {
-    final url = AppConfig.apiUrl('/auth/me');
-    if (url.isEmpty) return;
-    try {
-      final response = await Dio().get(
-        url,
-        options: Options(extra: {'withCredentials': true}),
-      );
-      final data = response.data;
-      if (data is Map && data['authenticated'] == true) {
-        final user = data['user'];
-        if (user is Map && mounted) {
-          setState(() {
-            _linkedProvider = user['provider'] as String?;
-            _linkedUsername = user['username'] as String?;
-          });
-        }
-      }
-    } catch (_) {
-      // Not signed in, offline, or the endpoint is unreachable - leave
-      // as not-linked rather than surfacing an error here.
-    }
   }
 
   Future<void> _launchUrl(String url) async {
@@ -163,31 +134,153 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Future<void> _logout() async {
-    final url = AppConfig.apiUrl('/auth/logout');
-    if (url.isEmpty) return;
-    // Same-tab navigation: the worker clears the session cookie and redirects
-    // to /signed-out, so the app reloads signed out on a page that says so.
-    await launchUrl(Uri.parse(url), webOnlyWindowName: '_self');
+  Future<void> _signOut() async {
+    await ref.read(authProvider.notifier).signOut();
+    if (!mounted || kIsWeb) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Signed out. Your chats and coins stay on your account.'),
+      ),
+    );
   }
 
-  Future<void> _connectGoogle() async {
-    final returnTo = kIsWeb
-        ? Uri.base.toString()
-        : 'mythoslive://settings?google=connected';
-    // Pass along the pre-login anonymous user id so the backend can merge
-    // this device's existing chat history onto the linked account.
-    final prefs = await SharedPreferences.getInstance();
-    final anonId = prefs.getString('user_id');
-    final ticket = await CoinWalletService().mergeTicket();
-    final authUrl =
-        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
-    if (authUrl.isEmpty) return;
-    // Navigate in the same tab (not a new one) so the browser doesn't treat
-    // this as a popup - launchUrl after an awaited canLaunchUrl check loses
-    // the user-gesture context that window.open() needs to avoid being
-    // silently blocked.
-    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
+  /// In-app account deletion (App Review 5.1.1(v)): a clear warning, a
+  /// deliberate confirm, then the worker deletes the account and revokes the
+  /// Sign in with Apple token.
+  Future<void> _confirmDeleteAccount(AuthState auth) async {
+    final coins = ref.read(coinWalletProvider).value?.balance ?? 0;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: Text(
+          'Delete your account?',
+          style: GoogleFonts.playfairDisplay(
+            color: AppTheme.inkColor,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'This permanently deletes your Mythos Live account'
+          '${auth.username != null ? ' (${auth.username})' : ''}, '
+          'your saved conversations, your profile'
+          '${AppConfig.coinsUiEnabled ? ', and your coins${coins > 0 ? ' ($coins)' : ''}' : ''}. '
+          'Coin purchases are made through Apple and can\'t be refunded by us. '
+          'This cannot be undone.\n\n'
+          'We keep an anonymous record of past purchases for accounting; it is '
+          'no longer linked to you. You can keep using Mythos Live without an '
+          'account afterwards.',
+          style: GoogleFonts.lato(color: AppTheme.mutedInkColor, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppTheme.mutedInkColor)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete Account',
+                style: TextStyle(
+                    color: Color(0xFFB91C1C), fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _deleting = true);
+    final ok = await ref.read(authProvider.notifier).deleteAccount();
+    if (!mounted) return;
+    setState(() => _deleting = false);
+    final messenger = ScaffoldMessenger.of(context);
+    // Back to the guest home screen: the account, and this device's copy of
+    // it, are gone. (The web reloads on /signed-out instead.)
+    if (ok && !kIsWeb) context.go('/dashboard');
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(ok
+            ? 'Your account has been deleted.'
+            : "Couldn't delete your account just now. Please try again, or contact support."),
+      ),
+    );
+  }
+
+  Widget _buildAccountSection(BuildContext context) {
+    final auth = ref.watch(authProvider).value ?? AuthState.signedOut;
+    final coinsLive = AppConfig.coinsUiEnabled &&
+        (ref.watch(coinWalletProvider).value?.enabled ?? false);
+
+    if (auth.authenticated) {
+      final who = auth.username ?? auth.email;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSectionHeader('ACCOUNT'),
+          _buildSettingsTile(
+            context,
+            icon: auth.provider == 'apple' ? Icons.apple : Icons.g_mobiledata,
+            title: 'Signed in with ${auth.providerLabel}',
+            subtitle: who ?? 'Your chats and coins are saved to your account.',
+            iconColor: Colors.pinkAccent,
+            onTap: () {},
+            trailing: const Icon(Icons.check_circle, color: Color(0xFF15803D)),
+          ),
+          _buildSettingsTile(
+            context,
+            icon: Icons.logout,
+            title: 'Sign out',
+            subtitle: kIsWeb
+                ? 'Disconnect this account in this browser'
+                : 'Your chats and coins stay on your account',
+            iconColor: AppTheme.mutedInkColor,
+            onTap: _signOut,
+          ),
+          // Only Apple and Google accounts can be deleted in-app; the worker
+          // refuses anything else (a legacy web Instagram session).
+          if (auth.provider == 'apple' || auth.provider == 'google')
+          _buildSettingsTile(
+            context,
+            icon: Icons.delete_forever_outlined,
+            title: _deleting ? 'Deleting account…' : 'Delete Account',
+            subtitle: 'Permanently delete your account and its data',
+            iconColor: const Color(0xFFB91C1C),
+            onTap: _deleting ? () {} : () => _confirmDeleteAccount(auth),
+          ),
+          const SizedBox(height: 30),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader('ACCOUNT'),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: SignInButtons(
+            onChoose: (provider) => runSignIn(context, ref, provider),
+          ),
+        ),
+        if (kIsWeb)
+          _buildSettingsTile(
+            context,
+            icon: Icons.camera_alt_outlined,
+            title: 'Continue with Instagram',
+            subtitle: 'Keep your companion history between sessions and devices. WIP',
+            iconColor: Colors.pinkAccent,
+            onTap: _showInstagramComingSoon,
+          ),
+        _buildBenefitsCard([
+          'Restore your chats when you come back',
+          'Keep the same companion identity across devices',
+          if (kIsWeb)
+            'Protect your message history if browser storage is cleared',
+          if (coinsLive) 'Carry your Coins with you (+100 when you link)',
+        ]),
+        const SizedBox(height: 30),
+      ],
+    );
   }
 
   /// Tab opens the hidden clear-history prompt. On-device only — the D1
@@ -261,60 +354,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 30),
             ],
 
-            if (kIsWeb) ...[
-              _buildSectionHeader('ACCOUNT'),
-              _buildSettingsTile(
-                context,
-                icon: Icons.g_mobiledata,
-                title: _linkedProvider == 'google'
-                    ? 'Connected with Google'
-                    : 'Continue with Google',
-                subtitle: _linkedProvider == 'google'
-                    ? 'Linked${_linkedUsername != null ? ' as $_linkedUsername' : ''}'
-                    : 'Keep your companion history between sessions and devices.',
-                iconColor: Colors.pinkAccent,
-                onTap: _connectGoogle,
-                trailing: _linkedProvider == 'google'
-                    ? const Icon(Icons.check_circle, color: Color(0xFF15803D))
-                    : null,
-              ),
-              _buildSettingsTile(
-                context,
-                icon: Icons.camera_alt_outlined,
-                title: _linkedProvider == 'instagram'
-                    ? 'Connected with Instagram'
-                    : 'Continue with Instagram',
-                subtitle: _linkedProvider == 'instagram'
-                    ? 'Linked${_linkedUsername != null ? ' as $_linkedUsername' : ''}'
-                    : 'Keep your companion history between sessions and devices. WIP',
-                iconColor: Colors.pinkAccent,
-                onTap: _showInstagramComingSoon,
-                trailing: _linkedProvider == 'instagram'
-                    ? const Icon(Icons.check_circle, color: Color(0xFF15803D))
-                    : null,
-              ),
-              if (_linkedProvider != null)
-                _buildSettingsTile(
-                  context,
-                  icon: Icons.logout,
-                  title: 'Sign out',
-                  subtitle: 'Disconnect this account on this device',
-                  iconColor: AppTheme.mutedInkColor,
-                  onTap: _logout,
-                ),
-              if (_linkedProvider == null)
-                _buildBenefitsCard([
-                  'Restore your chats when you come back',
-                  'Keep the same companion identity across browsers',
-                  'Protect your message history if browser storage is cleared',
-                  'Make future premium access easier to recognize',
-                  if (AppConfig.coinsUiEnabled &&
-                      (ref.read(coinWalletProvider).value?.enabled ?? false))
-                    'Carry your Coins with you (+100 when you link)',
-                ]),
-
-              const SizedBox(height: 30),
-            ],
+            if (AuthNotifier.signInAvailable) _buildAccountSection(context),
             _buildSectionHeader('SUPPORT'),
             _buildSettingsTile(
               context,
@@ -525,6 +565,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (confirmed != true || !mounted) return;
 
     await DeviceIdentity.forgetAll();
+    // A new user is signed out too; the account itself is untouched.
+    await AuthSession.clear();
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
     if (!mounted) return;

@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/revenue_cat_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../auth/presentation/sign_in_sheet.dart';
 import '../coin_wallet.dart';
 
 /// The coin store: the packs, priced by the store, credited by the worker.
@@ -122,6 +125,32 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
       _justAdded = after - before;
       _phase = arrived ? _Phase.arrived : _Phase.onItsWay;
     });
+    if (arrived) await _offerProtectCoins();
+  }
+
+  static const String _kProtectPrompted = 'protect_coins_prompted';
+
+  /// Paid coins on an anonymous device are one lost phone away from gone.
+  /// Right after the first pack lands — the moment it matters most — offer
+  /// sign-in once. Never again after that; the footer line stays as the
+  /// quiet reminder (docs/coin-packs-brief-2026-09-16.md, C1–C3).
+  Future<void> _offerProtectCoins() async {
+    if (!AuthNotifier.signInAvailable) return;
+    if (ref.read(authProvider).value?.authenticated ?? false) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_kProtectPrompted) ?? false) return;
+    await prefs.setBool(_kProtectPrompted, true);
+    // Let the "added" state register before the sheet slides over it.
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
+    await showSignInSheet(
+      context,
+      ref,
+      title: 'Protect your coins',
+      message: 'Your coins are saved on this phone. Sign in to keep them '
+          'safe if you lose or replace it, and to use them on your other '
+          'devices.',
+    );
   }
 
   Future<void> _checkAgain() async {
@@ -173,19 +202,55 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
               const SizedBox(height: 20),
               Expanded(child: _body(packs)),
               const SizedBox(height: 12),
-              Text(
-                'Coins are kept on this device. To keep them between devices, '
-                'sign in with Google or Apple when it is offered.',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.lato(
-                  color: AppTheme.mutedInkColor,
-                  fontSize: 12,
-                ),
-              ),
+              _accountLine(),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// Where the coins live, and the way to keep them, in one line.
+  Widget _accountLine() {
+    final auth = ref.watch(authProvider).value;
+    final style = GoogleFonts.lato(color: AppTheme.mutedInkColor, fontSize: 12);
+    if (auth?.authenticated ?? false) {
+      return Text(
+        'Your coins are saved to your ${auth!.providerLabel} account.',
+        textAlign: TextAlign.center,
+        style: style,
+      );
+    }
+    if (!AuthNotifier.signInAvailable) {
+      return Text('Coins are kept on this device.',
+          textAlign: TextAlign.center, style: style);
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'Coins are kept on this device until you sign in.',
+          textAlign: TextAlign.center,
+          style: style,
+        ),
+        TextButton(
+          onPressed: () => showSignInSheet(
+            context,
+            ref,
+            title: 'Protect your coins',
+            message: 'Sign in to keep your coins safe if you lose or replace '
+                'this device, and to use them on your other devices.',
+          ),
+          child: Text(
+            'Sign in to keep them',
+            style: GoogleFonts.lato(
+              color: AppTheme.inkColor,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
