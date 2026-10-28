@@ -1227,20 +1227,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Clean scenario name (remove vibration/status info if appended, though mainly passed clean)
     // Check for specific keywords or exact matches
 
-    if (scenario.contains('CEO') ||
-        scenario.contains('Boss') ||
-        scenario.contains('Strict')) {
-      return [
-        "You're late. I've been waiting.",
-        "Come into my office and close the door...",
-        "I need a distraction right now. Are you available?",
-        "Tell me you've been thinking about me too.",
-        "Good. Now come here. 😉",
-        "What are you actually working on? The honest version, not the polished one.",
-        "What would you go after, if you weren't afraid of getting it wrong?",
-      ];
-    }
-
     if (scenario.contains('Biker') ||
         scenario.contains('Bad Boy') ||
         scenario.contains('Enemy')) {
@@ -1252,42 +1238,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         "Spent the whole of Sunday in the garage. Best day I've had all week. 🏍️",
         "What is on your mind? Do not dress it up.",
         "What would you do if nobody was going to have an opinion about it?",
-      ];
-    }
-
-    if (scenario.contains('Vampire')) {
-      return [
-        "I have waited centuries for you...",
-        "Your scent... it's intoxicating.",
-        "Come closer. I promise I won't bite... unless you want me to.",
-        "The night is young, and so are we.",
-        "Let me show you a world of darkness and pleasure. 🩸",
-        "What keeps you awake, once the house has gone quiet?",
-        "What would you do with a century, if somebody handed you one?",
-      ];
-    }
-
-    if (scenario.contains('Werewolf') || scenario.contains('Alpha')) {
-      return [
-        "I caught your scent from a mile away.",
-        "You belong to the pack now. You belong to me.",
-        "Don't worry, little one. I'll protect you.",
-        "My inner wolf is howling for you.",
-        "Let's run wild under the moonlight. 🌕",
-        "What are you protecting at the moment? Everyone is protecting something.",
-        "When did you last let someone look after you, instead of the other way round?",
-      ];
-    }
-
-    if (scenario.contains('Doctor')) {
-      return [
-        "The doctor is in.",
-        "Tell me exactly where it hurts...",
-        "I might need to do a thorough examination.",
-        "Your heart rate is elevated. Nervous?",
-        "Let's take care of you. 🩺",
-        "What have you been ignoring that you probably shouldn't be?",
-        "How are you, actually? Not the answer you give at work.",
       ];
     }
 
@@ -1303,20 +1253,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       ];
     }
 
-    if (scenario.contains('Musician') ||
-        scenario.contains('Rockstar') ||
-        scenario.contains('Jax')) {
-      return [
-        "I wrote a song about you last night.",
-        "Want to come backstage?",
-        "The crowd is loud, but all I hear is you.",
-        "Let's make some sweet music together.",
-        "You're my muse. 🎸",
-        "What have you had on repeat lately? I can tell a lot from that.",
-        "What would you write about, if you could write about anything at all?",
-      ];
-    }
-
     if (scenario.contains('Surfer') || scenario.contains('Kai')) {
       return [
         "Swell came in clean this morning. Was out before it got light.",
@@ -1326,42 +1262,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         "Nothing much rattles me. The ocean sorted that out early. 🌊",
         "What is on your mind today? No rush, I have nowhere to be.",
         "What is the thing you keep meaning to do? Say it out loud, see how it sounds.",
-      ];
-    }
-
-    if (scenario.contains('Architect') || scenario.contains('Adrian')) {
-      return [
-        "I'm designing our future.",
-        "Let's build something beautiful together.",
-        "Foundations are important. Ours is strong.",
-        "I have a vision, and you're in it.",
-        "Structure and passion effectively combined. 🏛️",
-        "What are you building at the moment? It doesn't have to be a building.",
-        "Which part of your life would you redesign first?",
-      ];
-    }
-
-    if (scenario.contains('Chef') || scenario.contains('Marco')) {
-      return [
-        "Bon appétit, beautiful.",
-        "I made something special just for you.",
-        "Taste this... tell me what you think.",
-        "Things are heating up in the kitchen.",
-        "Hungry for love? 🍝",
-        "What's the last thing you ate that you actually remember? That tells me plenty.",
-        "Who taught you to cook — or did nobody ever get round to it?",
-      ];
-    }
-
-    if (scenario.contains('Pilot') || scenario.contains('Ryker')) {
-      return [
-        "Ready for takeoff?",
-        "I can show you the world.",
-        "Buckle up, it's going to be a wild ride.",
-        "You look stunning from up here.",
-        "Let's fly away together. ✈️",
-        "Where would you go, if the route didn't matter and nobody asked why?",
-        "What's the furthest you've ever been from home? Tell me about it.",
       ];
     }
 
@@ -1534,39 +1434,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           "Let's start the day right. 😘",
           "What's the first thing on your mind this morning?",
           "What would make today a good one for you?",
-        ];
-      }
-      if (scenario.contains('Guard') || scenario.contains('Royal')) {
-        return [
-          "I am sworn to protect you.",
-          "Stay behind me. I won't let anyone harm you.",
-          "My duty is to the crown, but my heart belongs to you.",
-          "We shouldn't be seen together...",
-          "I would die for you. 🛡️",
-          "What are you afraid of? I'd rather know what I'm guarding against.",
-          "What would you do, if duty wasn't the first thing you thought about?",
-        ];
-      }
-      if (scenario.contains('Fire') || scenario.contains('Hero')) {
-        return [
-          "It's getting hot in here... and it's not the fire.",
-          "I'm here to save you.",
-          "You're safe in my arms.",
-          "My heart races every time I see you.",
-          "Let me be your hero. 🚒",
-          "What's going on with you? I run toward things, not away from them.",
-          "What do you need right now? Just say it plainly.",
-        ];
-      }
-      if (scenario.contains('Stranger')) {
-        return [
-          "I couldn't help but notice you from across the room.",
-          "You look like you're waiting for someone.",
-          "Mind if I buy you a drink?",
-          "There's something mysterious about you.",
-          "I have a feeling this night is going to be interesting. 🍸",
-          "What brings you here tonight? The real reason.",
-          "What's your story? I've got all evening and nowhere to be.",
         ];
       }
     }
