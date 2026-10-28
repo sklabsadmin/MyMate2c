@@ -402,6 +402,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// A reward photograph waiting for the current reply to finish speaking.
   String? _pendingGiftReward;
 
+  /// How many sends in a row came back without a real reply (lastSendSucceeded
+  /// false: a rate limit, a network drop, an upstream error). One failure gets
+  /// the in-character fallback line and nothing more; from the second onwards
+  /// the canned line alone reads as the character stalling, so a system banner
+  /// says plainly that something is wrong. Reset by any successful reply.
+  int _consecutiveFailedReplies = 0;
+
+  /// Whether the trouble banner has been shown for the current failure streak,
+  /// so repeating failures don't stack identical banners.
+  bool _failureBannerShown = false;
+
   /// True while the claim grant is in flight, so a second tap on the entry
   /// card during the round trip cannot fire a second entry_tap or a second
   /// (idempotent, but wasteful) grant.
@@ -3754,6 +3765,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       );
     }
 
+    // A fallback reply reads as the character speaking, so a second one in a
+    // row gets a plain system banner saying what is actually happening —
+    // otherwise repeated failures look like the character saying the same
+    // canned line over and over. Logged under its own origin (system_banner,
+    // which the worker's DELIVERY_ORIGINS accepts) like the roleplay banner.
+    if (fromServer) {
+      _consecutiveFailedReplies = 0;
+      _failureBannerShown = false;
+    } else {
+      _consecutiveFailedReplies++;
+      if (_consecutiveFailedReplies >= 2 && !_failureBannerShown) {
+        _failureBannerShown = true;
+        _addMessage(
+          ChatMessage(
+            id: 'sys_err_${DateTime.now().millisecondsSinceEpoch}',
+            text:
+                'Having trouble reaching the storyteller right now — please try again in a bit.',
+            isUser: false,
+            isSystem: true,
+            timestamp: DateTime.now(),
+          ),
+          origin: DeliveryOrigin.systemBanner,
+        );
+      }
+    }
+
     // Every bubble of a real reply is on screen: the thanks it carried for
     // any gift has been seen, and the worker can stop owing it. Sent with the
     // next request; a fallback reply thanked for nothing, so acks nothing.
@@ -5955,6 +5992,32 @@ class _ChatBubble extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+        ),
+      );
+    }
+
+    // A system banner is the app speaking, not the character — centered and
+    // muted so it cannot be read as a line of dialogue. Until now these
+    // rendered as ordinary character bubbles, which made the trouble banner
+    // look like the character apologising for itself.
+    if (message.isSystem) {
+      return Container(
+        margin: EdgeInsets.only(bottom: gap),
+        alignment: Alignment.center,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.8,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.hairlineColor),
+          ),
+          child: Text(
+            message.text,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall,
           ),
         ),
       );
