@@ -128,8 +128,10 @@ class AppConfig {
   static const String modernSectionTitle = 'Modern';
 
   /// Whether the dashboard offers user-created custom characters: the
-  /// "Create Custom" card and any already-created ones. Set to TRUE to
-  /// bring the feature back.
+  /// "Create Custom" card and any already-created ones. The creation screen
+  /// itself was deleted in the 1.0.6 App Review cleanup, so flipping this
+  /// back to TRUE also means restoring create_character_screen.dart and its
+  /// /create-character route (see git history).
   static const bool enableCustomCharacters = false;
 
   /// Range (inclusive) for the randomized pause, in milliseconds, before

@@ -1251,18 +1251,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       ];
     }
 
-    if (scenario.contains('Trainer') || scenario.contains('Gym')) {
-      return [
-        "Drop down and give me twenty!",
-        "Just kidding. But you look great today.",
-        "Ready to work up a sweat? 😉",
-        "Focus. Eyes on me.",
-        "You're looking stronger every day.",
-        "What are you training for, really? It's rarely just the mirror.",
-        "What's the thing you keep starting and stopping? Let's talk about that one.",
-      ];
-    }
-
     if (scenario.contains('Surfer') || scenario.contains('Kai')) {
       return [
         "Swell came in clean this morning. Was out before it got light.",
@@ -1386,66 +1374,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         "What truth have you been avoiding? I know the shape of that better than most.",
         "What would you ask, if you were certain of the answer?",
       ];
-    }
-
-    if (scenario.contains('Husband') || scenario.contains('Comfort')) {
-      return [
-        "Welcome home, honey.",
-        "Dinner is ready, and so am I.",
-        "How was your day? Tell me everything.",
-        "Come sit with me. I missed you.",
-        "Just relax. I've got you. ❤️",
-        "What's on your mind? We've got all evening.",
-        "What went on today that you haven't told anyone about yet?",
-      ];
-    }
-
-    if (scenario.contains('Roleplay') || widget.isRoleplay) {
-      // Specific Roleplay Scenarios
-      if (scenario.contains('Shower')) {
-        return [
-          "The water is warm... almost as hot as you.",
-          "Care to join me?",
-          "I dropped the soap... oops. 😉",
-          "It's getting steamy in here.",
-          "Don't be shy...",
-          "How was your day? Tell me about it while the water runs.",
-          "What do you want to stop thinking about for the next half hour?",
-        ];
-      }
-      if (scenario.contains('Wall')) {
-        return [
-          "Nowhere left to run.",
-          "Look at me when I'm talking to you.",
-          "I like it when you blush.",
-          "You're mine tonight.",
-          "Say it. Say you want this.",
-          "What is it you actually want? Say it properly.",
-          "What have you been holding back on telling me?",
-        ];
-      }
-      if (scenario.contains('Lap')) {
-        return [
-          "Come here. Sit.",
-          "That's it... get comfortable.",
-          "You have no idea what you do to me.",
-          "Don't move. Just enjoy it.",
-          "You are exactly where you belong.",
-          "What's on your mind? You have my full attention.",
-          "What do you want tonight? Take your time answering.",
-        ];
-      }
-      if (scenario.contains('Morning')) {
-        return [
-          "Good morning, beautiful.",
-          "Stay in bed a little longer with me...",
-          "I love waking up next to you.",
-          "You look like an angel when you sleep.",
-          "Let's start the day right. 😘",
-          "What's the first thing on your mind this morning?",
-          "What would make today a good one for you?",
-        ];
-      }
     }
 
     // Default Companion Fallback. Only reached by a character with no welcome
@@ -2938,10 +2866,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// True for a question that asks for something more than yes or no.
   ///
   /// The distinction matters because the question is now the whole opening.
-  /// Several characters carry closed ones — "Ready for takeoff?", "Want to
-  /// come backstage?", "Mind if I buy you a drink?" — and opening on those
-  /// invites a one-word reply, or more often none at all: they read as
-  /// rhetorical, so there is nothing the visitor obviously has to do.
+  /// A closed question ("Nervous?", "Hungry?") invites a one-word reply, or
+  /// more often none at all: it reads as rhetorical, so there is nothing the
+  /// visitor obviously has to do.
   static bool _isOpenQuestion(String line) {
     // Test each sentence, not the line: the question is usually one clause of
     // several ("What are you navigating at the moment? I have some experience
@@ -3021,7 +2948,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         characterName: widget.scenario!,
         characterImage:
             widget.characterImage ??
-            'assets/images/avatar_ceo_real.jpg', // Fallback
+            'assets/images/avatar_zeus_real.jpg', // Fallback
         lastMessage: message.text,
         timestamp: message.timestamp,
         vibe: _currentVibe,

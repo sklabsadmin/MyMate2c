@@ -10,7 +10,6 @@ import 'core/data/characters.dart';
 import 'features/auth/presentation/signed_out_screen.dart';
 
 
-import 'features/character/presentation/create_character_screen.dart';
 import 'features/chat/presentation/chat_screen.dart';
 import 'features/chat/presentation/recent_chats_screen.dart';
 import 'features/home/presentation/dashboard_screen.dart';
@@ -309,10 +308,10 @@ class _AIAppState extends ConsumerState<AIApp> {
               ],
             ),
             // Third nav slot. Was the Roleplay/Fantasy tab, which this replaces
-            // outright — the /roleplay route is gone, so roleplay_screen.dart
-            // is now unreferenced. The file is left in place deliberately:
-            // restoring the tab means re-adding an import and this one route,
-            // and its scenario copy predates the friend/mentor rewrite anyway.
+            // outright. roleplay_screen.dart itself was deleted in the 1.0.6
+            // App Review cleanup — its scenario copy predated the friend/mentor
+            // rewrite and could not ship under Extended Review. Restoring the
+            // tab means rewriting that screen, not just re-adding a route.
             StatefulShellBranch(
               navigatorKey: _shellNavigatorProfileKey,
               routes: [
@@ -338,11 +337,9 @@ class _AIAppState extends ConsumerState<AIApp> {
           parentNavigatorKey: _rootNavigatorKey,
           builder: (context, state) => const SignedOutScreen(),
         ),
-        GoRoute(
-          path: '/create-character',
-          parentNavigatorKey: _rootNavigatorKey,
-          builder: (context, state) => const CreateCharacterScreen(),
-        ),
+        // /create-character is gone: the creation screen was deleted in the
+        // 1.0.6 App Review cleanup (the roster is authored, not user-made).
+        // An old link lands on the not-found redirect like any unknown path.
         // The coin store. Kept at /paywall as well because older call sites
         // (all behind isFreeTier, so unreachable today) still push that path.
         GoRoute(

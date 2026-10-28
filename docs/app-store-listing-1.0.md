@@ -80,7 +80,8 @@ available on first launch.
 
 Replies are generated server-side by a large language model with a
 character persona and a content policy that keeps conversations suggestive
-at most and never explicit. The app is rated 18+ by our choice.
+at most and never explicit. The app's age rating is 17+, matching the
+description.
 
 Coins are an earned in-app currency (daily check-in, replies, profile
 completion). They cannot be purchased in this version; there is no IAP.
