@@ -14,6 +14,18 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
+        // logs.<domain> exists only for the admin tools. A Workers custom
+        // domain binds the entire hostname, so without this the full app would
+        // be reachable there too — a second public entrance nobody intended.
+        // It has to come before every other route: below the /auth/* handlers
+        // it let the admin host start Google sign-in against a callback Google
+        // does not know, which ended on redirect_uri_mismatch.
+        if (url.hostname.startsWith("logs.")) {
+            if (!url.pathname.startsWith("/admin") && !url.pathname.startsWith("/api/admin")) {
+                return Response.redirect(`${url.origin}/admin`, 302);
+            }
+        }
+
         // Campaign deep links. Handled here rather than by the static asset
         // handler so the arrival is recorded and the character's Open Graph
         // tags are injected before any crawler sees the page.
@@ -118,15 +130,6 @@ export default {
             return redirectResponse(after, [
                 expiredCookie("mymate_session", request),
             ]);
-        }
-
-        // logs.<domain> exists only for the admin tools. A Workers custom
-        // domain binds the entire hostname, so without this the full app would
-        // be reachable there too — a second public entrance nobody intended.
-        if (url.hostname.startsWith("logs.")) {
-            if (!url.pathname.startsWith("/admin") && !url.pathname.startsWith("/api/admin")) {
-                return Response.redirect(`${url.origin}/admin`, 302);
-            }
         }
 
         if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
