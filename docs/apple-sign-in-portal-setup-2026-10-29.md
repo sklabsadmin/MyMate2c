@@ -1,11 +1,21 @@
 # Sign in with Apple: portal setup runbook (2026-10-29)
 
+**Done 2026-10-29.** Portal steps 1-3 and the five worker secrets are in
+place (key ID `ZYXGAVTXRJ`, file kept outside the repo in
+`~/Downloads/appledev/`). Web sign-in verified live: Continue with Apple on
+chat.deeploveechoes.com lands back on Settings showing "Signed in with
+Apple", and the account row in `linked_accounts` carries a refresh token, so
+revocation on delete will work. Still to do: the iOS device test plan and
+the App Store Connect privacy update (steps 5-6 below).
+
+Testing pitfall: the web build's API base is `chat.deeploveechoes.com`
+(`tool/build_web.sh`). Start the flow on that host. Starting it by hand on
+chat.deeplovepoems.com puts the session cookie on the wrong host and
+Settings stays signed out even though the worker created the account.
+
 Status of the code: **done and on `main`** (merged 2026-10-27 as part of
 1.0.6+98). Nothing in the app or worker needs to change for Apple login.
-What is missing is configuration that only the Apple Developer account
-holder can do, plus five worker secrets. This page is the checklist for
-that, with the exact values this app uses. Background and test plan:
-`docs/HANDOFF-sign-in-2026-10-26.md`.
+Background and test plan: `docs/HANDOFF-sign-in-2026-10-26.md`.
 
 ## What is already in the repo
 
