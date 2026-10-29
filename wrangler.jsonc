@@ -150,9 +150,13 @@
     // Every origin that needs sign-in must be listed as an Authorized redirect
     // URI on the OAuth client in Google Cloud Console, or Google rejects the
     // request with redirect_uri_mismatch:
-    //   https://mymate-v2.sklabs-admin.workers.dev/auth/google/callback
+    //   https://mythoslive.sklabs-admin.workers.dev/auth/google/callback
     //   https://chat.deeploveechoes.com/auth/google/callback
     //   https://chat.deeplovepoems.com/auth/google/callback
+    // logs.deeplovepoems.com is admin-only and never starts sign-in, so it
+    // needs no entry. A rename of this worker needs its new workers.dev
+    // callback added here and in the console — on 2026-10-29 the mythoslive
+    // one was still missing, while the frozen mymate-v2 one was registered.
   },
   "compatibility_flags": [
     "nodejs_compat"
