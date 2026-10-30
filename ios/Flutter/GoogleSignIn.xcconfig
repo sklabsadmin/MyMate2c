@@ -10,5 +10,5 @@
 //
 // The worker must be given the same iOS client id as the secret
 // GOOGLE_IOS_CLIENT_ID, or it will refuse the tokens this app sends.
-GOOGLE_IOS_CLIENT_ID = REPLACE_ME.apps.googleusercontent.com
-GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.REPLACE_ME
+GOOGLE_IOS_CLIENT_ID = 791029751937-6jljm6k0o26gfirm96ib907155beb30v.apps.googleusercontent.com
+GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.791029751937-6jljm6k0o26gfirm96ib907155beb30v
