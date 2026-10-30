@@ -5,8 +5,15 @@ place (key ID `ZYXGAVTXRJ`, file kept outside the repo in
 `~/Downloads/appledev/`). Web sign-in verified live: Continue with Apple on
 chat.deeploveechoes.com lands back on Settings showing "Signed in with
 Apple", and the account row in `linked_accounts` carries a refresh token, so
-revocation on delete will work. Still to do: the iOS device test plan and
-the App Store Connect privacy update (steps 5-6 below).
+revocation on delete will work. **2026-10-30:** the iOS device test plan
+passed on a real iPhone (sign-in, sign-out/in, purchase, revocation, Delete
+Account) and App Store Connect → App Privacy now lists Name, Email Address,
+User ID, Purchase History and Other User Content as linked to the user.
+Still to do: paste the review-notes paragraph into the 1.0.6 submission
+when that version is created in App Store Connect (1.0.5 is the one in
+flight today). A device Release build must be made with the .env defines
+(`tool/ios_release.sh`); a plain xcodebuild Release crashes at launch on
+RevenueCat's Test Store key.
 
 Testing pitfall: the web build's API base is `chat.deeploveechoes.com`
 (`tool/build_web.sh`). Start the flow on that host. Starting it by hand on
