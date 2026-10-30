@@ -100,3 +100,26 @@ same id goes into the worker as `GOOGLE_IOS_CLIENT_ID`, with a generated
 3. ASC version page: version 1.0.6, build 98, paste the 1.0.6 review notes,
    check the age rating, sign-in required unticked.
 4. Post the reply above in the submission thread and press Resubmit.
+
+## Outcome (2026-10-30, 21:40)
+
+Resubmitted as a new submission: iOS 1.0.6 (99) plus the three coin packs,
+"4 Items Submitted". The reply above was posted in the rejected
+submission's thread first, then that submission was cancelled.
+
+What it took, for next time:
+- A version inside a rejected submission cannot change its build. Removing
+  the version item from the submission is not enough: Apple's API still
+  reports `ITEM_PART_OF_ANOTHER_SUBMISSION` on "Add for Review". The
+  submission must be **cancelled**, which also flips the IAPs to
+  "Developer Rejected".
+- After the cancel: version page → remove build → Add Build → Save → Add
+  for Review (creates a draft submission). Then on each IAP page, Add for
+  Review → "Draft iOS Submission (n)". Then Submit for Review on the draft.
+- Uploads work without the team API or Organizer:
+  `xcodebuild -exportArchive` with `destination=upload` uses Xcode's signed-in
+  Apple ID. Plist in `docs/` would be worth keeping.
+- Google OAuth consent screen was in Testing (0 test users) until today;
+  branding filled in and published to production. Without that, Google
+  sign-in fails for any account not on the test list, reviewers included.
+- Build 98 (same code, real Google scheme) stays on ASC as a fallback.
