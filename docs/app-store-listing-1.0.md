@@ -54,7 +54,7 @@ conversation with a good story behind it.
 Questions? admin@sklabs.us
 
 ## Keywords (100, comma separated, no spaces after commas)
-greek myths,odyssey,interactive story,chat stories,legends,hercules,trojan war,companion,ai chat
+cupid,hercules,ai chat,companion,greek myth,roleplay,odysseus,zeus,penelope,story,character chat
 
 (96 characters)
 
