@@ -2076,14 +2076,14 @@ async function finishInstagramAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_ig_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
 
     const [expectedState, returnTo] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -2121,13 +2121,13 @@ async function finishInstagramAuth(request, env, url) {
             exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?instagram=connected`, [
+        return redirectResponse(returnTo || `${requestOrigin(request)}/settings?instagram=connected`, [
             expiredCookie("mymate_ig_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "instagram_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -2167,14 +2167,14 @@ async function finishGoogleAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_google_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
 
     const [expectedState, returnTo, anonId] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
@@ -2225,13 +2225,13 @@ async function finishGoogleAuth(request, env, url) {
             anonId: anonId || null,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?google=connected`, [
+        return redirectResponse(returnTo || `${requestOrigin(request)}/settings?google=connected`, [
             expiredCookie("mymate_google_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "google_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
@@ -2695,6 +2695,15 @@ function getGoogleRedirectUri(request, env) {
 
 function getAppOrigin(env) {
     return (env.APP_ORIGIN || "http://localhost:8787").replace(/\/$/, "");
+}
+
+// Where an OAuth callback lands the user when there is no saved returnTo,
+// including every failure. The callback always arrives on the host sign-in
+// started on, and the app's history and anonymous id live per host, so going
+// to APP_ORIGIN instead dropped a cancelled sign-in into an empty app on
+// workers.dev.
+function requestOrigin(request) {
+    return new URL(request.url).origin;
 }
 
 function safeReturnTo(value, env, fallbackQuery = "instagram=connected", request = null) {
