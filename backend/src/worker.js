@@ -3200,7 +3200,14 @@ async function coinKeepsakesHeld(db, userId, characterId) {
 async function coinSync(db, { userId, localDate, visitId = null, appVersion = null }) {
     const granted = [];
 
-    if (await coinGrant(db, {
+    // The welcome is per person, not per id. An account comes into being by
+    // a sign-in from a device that already had its welcome as an anonymous
+    // wallet, and that sign-in always leaves a link-bonus row; so an account
+    // with one has been welcomed already and does not get a second 80.
+    const welcomedViaLink = !coinIsAnonymousId(userId) && Boolean(await db.prepare(
+        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
+    ).bind(`grant:link:${userId}`).first());
+    if (!welcomedViaLink && await coinGrant(db, {
         id: `grant:welcome:${userId}`,
         userId, delta: COINS.welcome, reason: "welcome", visitId, appVersion,
     })) {
@@ -3280,6 +3287,49 @@ async function coinChatSettlement(db, { userId, requestId, responseOk, visitId }
 /// device id could sign in with a fresh account and walk off with the wallet.
 /// An unclaimed wallet merges as it always did, so older clients keep working.
 /// Refused merges still pay the link bonus; the coins stay where they were.
+/// Moves a whole anonymous balance onto an account as one out/in pair of
+/// ledger rows, idempotent under the ids the caller picks. How much of what
+/// crosses was paid for (a pack bought before signing in) rides in meta_json:
+/// free coins are spent first, so the paid remainder is whatever the balance
+/// holds beyond the unspent free income. A NEGATIVE balance is a refund debt,
+/// which is paid debt in full — it crosses too, or a sign-in would launder it
+/// away (E1 in the brief). The trigger reads meta_json so lifetime_purchased
+/// follows the coins (0017); the ledger rows are still the only write.
+/// Returns the balance moved (0 when there was nothing, or rows existed).
+async function coinMoveBalance(db, fromWallet, fromId, toId, { outId, inId, reason }) {
+    const balance = fromWallet ? Number(fromWallet.balance) : 0;
+    if (balance === 0) return 0;
+    const freeUnspent = Math.max(0,
+        Number(fromWallet.lifetime_earned) - Number(fromWallet.lifetime_spent));
+    const paid = balance < 0 ? balance : Math.max(0, Math.min(balance, balance - freeUnspent));
+    const [out] = await db.batch([
+        db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+            VALUES (?, ?, ?, 'merge', ?, ?, ?)
+        `).bind(outId, fromId, -balance, reason, toId,
+            paid !== 0 ? JSON.stringify({ paid: -paid }) : null),
+        db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+            VALUES (?, ?, ?, 'merge', ?, ?, ?)
+        `).bind(inId, toId, balance, reason, fromId,
+            paid !== 0 ? JSON.stringify({ paid }) : null),
+    ]);
+    return d1Changes(out) > 0 ? balance : 0;
+}
+
+/// The account an anonymous wallet was merged onto at sign-in, when it was.
+/// Only a merge that actually happened counts (its merge:out row): a link
+/// bonus alone is paid even to a sign-in whose merge was refused for lack
+/// of a ticket, and must not hand that account the wallet's later purchases.
+async function coinMergedOwner(db, userId) {
+    if (!coinIsAnonymousId(userId)) return userId;
+    const row = await db.prepare(
+        `SELECT ref FROM coin_ledger WHERE id = ? AND kind = 'merge'`
+    ).bind(`merge:out:${userId}`).first();
+    return row && typeof row.ref === "string" && isRealUserId(row.ref) && !coinIsAnonymousId(row.ref)
+        ? row.ref : userId;
+}
+
 async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket = null } = {}) {
     const anonWallet = await db.prepare(
         `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on, last_daily_at, claim_token_hash FROM coin_wallets WHERE user_id = ?`
@@ -3295,28 +3345,9 @@ async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket =
     }
 
     if (allowed && balance !== 0) {
-        // How much of what crosses was paid for (a pack bought before signing
-        // in). Free coins are spent first, so the paid remainder is whatever
-        // the balance holds beyond the unspent free income. A NEGATIVE balance
-        // is a refund debt, which is paid debt in full — it crosses too, or a
-        // sign-in would launder it away (E1 in the brief). Told to the trigger
-        // through meta_json so lifetime_purchased follows the coins onto the
-        // account (0017); the ledger row is still the only write.
-        const freeUnspent = Math.max(0,
-            Number(anonWallet.lifetime_earned) - Number(anonWallet.lifetime_spent));
-        const paid = balance < 0 ? balance : Math.max(0, Math.min(balance, balance - freeUnspent));
-        await db.batch([
-            db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
-                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
-            `).bind(`merge:out:${anonId}`, anonId, -balance, accountUserId,
-                paid !== 0 ? JSON.stringify({ paid: -paid }) : null),
-            db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
-                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
-            `).bind(`merge:in:${accountUserId}:${anonId}`, accountUserId, balance, anonId,
-                paid !== 0 ? JSON.stringify({ paid }) : null),
-        ]);
+        await coinMoveBalance(db, anonWallet, anonId, accountUserId, {
+            outId: `merge:out:${anonId}`, inId: `merge:in:${accountUserId}:${anonId}`, reason: "link",
+        });
     }
 
     // The bonus goes before the clock copy below on purpose: a brand-new
@@ -3444,16 +3475,55 @@ async function coinApplyRcEvent(env, db, event) {
         if (!transactionId) return { applied: false, note: "no transaction id", userId };
         const pack = productId ? COIN_PACKS[productId] : null;
         if (!pack) return { applied: false, note: `unknown product ${productId}`, userId };
-        if (event.environment === "SANDBOX" && !(await coinSandboxAllowed(env, db, userId))) {
-            return { applied: false, note: "sandbox purchase on a non-dev wallet", userId };
+        // The SDK can still be on the device id for a moment after a sign-in
+        // merged that wallet onto the account (seen 2026-10-30: the pack
+        // bought right after signing in landed on the emptied anonymous
+        // wallet, and RevenueCat's TRANSFER came 37 seconds later). The coins
+        // belong to the person, so they go where the wallet went.
+        const owner = await coinMergedOwner(db, userId);
+        if (event.environment === "SANDBOX"
+            && !(await coinSandboxAllowed(env, db, owner))
+            && !(owner !== userId && await coinSandboxAllowed(env, db, userId))) {
+            return { applied: false, note: "sandbox purchase on a non-dev wallet", userId: owner };
         }
         // Apple lets a consumable be bought several-at-once; RevenueCat passes
         // that through as quantity when it does.
         const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
         const wrote = await coinPurchaseCredit(db, {
-            transactionId, userId, coins: pack.coins * quantity, productId, meta,
+            transactionId, userId: owner, coins: pack.coins * quantity, productId, meta,
         });
-        return { applied: wrote, note: wrote ? null : "already credited", userId };
+        return { applied: wrote, note: wrote ? null : "already credited", userId: owner };
+    }
+
+    if (type === "TRANSFER") {
+        // RevenueCat moved a customer's purchases from one of its ids to
+        // another — logIn on a device whose anonymous id had bought packs.
+        // When the source is one of our anonymous wallets and the target an
+        // account, whatever the wallet still holds follows: the sign-in merge
+        // ran before the purchase landed (above), or the wallet was empty at
+        // sign-in and so has no merge rows for the purchase path to follow.
+        // The webhook is RevenueCat's word that this device logged in as that
+        // account, which is the ownership proof the merge ticket exists for.
+        const toIds = (Array.isArray(event.transferred_to) ? event.transferred_to : [])
+            .filter((id) => isRealUserId(id) && !coinIsAnonymousId(id));
+        const fromIds = (Array.isArray(event.transferred_from) ? event.transferred_from : [])
+            .filter((id) => coinIsAnonymousId(id));
+        if (toIds.length !== 1 || fromIds.length === 0) {
+            return { applied: false, note: "transfer not from an anonymous wallet to one account", userId: toIds[0] || null };
+        }
+        const accountId = toIds[0];
+        let moved = 0;
+        for (const anonId of fromIds) {
+            const fromWallet = await db.prepare(
+                `SELECT balance, lifetime_earned, lifetime_spent FROM coin_wallets WHERE user_id = ?`
+            ).bind(anonId).first();
+            moved += await coinMoveBalance(db, fromWallet, anonId, accountId, {
+                outId: `transfer:out:${event.id}:${anonId}`,
+                inId: `transfer:in:${event.id}:${anonId}`,
+                reason: "transfer",
+            });
+        }
+        return { applied: moved !== 0, note: moved !== 0 ? null : "nothing left to move", userId: accountId };
     }
 
     if (type === "CANCELLATION") {
@@ -3471,14 +3541,15 @@ async function coinApplyRcEvent(env, db, event) {
         // zero instead of crediting a refunded pack in full.
         const pack = productId ? COIN_PACKS[productId] : null;
         if (!pack || !userId) return { applied: false, note: refund.note, userId };
+        const owner = await coinMergedOwner(db, userId);
         const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
         const result = await db.prepare(`
             INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
             VALUES (?, ?, ?, 'refund', 'pack', ?, ?)
-        `).bind(`refund:${transactionId}`, userId, -(pack.coins * quantity), productId,
+        `).bind(`refund:${transactionId}`, owner, -(pack.coins * quantity), productId,
             JSON.stringify({ ...refundMeta, before_purchase: true })).run();
         const wrote = d1Changes(result) > 0;
-        return { applied: wrote, note: wrote ? "refund before purchase" : "already refunded", userId };
+        return { applied: wrote, note: wrote ? "refund before purchase" : "already refunded", userId: owner };
     }
 
     // TEST (the dashboard's "send test event"), TRANSFER, subscription types
@@ -10392,4 +10463,4 @@ ${visitTimelineJs()}
 
 /// Internals the worker suite drives directly where no route reaches them
 /// without a live OAuth exchange. Not part of the Worker's runtime surface.
-export const __test = { coinMergeWallet, coinMergeTicket };
+export const __test = { coinMergeWallet, coinMergeTicket, coinSync };

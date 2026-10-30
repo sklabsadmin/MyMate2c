@@ -624,3 +624,101 @@ test('a claim whose token never reached the device can be re-minted once; a used
     // A read (not a sync) with "new" is never a re-mint path.
     assert.equal((await wallet(env, { claim: 'new' })).status, 403);
 });
+
+// --- sign-in race (2026-10-30) ----------------------------------------------
+//
+// Seen on a real iPhone: the pack bought right after signing in was reported
+// by RevenueCat under the device id, whose wallet the sign-in had already
+// emptied onto the account; RevenueCat's TRANSFER to the account came 37
+// seconds later, and the coins sat in a wallet nothing could reach.
+
+const ACCOUNT = 'apple:001466.3efd4dbf7b4245d78a4d6a0c222928a1.1215';
+const workerModule = () => import(new URL('file://' + new URL('../src/worker.js', import.meta.url).pathname));
+
+test('a pack reported under an anonymous id that was merged onto an account credits the account', async () => {
+    const { env, db } = packsEnv();
+    const mod = await workerModule();
+    await wallet(env, { method: 'POST', path: '/api/wallet/sync' }); // anonymous wallet: +100 free
+    await mod.__test.coinMergeWallet(env.CHAT_LOGS_DB, ACCOUNT, USER);
+    assert.equal(balance(db, USER), 0);
+    assert.equal(balance(db, ACCOUNT), 200);
+
+    // The SDK was still on the device id when the purchase went through.
+    const res = await webhook(env, rcEvent({ app_user_id: USER, original_app_user_id: USER, aliases: [USER] }));
+    assert.equal(res.json.applied, true);
+    assert.equal(balance(db, USER), 0);
+    assert.equal(balance(db, ACCOUNT), 1200);
+    assert.equal(walletRow(db, ACCOUNT).lifetime_purchased, 1000);
+    assert.equal(eventRow(db, 'evt-1').user_id, ACCOUNT);
+
+    // Reconcile-style re-delivery of the same transaction is still a no-op.
+    const again = await webhook(env, rcEvent({ id: 'evt-1b' }));
+    assert.equal(again.json.applied, false);
+    assert.equal(balance(db, ACCOUNT), 1200);
+});
+
+test('a link bonus without a merge (refused for lack of a ticket) does not route the wallet\'s purchases to that account', async () => {
+    const { env, db } = packsEnv();
+    const mod = await workerModule();
+    const token = (await wallet(env, { method: 'POST', path: '/api/wallet/sync', claim: 'new' })).json.claim_token;
+    void token;
+    await mod.__test.coinMergeWallet(env.CHAT_LOGS_DB, 'google:stranger', USER, { env, ticket: null });
+    assert.equal(balance(db, 'google:stranger'), 100); // link bonus only, no merge rows
+
+    const res = await webhook(env, rcEvent());
+    assert.equal(res.json.applied, true);
+    assert.equal(balance(db, USER), 100 + 1000);
+    assert.equal(balance(db, 'google:stranger'), 100);
+});
+
+test('a TRANSFER from an anonymous wallet to an account carries whatever the wallet still holds, once', async () => {
+    const { env, db } = packsEnv();
+    const mod = await workerModule();
+    await wallet(env, { method: 'POST', path: '/api/wallet/sync' });
+    await mod.__test.coinMergeWallet(env.CHAT_LOGS_DB, ACCOUNT, USER);
+    // A pack credited to the anonymous wallet before this fix existed.
+    db.prepare(`INSERT INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json) VALUES ('purchase:tx-late', ?, 1000, 'purchase', 'pack', 'mythos_coins_1000', '{"store":"APP_STORE"}')`).run(USER);
+    assert.equal(balance(db, USER), 1000);
+
+    const transfer = rcEvent({
+        id: 'evt-transfer', type: 'TRANSFER', app_user_id: undefined, original_app_user_id: undefined,
+        aliases: undefined, product_id: undefined, transaction_id: undefined, original_transaction_id: undefined,
+        transferred_from: [USER], transferred_to: [ACCOUNT],
+    });
+    const res = await webhook(env, transfer);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.applied, true);
+    assert.equal(balance(db, USER), 0);
+    assert.equal(balance(db, ACCOUNT), 200 + 1000);
+    assert.equal(walletRow(db, ACCOUNT).lifetime_purchased, 1000);
+    assert.equal(ledgerRows(db, "reason = 'transfer'").length, 2);
+
+    // Redelivered: nothing left to move, nothing written twice.
+    const again = await webhook(env, { ...transfer, event: { ...transfer.event, id: 'evt-transfer-2' } });
+    assert.equal(again.json.applied, false);
+    assert.equal(balance(db, ACCOUNT), 1200);
+
+    // A transfer between two RevenueCat-anonymous ids, or to an anonymous id, is ignored.
+    const noise = await webhook(env, { ...transfer, event: { ...transfer.event, id: 'evt-transfer-3', transferred_from: ['$RCAnonymousID:a'], transferred_to: [OTHER] } });
+    assert.equal(noise.json.applied, false);
+});
+
+test('an account linked from a welcomed device is not welcomed a second time', async () => {
+    const { env, db } = packsEnv();
+    const mod = await workerModule();
+    await wallet(env, { method: 'POST', path: '/api/wallet/sync' }); // welcome +80, daily +20
+    assert.equal(balance(db, USER), 100);
+    await mod.__test.coinMergeWallet(env.CHAT_LOGS_DB, ACCOUNT, USER);
+    assert.equal(balance(db, ACCOUNT), 200);
+
+    // No second welcome; and no daily either, because the dawn clock crossed
+    // with the merge and the 20-hour guard still holds.
+    const granted = await mod.__test.coinSync(env.CHAT_LOGS_DB, { userId: ACCOUNT, localDate: '2026-09-29' });
+    assert.deepEqual(granted, []);
+    assert.equal(balance(db, ACCOUNT), 200);
+    assert.equal(ledgerRows(db, "id = ?", `grant:welcome:${ACCOUNT}`).length, 0);
+
+    // A device that never linked still gets its welcome.
+    const fresh = await mod.__test.coinSync(env.CHAT_LOGS_DB, { userId: OTHER, localDate: '2026-09-28' });
+    assert.deepEqual(fresh.map((g) => g.reason), ['welcome', 'daily']);
+});
