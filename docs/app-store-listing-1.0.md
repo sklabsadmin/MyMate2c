@@ -105,3 +105,65 @@ Suggested shots, in order:
 3. A character profile card
 4. The coins sheet with a gift being sent
 5. The daily claim screen
+
+---
+
+## 1.0.6 resubmission (2026-10-30) — answering the Guideline 1.1 rejection
+
+What App Review cited was the **keywords** field of 1.0.5 (96). State in
+App Store Connect as of today: keywords, description, promotional text and
+subtitle already carry the clean copy (no "ai girlfriend", "ai boyfriend",
+"roleplay"); saved. What 1.0.5 (96) still carries is the **in-app** copy
+from before the cleanup, which only 1.0.6 (98) removes (`8ef76ab`,
+`9b5ae23`). So the resubmission must be build 98, not a resubmit of 96.
+
+Steps on the version page:
+1. Change Version from `1.0.5` to `1.0.6`.
+2. Build → select **98** (uploaded from `tool/ios_release.sh --ipa`).
+3. Replace the review notes with the text below.
+4. Sign-in required: leave unticked (sign-in is optional; no reviewer
+   account needed).
+5. In the submission, "Resubmit to App Review". No separate reply to the
+   message is needed; the notes say what changed.
+
+### Review notes (paste over the existing notes)
+
+Mythos Live is a conversational AI app with fictional personalities drawn
+from Greek mythology (Odysseus, Penelope, Zeus, Hercules and others). Users
+talk only with AI-generated fictional personalities; there is no
+user-to-user messaging.
+
+What changed since the previous submission: the keywords and description
+were replaced, and the in-app copy was reviewed so that nothing in the app
+or its metadata references dating, romance roleplay or similar services.
+The app's purpose is story-driven conversation with mythological figures.
+
+Content safety: replies are generated server-side with a fixed persona per
+personality and a content policy that blocks sexual or explicit content;
+requests for it are declined in character. The 18+ age rating was chosen
+conservatively because the source myths contain mature themes (war,
+betrayal, tragedy), not because the app produces adult content.
+
+Sign-in is optional and not required for any feature. Sign in with Apple
+and Google are offered together in Settings → Account, after saving a
+profile, and once after a first coin purchase ("Protect your coins").
+Signed-in users can delete their account in Settings → Account → Delete
+Account; this deletes the account and its data and revokes the Sign in
+with Apple token.
+
+Mythos Coins are an in-app virtual currency earned by daily check-ins and
+chatting, and spent on virtual gifts to the AI personalities. Coins have no
+cash value and cannot be transferred or redeemed. Three optional consumable
+packs (300, 1,000, 3,000) are verified server-side through the App Store;
+the balance updates within seconds, and "Didn't get your coins? Check
+again" in the store re-checks a purchase.
+
+How to test: open any personality and send a few messages; tap the coin
+balance in the chat header for the wallet; send a gift; tap "Get more
+coins" to see the packs. Settings → Continue with Apple to try sign-in.
+
+Notifications are optional local reminders; declining changes nothing.
+Photo Library access is asked only when the user picks a profile avatar;
+the image stays on the device.
+
+Support: Settings → Contact Support (admin@sklabs.us).
