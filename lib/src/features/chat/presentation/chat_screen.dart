@@ -913,7 +913,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // question and sends it for them, so a card demanding a tap first would
     // stand between them and the answer they followed the link for.
     if ((widget.initialMessage ?? '').trim().isNotEmpty) return false;
+    // A returning visitor who already holds coins has nothing to be invited
+    // to: the card's one promise is the welcome claim, and a second tap to
+    // reach a character they already know is a wasted step. They go straight
+    // in. The claim call still runs, since it is the only place the daily
+    // grant lands. Not counted in entry_shown, so the card's rates now
+    // describe first-time visitors only.
+    if (_isReturningHolder(ref.read(coinWalletProvider).value)) {
+      _claimThenOpen(_entryGateStartsOpening);
+      return true;
+    }
     setState(() => _entryGateActive = true);
+    // The wallet is read from its cache asynchronously, so on a cold start
+    // (a link straight into the chat) it may not be known yet. If it turns
+    // out to belong to a returning holder before they have tapped, take the
+    // card down the same way.
+    if (ref.read(coinWalletProvider).value == null) {
+      ref.read(coinWalletProvider.future).then((wallet) {
+        if (!mounted || !_entryGateActive || _claimInFlight) return;
+        if (!_isReturningHolder(wallet)) return;
+        _claimThenOpen(_entryGateStartsOpening);
+      }, onError: (_) {});
+    }
     // The denominator for the low bar. Its duration_ms is time from arrival, so
     // this row also says how quickly the one tappable thing on the screen got
     // there — the number that decides whether a rate means anything on traffic
@@ -961,7 +982,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // _entryGateStartsOpening. The visitor was still gated and still counted;
     // they simply resume the conversation from where the old bundle left it.
     final shouldOpen = startOpening && _entryGateStartsOpening;
+    await _claimThenOpen(shouldOpen);
+  }
 
+  /// Someone who has been granted coins before, by the wallet's own record.
+  /// Spent-out counts: they are still not new, and the welcome claim the card
+  /// promises has already been paid to them.
+  bool _isReturningHolder(CoinWalletState? wallet) =>
+      AppConfig.coinsUiEnabled &&
+      wallet != null &&
+      wallet.enabled &&
+      (wallet.balance > 0 || wallet.lifetimeEarned > 0);
+
+  /// Claims whatever is pending, then either raises the claim screen or drops
+  /// the entry card and starts the opening. Shared by the card's tap and by a
+  /// returning holder, who skips the card.
+  Future<void> _claimThenOpen(bool shouldOpen) async {
+    if (_claimInFlight) return;
     // THE GRANT HAPPENS HERE, on the tap — never at app load. Gated on the
     // wallet-enabled truth, deliberately NOT on what the button said: in a
     // dark build (coins off, or the wallet not yet read) the tap grants
@@ -974,8 +1011,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // straight into the conversation. Awaited so the grant is real before we
     // decide whether to raise the claim screen; the entry card stays up for
     // the brief round trip rather than flashing an empty screen.
-    if (AppConfig.coinsUiEnabled &&
-        (ref.read(coinWalletProvider).value?.enabled ?? false)) {
+    // A wallet still being checked (null) claims too: the card has been
+    // promising coins while it waits, so a quick tap must not lose them.
+    // claim() returns nothing if the server turns out to have coins off.
+    final walletNow = ref.read(coinWalletProvider).value;
+    if (AppConfig.coinsUiEnabled && (walletNow == null || walletNow.enabled)) {
       _claimInFlight = true;
       List<CoinGrant> claimed;
       try {
@@ -4267,8 +4307,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               // the entry-cta experiment, which gets the original card while
               // the tap still grants (the promise is the variable, never the
               // coins; _enterChat deliberately does not consult the arm).
+              //
+              // A wallet still being checked (null) counts as live. Coins are
+              // on in production, and a first-time visitor has no cached
+              // wallet, so falling back while the read is in flight flashed
+              // "Tap to Talk" on nearly every first visit. Only a server that
+              // has answered "off" (or a read that failed) gets the old card.
               coinsClaim: AppConfig.coinsUiEnabled &&
-                  (ref.watch(coinWalletProvider).value?.enabled ?? false) &&
+                  (ref.watch(coinWalletProvider).value?.enabled ?? true) &&
                   !AppConfig.coinsPromiseHeldBack(currentVariant()),
               scrollController: _entryGateScrollController,
             ),

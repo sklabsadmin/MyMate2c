@@ -324,7 +324,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: AppTheme.inkColor),
-          onPressed: () => context.pop(),
+          // On web, Google/Apple sign-in leaves the app and redirects back to
+          // /settings, so the app reboots with Settings as its only page and
+          // there is nothing to pop. Fall back to the dashboard.
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/dashboard');
+            }
+          },
         ),
         title: Text(
           'Settings',

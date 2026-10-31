@@ -16,7 +16,7 @@
 const sharp = require("sharp");
 const fs = require("fs");
 
-const SRC = "brand/mythoslive_logoDark.png";
+const SRC = "brand/mythoslive_splash.png";
 const OUT = "web/splash/img";
 const SIZES = { "1x": 256, "2x": 512, "3x": 768, "4x": 1024 };
 
@@ -27,7 +27,7 @@ if (!fs.existsSync(SRC)) {
 
 (async () => {
   for (const [name, px] of Object.entries(SIZES)) {
-    const out = `${OUT}/logodark-${name}.webp`;
+    const out = `${OUT}/logolight-${name}.webp`;
     const { size } = await sharp(SRC)
       .resize(px, px, { fit: "contain" })
       .webp({ quality: 82, effort: 6 })
@@ -35,7 +35,7 @@ if (!fs.existsSync(SRC)) {
     console.log(`  ${out}  ${px}px  ${(size / 1024).toFixed(0)} KB`);
   }
   // Fallback only — never referenced when the browser understands WebP.
-  const fallback = `${OUT}/logodark-1x.png`;
+  const fallback = `${OUT}/logolight-1x.png`;
   const { size } = await sharp(SRC)
     .resize(SIZES["1x"], SIZES["1x"], { fit: "contain" })
     .png({ compressionLevel: 9 })

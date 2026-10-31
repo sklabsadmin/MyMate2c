@@ -175,7 +175,11 @@ class AppConfig {
   /// arm b still grants on the tap and still gets the claim screen, as a
   /// surprise rather than a promise. The wallet, chip, gifts and streak are
   /// identical in both arms.
-  static const String entryCtaExperiment = 'entry-cta-20260825';
+  ///
+  /// Retired 2026-10-31 ('entry-cta-20260825' before that): empty here and in
+  /// both page-script copies, so no visitor is in arm b and every card makes
+  /// the coins promise. The plumbing stays for the next experiment.
+  static const String entryCtaExperiment = '';
 
   /// Widget tests run off the web, where the page assigns no arm; this lets
   /// them put a visitor in arm b. Never set outside a test.
