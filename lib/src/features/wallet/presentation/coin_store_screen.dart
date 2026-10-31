@@ -189,6 +189,18 @@ class _CoinStoreScreenState extends ConsumerState<CoinStoreScreen> {
         foregroundColor: _ink,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
+        // Explicit rather than implied: after a web sign-in redirect back to
+        // /coins there is nothing to pop, and the implied arrow would vanish.
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/dashboard');
+            }
+          },
+        ),
         title: Text('Mythos Coins',
             style: GoogleFonts.outfit(fontWeight: FontWeight.w700)),
       ),
