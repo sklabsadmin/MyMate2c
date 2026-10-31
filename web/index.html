@@ -55,10 +55,11 @@
   <!-- Custom splash. Regenerated away by flutter_native_splash:create —
        re-apply with: python3 tool/patch_splash.py -->
   <style id="splash-extras">
-    /* Same colour as AppTheme.backgroundColor, so the splash and the app it
-       covers are literally the same surface — the logo lifts away instead of
-       the whole screen changing colour under it. */
-    #mythos-backdrop { position: fixed; inset: 0; background: #1A0520; z-index: 9998; }
+    /* Same colour as AppTheme.backgroundColor (white since the light theme),
+       so the splash and the app it covers are literally the same surface —
+       the logo lifts away instead of the whole screen changing colour under
+       it. */
+    #mythos-backdrop { position: fixed; inset: 0; background: #FFFFFF; z-index: 9998; }
     /* z-index must sit on the img: #splash is a <picture>, which is not
        positioned, so a z-index there does nothing. .center makes the img
        absolute. */
@@ -66,10 +67,10 @@
        on a fast connection meant it was still animating in as the app became
        ready — the first thing a visitor saw was motion that then vanished. It
        is now simply present from the first frame. */
-    /* The logo art has the backdrop colour baked into it (it is RGB, no
-       alpha), so its square edges are invisible against #1A0520 — sampled at
-       rgb(26,3,33), within a shade of AppTheme.backgroundColor. Capped so it
-       reads as a logo rather than filling a large desktop window. */
+    /* The same cream rounded-tile lockup the iOS and Android launch screens
+       show (brand/mythoslive_splash.png). Its corners are transparent, so on
+       white it reads as the app icon rather than a slab. Capped so it reads
+       as a logo rather than filling a large desktop window. */
     #splash img { z-index: 9999; width: min(62vw, 300px); height: auto; }
     /* Anchored to the logo, not the viewport bottom. The logo is vertically
        centred and square, so its lower edge sits at 50% + half its width;
@@ -81,9 +82,9 @@
       margin: 0; width: 92%; text-align: center; z-index: 9999;
       font-family: Georgia, "Times New Roman", serif;
       font-size: clamp(15px, 4.2vw, 19px); letter-spacing: .02em;
-      /* Light enough to read on the dark backdrop; the old #6B4B7A was picked
-         against cream and is near-invisible on #1A0520. */
-      color: #C9B3D6;
+      /* AppTheme.mutedInkColor: readable on white without competing with
+         the wordmark. */
+      color: #7A7288;
     }
     #splash-tagline .dots span { opacity: 0; animation: mythos-dot 1.4s infinite; }
     #splash-tagline .dots span:nth-child(2) { animation-delay: .2s; }
@@ -109,7 +110,7 @@
     html.mythos-direct #mythos-backdrop,
     html.mythos-direct #splash,
     html.mythos-direct #splash-tagline { display: none; }
-    html.mythos-direct, html.mythos-direct body { background: #1A0520; }
+    html.mythos-direct, html.mythos-direct body { background: #FFFFFF; }
   </style>
   <style id="splash-screen-style">
     html {
@@ -119,7 +120,7 @@
     body {
       margin: 0;
       min-height: 100%;
-      background-color: #1A0520;
+      background-color: #FFFFFF;
           background-size: 100% 100%;
     }
 
@@ -646,8 +647,8 @@
 <body>
   <div id="mythos-backdrop"></div>
   <picture id="splash">
-      <source type="image/webp" srcset="splash/img/logodark-1x.webp 1x, splash/img/logodark-2x.webp 2x, splash/img/logodark-3x.webp 3x, splash/img/logodark-4x.webp 4x">
-      <img class="center" aria-hidden="true" src="splash/img/logodark-1x.png" alt="">
+      <source type="image/webp" srcset="splash/img/logolight-1x.webp 1x, splash/img/logolight-2x.webp 2x, splash/img/logolight-3x.webp 3x, splash/img/logolight-4x.webp 4x">
+      <img class="center" aria-hidden="true" src="splash/img/logolight-1x.png" alt="">
   </picture>
   <p id="splash-tagline">Connecting you with the ancient past<span class="dots"><span>.</span><span>.</span><span>.</span></span></p>
   

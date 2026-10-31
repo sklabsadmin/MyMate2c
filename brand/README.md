@@ -13,12 +13,14 @@ bandwidth — still worth keeping out.)
   the web favicons (`web/favicon-32/48.png`), `web/icons/*` and the native
   launcher icons. Regenerate from this rather than editing the outputs.
 - `MythosLiveLogo.png` — the same medallion with the wordmark. Splash art.
-- `mythoslive_logoDark.png` — the wordmark medallion on the app's own dark
-  field (`#1A0520`, matching `AppTheme.backgroundColor`). Source for the web
-  splash: regenerate the `web/splash/img/logodark-*` variants with
-  `node tool/make_splash_logo.js` rather than editing those by hand. It is RGB
-  with no alpha, so the backdrop colour must keep matching the art's own field
-  or the square edges become visible.
+- `mythoslive_splash.png` — the cream rounded-tile lockup with transparent
+  corners. Source for the iOS/Android launch screens (`flutter_native_splash`)
+  and, since the light theme, the web splash: regenerate the
+  `web/splash/img/logolight-*` variants with `node tool/make_splash_logo.js`
+  rather than editing those by hand.
+- `mythoslive_logoDark.png` — the same lockup on the old dark field
+  (`#1A0520`). Was the web splash source before the light theme; kept for
+  reference.
 - `splash_logo.png` — superseded splash art, kept for reference.
 - `avatar_andromache_real-v3-source.jpg` — full-resolution source for the
   current Andromache portrait. The shipped copy in `assets/images/` is
