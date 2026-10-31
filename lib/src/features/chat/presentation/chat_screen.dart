@@ -1011,8 +1011,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // straight into the conversation. Awaited so the grant is real before we
     // decide whether to raise the claim screen; the entry card stays up for
     // the brief round trip rather than flashing an empty screen.
-    if (AppConfig.coinsUiEnabled &&
-        (ref.read(coinWalletProvider).value?.enabled ?? false)) {
+    // A wallet still being checked (null) claims too: the card has been
+    // promising coins while it waits, so a quick tap must not lose them.
+    // claim() returns nothing if the server turns out to have coins off.
+    final walletNow = ref.read(coinWalletProvider).value;
+    if (AppConfig.coinsUiEnabled && (walletNow == null || walletNow.enabled)) {
       _claimInFlight = true;
       List<CoinGrant> claimed;
       try {
@@ -4304,8 +4307,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               // the entry-cta experiment, which gets the original card while
               // the tap still grants (the promise is the variable, never the
               // coins; _enterChat deliberately does not consult the arm).
+              //
+              // A wallet still being checked (null) counts as live. Coins are
+              // on in production, and a first-time visitor has no cached
+              // wallet, so falling back while the read is in flight flashed
+              // "Tap to Talk" on nearly every first visit. Only a server that
+              // has answered "off" (or a read that failed) gets the old card.
               coinsClaim: AppConfig.coinsUiEnabled &&
-                  (ref.watch(coinWalletProvider).value?.enabled ?? false) &&
+                  (ref.watch(coinWalletProvider).value?.enabled ?? true) &&
                   !AppConfig.coinsPromiseHeldBack(currentVariant()),
               scrollController: _entryGateScrollController,
             ),

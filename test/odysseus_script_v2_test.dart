@@ -673,6 +673,41 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('a wallet still loading shows the coins promise, and its tap claims',
+      (tester) async {
+    // A first-time visitor has no cached wallet, so the card is drawn before
+    // the wallet read answers. Falling back to "Tap to Talk" for that round
+    // trip flashed the old card on nearly every first visit.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_UnreadWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.text(_enterButtonCoins), findsOneWidget,
+        reason: 'still checking is not a no');
+    expect(find.text(_enterButton), findsNothing);
+
+    // Tapped before the read answers: the promise on the button is kept.
+    await tester.tap(find.text(_enterButtonCoins));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget);
+
+    await _teardown(tester);
+  });
+
   testWidgets('a returning holder skips the card and goes straight in',
       (tester) async {
     // The card's one promise is the welcome claim. Someone who already holds
@@ -1535,6 +1570,19 @@ class _RichWalletNotifier extends CoinWalletNotifier {
   // straight into the story.
   @override
   Future<List<CoinGrant>> claim() async => const [];
+}
+
+/// A wallet whose first read has not answered yet: build() has no cache and
+/// no fetch is made, so the state stays null. The claim still works.
+class _UnreadWalletNotifier extends CoinWalletNotifier {
+  @override
+  Future<CoinWalletState?> build() async => null;
+
+  @override
+  Future<List<CoinGrant>> claim() async {
+    state = const AsyncData(CoinWalletState(enabled: true, balance: 100));
+    return const [CoinGrant('welcome', 80), CoinGrant('daily', 20)];
+  }
 }
 
 /// A returning holder whose daily is due: coins already, one grant pending.
