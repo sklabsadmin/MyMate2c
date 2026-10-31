@@ -673,6 +673,81 @@ void _entryGateTests() {
     await _teardown(tester);
   });
 
+  testWidgets('a returning holder skips the card and goes straight in',
+      (tester) async {
+    // The card's one promise is the welcome claim. Someone who already holds
+    // coins was paid it on an earlier visit, so a tap to reach a character
+    // they already know is a wasted step.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_RichWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('entry_gate_surface')), findsNothing,
+        reason: 'no card for someone who already holds coins');
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsNothing,
+        reason: 'nothing was pending, so no claim screen either');
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty,
+        reason: 'the opening starts without a tap');
+
+    await _teardown(tester);
+  });
+
+  testWidgets('a returning holder still collects the daily without the card',
+      (tester) async {
+    // The claim call is the only place the daily grant lands. Skipping the
+    // card must not skip that: what is pending still gets its screen.
+    tester.view.physicalSize = const Size(390, 844) * 3.0;
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          coinWalletProvider.overrideWith(_DailyPendingWalletNotifier.new),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(scenario: _scenario, characterId: 'odysseus'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('entry_gate_surface')), findsNothing);
+    expect(find.byKey(const ValueKey('coin_claim_surface')), findsOneWidget,
+        reason: 'the daily still lands, on its own screen');
+    await tester.pump(const Duration(milliseconds: 2400));
+    expect(find.text('Dawn offering'), findsOneWidget);
+    await _play(tester, limit: const Duration(seconds: 60));
+    expect(await _delivered(), isEmpty,
+        reason: 'the opening waits behind the claim screen as before');
+
+    await tester.tap(find.text('Collect and begin'));
+    await tester.pump();
+    await _play(tester, limit: const Duration(seconds: 30));
+    expect(await _delivered(), isNotEmpty);
+
+    await _teardown(tester);
+  });
+
   testWidgets('entry-cta arm b hides the promise but never the coins',
       (tester) async {
     // The experiment varies ONLY the first-screen ask: arm b gets the
@@ -1462,6 +1537,20 @@ class _RichWalletNotifier extends CoinWalletNotifier {
   Future<List<CoinGrant>> claim() async => const [];
 }
 
+/// A returning holder whose daily is due: coins already, one grant pending.
+class _DailyPendingWalletNotifier extends CoinWalletNotifier {
+  @override
+  Future<CoinWalletState?> build() async =>
+      const CoinWalletState(enabled: true, balance: 40, lifetimeEarned: 120);
+
+  @override
+  Future<List<CoinGrant>> claim() async {
+    state = const AsyncData(
+        CoinWalletState(enabled: true, balance: 60, lifetimeEarned: 140));
+    return const [CoinGrant('daily', 20)];
+  }
+}
+
 /// A fresh visitor: enabled, but empty until they TAP. build() is the
 /// read-only app-load state (balance 0, no grants); claim() is what the tap
 /// triggers, and the only place the 100 is minted — mirroring the real
@@ -1504,10 +1593,10 @@ void _giftSheetTests() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
-    // No pending grants on this wallet, so the entry tap goes straight in.
-    await tester.tap(find.text(_enterButtonCoins));
+    // A returning holder with nothing pending: no entry card at all, the
+    // conversation is open from the first frames.
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.text(_enterButtonCoins), findsNothing);
   }
 
   testWidgets('the gift button sits in the strip and opens the catalogue',
