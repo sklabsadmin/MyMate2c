@@ -5,7 +5,6 @@ import 'core/theme/app_theme.dart';
 
 import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
-import 'core/services/background_chat_service.dart';
 import 'core/data/characters.dart';
 import 'features/auth/presentation/signed_out_screen.dart';
 
@@ -48,6 +47,12 @@ class _RouteNotFoundRedirectState extends State<_RouteNotFoundRedirect> {
   }
 }
 
+/// Whether [path] is an open conversation: a chat session or a /c/<id>
+/// character link. '/chat' alone is the recent-chats list, not a
+/// conversation.
+bool isConversationPath(String path) =>
+    path.startsWith('/chat/session') || path.startsWith('/c/');
+
 // Placeholder screens - will be implemented later
 class PlaceholderScreen extends StatelessWidget {
   final String title;
@@ -88,9 +93,9 @@ class AIApp extends ConsumerStatefulWidget {
 
 class _AIAppState extends ConsumerState<AIApp> {
   late final AppLifecycleListener _listener;
-  // Held so dispose() can stop the simulator's periodic timer without reading
-  // a provider off a container that may already be tearing down.
-  BackgroundChatSimulator? _simulator;
+  // The router build() made, kept so the lifecycle hook can ask where the
+  // user was when they left the app.
+  GoRouter? _router;
 
   @override
   void initState() {
@@ -98,19 +103,15 @@ class _AIAppState extends ConsumerState<AIApp> {
     _listener = AppLifecycleListener(
       onStateChange: _onStateChanged,
     );
-     // Start Background Simulator
-     WidgetsBinding.instance.addPostFrameCallback((_) {
-       if (!mounted) return;
-       final simulator = ref.read(backgroundChatSimulatorProvider);
-       _simulator = simulator;
-       simulator.start();
-     });
+    // There used to be a "background chat simulator" started here: every 45s
+    // (labelled "short for demo") it wrote a canned line from a random recent
+    // character into that chat's history and bumped its unread count. Those
+    // lines were then sent to the model as the character's own turns. Removed
+    // for build 100; StorageService drops the ones already on disk.
   }
 
   @override
   void dispose() {
-    // Its 45s periodic timer outlives the widget tree otherwise.
-    _simulator?.stop();
     _listener.dispose();
     super.dispose();
   }
@@ -131,8 +132,13 @@ class _AIAppState extends ConsumerState<AIApp> {
     final activeChat = ref.read(activeChatProvider);
     final now = DateTime.now();
 
-    // Quick Return Notification (10 seconds)
-    if (activeChat != null) {
+    // Quick return notification: only when they left the app from inside a
+    // conversation, and an hour later. It used to fire 10 seconds after ANY
+    // app switch — activeChat is set when a chat opens and never cleared, so
+    // leaving from the dashboard, or glancing at a text, also got
+    // "You left mid-thought" from whoever they last talked to.
+    final path = _router?.routerDelegate.currentConfiguration.uri.path ?? '';
+    if (activeChat != null && isConversationPath(path)) {
       final name = activeChat['name']!;
       final vibe = activeChat['vibe']!;
 
@@ -143,12 +149,11 @@ class _AIAppState extends ConsumerState<AIApp> {
         body = "Come back when you can — I want to hear the rest.";
       }
 
-      // 10 seconds later
       NotificationService().scheduleNotification(
         id: 999,
         title: "$name 💬",
         body: body,
-        scheduledDate: now.add(const Duration(seconds: 10)),
+        scheduledDate: now.add(const Duration(hours: 1)),
       );
     }
 
@@ -364,6 +369,7 @@ class _AIAppState extends ConsumerState<AIApp> {
       ],
     );
 
+    _router = router;
     return MaterialApp.router(
       title: 'Mythos Live',
       theme: AppTheme.romanticTheme,

@@ -146,6 +146,12 @@ class StorageService {
     await prefs.setStringList('chat_history_$chatId', encoded);
   }
 
+  /// Id prefix of the canned lines the retired background simulator wrote
+  /// into chats every 45s on iOS/Android (build 99 and earlier). Never a real
+  /// message, so they are dropped on read, and the next save of that chat
+  /// writes its history back without them. Nothing else uses this prefix.
+  static const String _kSimulatedIdPrefix = 'bg_';
+
   Future<List<ChatMessage>> loadMessages({String chatId = 'default'}) async {
     final prefs = await SharedPreferences.getInstance();
     final List<String>? encoded = prefs.getStringList('chat_history_$chatId');
@@ -154,6 +160,7 @@ class StorageService {
 
     return encoded
         .map((str) => ChatMessage.fromJson(jsonDecode(str) as Map<String, dynamic>))
+        .where((m) => !m.id.startsWith(_kSimulatedIdPrefix))
         .toList();
   }
 
@@ -309,6 +316,31 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final List<String> currentList = prefs.getStringList(_kRecentChatsKey) ?? [];
     final chats = currentList.map((s) => jsonDecode(s) as Map<String, dynamic>).toList();
+    // Unread counts only ever came from the retired background simulator, so
+    // any still on disk point at one of its canned lines — and so do that
+    // entry's preview and timestamp, which also moved it to the top. Put them
+    // back to the chat's last real message. Runs once in practice: after the
+    // repair every count is 0. Before the image rewrite below, so what is
+    // saved here is the stored path, not the display one.
+    var repaired = false;
+    for (final chat in chats) {
+      if ((chat['unreadCount'] ?? 0) == 0) continue;
+      chat['unreadCount'] = 0;
+      final chatId = chat['chatId'] as String?;
+      final history =
+          chatId == null ? const <ChatMessage>[] : await loadMessages(chatId: chatId);
+      if (history.isNotEmpty) {
+        chat['lastMessage'] = history.last.text;
+        chat['timestamp'] = history.last.timestamp.toIso8601String();
+      }
+      repaired = true;
+    }
+    if (repaired) {
+      chats.sort((a, b) => ((b['timestamp'] ?? '') as String)
+          .compareTo((a['timestamp'] ?? '') as String));
+      await prefs.setStringList(
+          _kRecentChatsKey, chats.map((c) => jsonEncode(c)).toList());
+    }
     for (final chat in chats) {
       chat['image'] = _currentImagePath(chat['image'] as String?);
     }
