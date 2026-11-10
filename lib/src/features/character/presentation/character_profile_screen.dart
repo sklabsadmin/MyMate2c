@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import '../../../core/data/character_profiles.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -112,7 +113,7 @@ class CharacterProfileScreen extends ConsumerWidget {
                       ),
                       child: AspectRatio(
                         aspectRatio: 1,
-                        child: Image.asset(imagePath, fit: BoxFit.cover),
+                        child: CatalogueImage(imagePath, fit: BoxFit.cover),
                       ),
                     ),
                     Container(
@@ -379,8 +380,8 @@ class _KeepsakeRow extends StatelessWidget {
             child: option == null
                 ? const Icon(Icons.card_giftcard,
                     size: 22, color: CharacterProfileScreen._gold)
-                : Image.asset(
-                    option.asset,
+                : Image(
+                    image: catalogueImageProvider(option.asset),
                     fit: BoxFit.contain,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.card_giftcard,

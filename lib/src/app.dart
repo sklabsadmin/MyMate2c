@@ -6,6 +6,8 @@ import 'core/theme/app_theme.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/data/characters.dart';
+import 'core/data/remote_catalogue.dart';
+import 'core/services/character_nudge_planner.dart';
 import 'features/auth/presentation/signed_out_screen.dart';
 
 
@@ -52,6 +54,44 @@ class _RouteNotFoundRedirectState extends State<_RouteNotFoundRedirect> {
 /// conversation.
 bool isConversationPath(String path) =>
     path.startsWith('/chat/session') || path.startsWith('/c/');
+
+/// The chat for a roster character, as the `/c/<id>` route opens it.
+Widget _chatWith(Map<String, dynamic> character, String? initialMessage) {
+  return ChatScreen(
+    scenario: '${character['name']} (${character['vibe']})',
+    characterImage: character['image'] as String?,
+    isRoleplay: false,
+    characterId: character['id'] as String?,
+    initialMessage: initialMessage,
+  );
+}
+
+/// Holds a route on a blank page until this launch's catalogue fetch has
+/// finished (or four seconds have passed), then builds it. Used only where
+/// the answer depends on a character the build itself has never heard of.
+class _AwaitCatalogue extends StatefulWidget {
+  final Widget Function() builder;
+  const _AwaitCatalogue({required this.builder});
+
+  @override
+  State<_AwaitCatalogue> createState() => _AwaitCatalogueState();
+}
+
+class _AwaitCatalogueState extends State<_AwaitCatalogue> {
+  late final Future<void> _ready = RemoteCatalogue.firstRefresh
+      .timeout(const Duration(seconds: 4), onTimeout: () {});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: _ready,
+      builder: (context, snapshot) =>
+          snapshot.connectionState == ConnectionState.done
+              ? widget.builder()
+              : const Scaffold(body: SizedBox.shrink()),
+    );
+  }
+}
 
 // Placeholder screens - will be implemented later
 class PlaceholderScreen extends StatelessWidget {
@@ -108,36 +148,72 @@ class _AIAppState extends ConsumerState<AIApp> {
     // character into that chat's history and bumped its unread count. Those
     // lines were then sent to the model as the character's own turns. Removed
     // for build 100; StorageService drops the ones already on disk.
+
+    // A notification in a character's voice opens that character's chat.
+    NotificationService().onCharacterTap = _openCharacterChat;
+    // And when the tap is what launched the app, once there is a router.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final id = await NotificationService().launchCharacterId();
+      if (id != null && mounted) _openCharacterChat(id);
+    });
   }
+
+  void _openCharacterChat(String characterId) {
+    // Unknown ids are the route's problem: `/c/<id>` waits for the catalogue
+    // and falls back to the dashboard, which is right for a character
+    // retired since the notification was scheduled.
+    _router?.go('/c/$characterId');
+  }
+
+  /// Bumped every time the app comes back, so scheduling that was still
+  /// reading storage when it did can tell it is too late.
+  int _foregroundCount = 0;
 
   @override
   void dispose() {
     _listener.dispose();
+    if (NotificationService().onCharacterTap == _openCharacterChat) {
+      NotificationService().onCharacterTap = null;
+    }
     super.dispose();
   }
 
   void _onStateChanged(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _foregroundCount++;
       // User is back, cancel "I miss you" notifications
       NotificationService().cancelAllNotifications();
       // Ensure daily notifications are up to date
       NotificationService().scheduleDailyNotifications();
+      // And pick up any character or gift added while the app was away.
+      RemoteCatalogue.refresh();
     } else if (state == AppLifecycleState.paused) {
       // User left, schedule "I miss you" notifications
       _scheduleRetentionNotifications();
     }
   }
 
-  void _scheduleRetentionNotifications() {
+  Future<void> _scheduleRetentionNotifications() async {
     final activeChat = ref.read(activeChatProvider);
     final now = DateTime.now();
+    final path = _router?.routerDelegate.currentConfiguration.uri.path ?? '';
+    final leftAt = _foregroundCount;
+
+    // Who they have talked to, newest first — the characters the "come
+    // back" notifications are written as. Read before anything is scheduled
+    // so that a quick return (which cancels everything) cannot be followed
+    // by this method scheduling into an app that is open again.
+    List<Map<String, dynamic>> recentChats = const [];
+    try {
+      recentChats = await ref.read(storageServiceProvider).loadRecentChats();
+    } catch (_) {}
+    if (!mounted || leftAt != _foregroundCount) return;
 
     // Quick return notification: only when they left the app from inside a
     // conversation, and an hour later. It used to fire 10 seconds after ANY
     // app switch — activeChat is set when a chat opens and never cleared, so
     // leaving from the dashboard, or glancing at a text, also got
     // "You left mid-thought" from whoever they last talked to.
-    final path = _router?.routerDelegate.currentConfiguration.uri.path ?? '';
     if (activeChat != null && isConversationPath(path)) {
       final name = activeChat['name']!;
       final vibe = activeChat['vibe']!;
@@ -154,35 +230,45 @@ class _AIAppState extends ConsumerState<AIApp> {
         title: "$name 💬",
         body: body,
         scheduledDate: now.add(const Duration(hours: 1)),
+        payload: _characterPayloadFor(name, recentChats),
       );
     }
 
     // Daily Morning/Evening Notifications
     NotificationService().scheduleDailyNotifications();
 
-    // 4 Hours later
-    NotificationService().scheduleNotification(
-      id: 101,
-      title: "The day moves on",
-      body: "Something in it reminded me of what you said.",
-      scheduledDate: now.add(const Duration(hours: 4)),
-    );
+    // Four hours, a day and three days on: from the characters they have
+    // talked to, or in the app's own voice when there are none yet. See
+    // CharacterNudgePlanner for who gets which slot and why it is still
+    // three notifications rather than three more.
+    for (final nudge
+        in CharacterNudgePlanner.plan(recentChats: recentChats, now: now)) {
+      final characterId = nudge.characterId;
+      NotificationService().scheduleNotification(
+        id: nudge.id,
+        title: nudge.title,
+        body: nudge.body,
+        scheduledDate: nudge.when,
+        payload: characterId == null
+            ? null
+            : NotificationService.characterPayload(characterId),
+      );
+    }
+  }
 
-    // 24 Hours later
-    NotificationService().scheduleNotification(
-      id: 102,
-      title: "A day has passed",
-      body: "Tell me what I missed.",
-      scheduledDate: now.add(const Duration(hours: 24)),
-    );
-
-    // 3 Days later
-    NotificationService().scheduleNotification(
-      id: 103,
-      title: "Still here",
-      body: "Odysseus took ten years to get home. Take the time you need.",
-      scheduledDate: now.add(const Duration(days: 3)),
-    );
+  /// The tap payload for a notification titled [name]: that character's
+  /// chat, when the recent chats say which roster character the name is.
+  String? _characterPayloadFor(
+    String name,
+    List<Map<String, dynamic>> recentChats,
+  ) {
+    for (final chat in recentChats) {
+      final id = chat['characterId'];
+      if (chat['name'] == name && id is String && id.isNotEmpty) {
+        return NotificationService.characterPayload(id);
+      }
+    }
+    return null;
   }
 
   @override
@@ -292,21 +378,29 @@ class _AIAppState extends ConsumerState<AIApp> {
                     final id = raw == null
                         ? null
                         : RegExp(r'^[a-z0-9_-]+').stringMatch(raw);
+                    // Carried so the profile cards' starter questions still
+                    // send their opening line now that they route through
+                    // here rather than /chat/session.
+                    final initialMessage =
+                        state.uri.queryParameters['initialMessage'];
                     final character = characterById(id);
-                    // Unknown id (typo'd or retired character): send them to
-                    // the dashboard rather than an error screen.
-                    if (character == null) return const _RouteNotFoundRedirect();
-                    return ChatScreen(
-                      scenario:
-                          '${character['name']} (${character['vibe']})',
-                      characterImage: character['image'] as String?,
-                      isRoleplay: false,
-                      characterId: character['id'] as String?,
-                      // Carried so the profile cards' starter questions still
-                      // send their opening line now that they route through
-                      // here rather than /chat/session.
-                      initialMessage:
-                          state.uri.queryParameters['initialMessage'],
+                    if (character != null) {
+                      return _chatWith(character, initialMessage);
+                    }
+                    // Not in the roster this build knows. Before calling it a
+                    // typo, let the launch's catalogue fetch finish: a link
+                    // to a character added last week, opened on a phone that
+                    // has not launched since, names someone the worker is
+                    // about to tell us about.
+                    return _AwaitCatalogue(
+                      builder: () {
+                        final late = characterById(id);
+                        // Still unknown (typo'd or retired character): send
+                        // them to the dashboard rather than an error screen.
+                        return late == null
+                            ? const _RouteNotFoundRedirect()
+                            : _chatWith(late, initialMessage);
+                      },
                     );
                   },
                 ),

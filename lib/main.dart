@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
+import 'src/core/data/remote_catalogue.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'src/core/services/auth_service.dart';
 import 'src/core/services/device_identity.dart';
@@ -73,6 +74,12 @@ Future<void> main() async {
       RevenueCatService().init(
           AuthSession.userId ?? DeliveryLog.ensureUserId(prefs));
     }
+
+    // Characters and gifts the worker added since this build: the copy this
+    // install last fetched is read before the first frame, and a fresh one
+    // is asked for without holding the launch up for it.
+    await RemoteCatalogue.loadCached();
+    unawaited(RemoteCatalogue.refresh());
 
     // Initialize Local Notifications
     await NotificationService().init();

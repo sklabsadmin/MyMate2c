@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/data/characters.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -52,9 +53,14 @@ class TributeOption {
   String get givingPhrase => giving ?? label.toLowerCase();
 }
 
-/// The catalogue, in ascending price. The asset names match the item keys the
-/// worker prices, so the mapping is mechanical rather than remembered.
-const List<TributeOption> kTributeOptions = [
+/// The gifts this build ships with, in ascending price. The asset names match
+/// the item keys the worker prices, so the mapping is mechanical rather than
+/// remembered.
+///
+/// What the app offers is [kTributeOptions]: this list with the worker's
+/// catalogue laid over it, which is how a gift added after this build was
+/// made gets a row in the sheet.
+const List<TributeOption> kBundledTributeOptions = [
   TributeOption('roses', 'Roses', 'A small kindness — they will notice.',
       'assets/images/gift_roses.png'),
   TributeOption('ambrosia', 'Ambrosia', 'Food of the gods, offered by hand.',
@@ -74,6 +80,93 @@ const List<TributeOption> kTributeOptions = [
       heldDetail: 'Crowned with it since you gave it.',
       giving: 'a golden laurel'),
 ];
+
+RemoteCatalogue? _tributesFrom;
+List<TributeOption>? _tributes;
+
+/// Every gift the app knows how to draw: [kBundledTributeOptions], with the
+/// worker's catalogue applied — rewritten labels and art for the ones this
+/// build has, and whole new entries for the ones it does not.
+///
+/// A gift the worker has since stopped offering is STILL here. A keepsake
+/// given last month has to keep its name and picture on the profile, and an
+/// old chat bubble its art; what leaves is the row in the sheet, which reads
+/// [offeredTributeOptions].
+List<TributeOption> get kTributeOptions {
+  final catalogue = RemoteCatalogue.current;
+  if (catalogue.gifts.isEmpty) return kBundledTributeOptions;
+  final cached = _tributes;
+  if (cached != null && identical(_tributesFrom, catalogue)) return cached;
+
+  final remote = {for (final g in catalogue.gifts) g['item'] as String: g};
+  final merged = <TributeOption>[];
+  for (final option in kBundledTributeOptions) {
+    final g = remote.remove(option.item);
+    merged.add(g == null
+        ? option
+        : TributeOption(
+            option.item,
+            g['label'] as String? ?? option.label,
+            g['detail'] as String? ?? option.detail,
+            g['image'] as String? ?? option.asset,
+            // Never from the catalogue: whether a gift is once-only is baked
+            // into the ledger keys of every one already given.
+            once: option.once,
+            heldBadge: g['heldBadge'] as String? ?? option.heldBadge,
+            heldDetail: g['heldDetail'] as String? ?? option.heldDetail,
+            giving: g['giving'] as String? ?? option.giving,
+          ));
+  }
+  for (final g in remote.values) {
+    final label = g['label'] as String?;
+    final detail = g['detail'] as String?;
+    final image = g['image'] as String?;
+    // A new gift missing what its row draws is left out until it arrives
+    // whole.
+    if (label == null || detail == null || image == null) continue;
+    final once = g['once'] == true;
+    merged.add(TributeOption(
+      g['item'] as String,
+      label,
+      detail,
+      image,
+      once: once,
+      heldBadge: g['heldBadge'] as String? ?? 'Given',
+      heldDetail: g['heldDetail'] as String? ?? 'Theirs since you gave it.',
+      giving: g['giving'] as String?,
+    ));
+  }
+  _tributesFrom = catalogue;
+  return _tributes = List.unmodifiable(merged);
+}
+
+/// The gifts to offer in the sheet, cheapest first.
+///
+/// [prices] is the worker's price list from the latest wallet read. It is
+/// the authority on what can be bought: a gift from the catalogue that the
+/// wallet does not price (the catalogue cached on this phone is older or
+/// newer than the worker answering) is not offered, because tapping it could
+/// only fail. The gifts compiled into the build are always listed, priced or
+/// not, exactly as before — an unpriced one draws disabled.
+List<TributeOption> offeredTributeOptions(Map<String, int> prices) {
+  final hidden = RemoteCatalogue.current.hiddenGifts;
+  final bundled = {for (final o in kBundledTributeOptions) o.item};
+  final offered = [
+    for (final option in kTributeOptions)
+      if (!hidden.contains(option.item) &&
+          (bundled.contains(option.item) || (prices[option.item] ?? 0) > 0))
+        option,
+  ];
+  // Before the first wallet read nothing is priced: keep the written order.
+  if (offered.any((o) => (prices[o.item] ?? 0) <= 0)) return offered;
+  // Index as the tiebreak keeps equal prices in their written order.
+  final indexed = offered.indexed.toList()
+    ..sort((a, b) {
+      final byPrice = prices[a.$2.item]!.compareTo(prices[b.$2.item]!);
+      return byPrice != 0 ? byPrice : a.$1.compareTo(b.$1);
+    });
+  return [for (final entry in indexed) entry.$2];
+}
 
 /// The name a gift goes by in the history and on a profile: "Golden Laurel
 /// for Penelope". [characterName] is null for a character the roster does not
@@ -248,7 +341,7 @@ Future<void> showCoinsSheet(
                     ),
                   ),
                   const SizedBox(height: 8),
-                  for (final option in kTributeOptions)
+                  for (final option in offeredTributeOptions(prices))
                     Builder(builder: (context) {
                       final price = prices[option.item] ?? 0;
                       final affordable = price > 0 && balance >= price;
@@ -418,7 +511,7 @@ class _TributeRow extends StatelessWidget {
                   height: 40,
                   child: Opacity(
                     opacity: held || enabled ? 1.0 : toStore ? 0.6 : 0.35,
-                    child: Image.asset(option.asset, fit: BoxFit.contain),
+                    child: CatalogueImage(option.asset, fit: BoxFit.contain),
                   ),
                 ),
                 const SizedBox(width: 12),

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../config/app_config.dart';
+import 'remote_catalogue.dart';
+
 /// The built-in character roster, keyed by the same ids the dashboard, the
 /// profile cards and the worker all use.
 ///
@@ -14,7 +17,13 @@ import 'package:flutter/material.dart';
 ///
 /// Which of these appear, and in what order, is AppConfig.visibleCharacterIds
 /// and the greek/modern group lists — an entry here is not automatically shown.
-const List<Map<String, dynamic>> kCharacters = [
+///
+/// This is the roster the build SHIPS with. What the app shows is
+/// [kCharacters]: this list with the worker's catalogue laid over it, so a
+/// character added after this build was made is in there too. Read
+/// [kCharacters] (or [characterById]); only tests comparing against what was
+/// compiled in want this one.
+const List<Map<String, dynamic>> kBundledCharacters = [
     {
       'id': 'badboy',
       'name': 'Damon',
@@ -135,6 +144,25 @@ const List<Map<String, dynamic>> kCharacters = [
       'color': const Color(0xFF8C5A2B),
     },
 ];
+
+/// The roster as it stands now: [kBundledCharacters] plus whatever the worker
+/// has added or rewritten since (lib/core/data/remote_catalogue.dart). Named
+/// like the constant it replaced so every reader kept working unchanged.
+List<Map<String, dynamic>> get kCharacters =>
+    RemoteCatalogue.current.mergeCharacters(kBundledCharacters);
+
+/// The ids on the dashboard's Greek tab, in order — AppConfig's list, with
+/// the catalogue's additions, removals and re-sorting applied.
+List<String> get greekCharacterIds => RemoteCatalogue.current
+    .groupIds('greek', AppConfig.greekCharacterIds, kCharacters);
+
+/// The same for the Modern tab.
+List<String> get modernCharacterIds => RemoteCatalogue.current
+    .groupIds('modern', AppConfig.modernCharacterIds, kCharacters);
+
+/// Every built-in character the dashboard offers, Greek tab first.
+List<String> get visibleCharacterIds =>
+    [...greekCharacterIds, ...modernCharacterIds];
 
 /// The roster entry for [characterId], or null when there is no such
 /// character. Callers decide what an unknown id means: the deep-link route

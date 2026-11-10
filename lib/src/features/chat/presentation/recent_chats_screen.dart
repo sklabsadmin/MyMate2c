@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
 
@@ -193,7 +194,7 @@ class _RecentChatsScreenState extends ConsumerState<RecentChatsScreen> {
           shape: BoxShape.circle,
           border: Border.all(color: theme.primaryColor.withOpacity(0.5), width: 2),
           image: DecorationImage(
-            image: AssetImage(chat['image']),
+            image: catalogueImageProvider(chat['image'] as String),
             fit: BoxFit.cover,
           ),
         ),

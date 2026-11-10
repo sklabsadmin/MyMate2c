@@ -1,3 +1,5 @@
+import 'remote_catalogue.dart';
+
 /// Profile-card content, keyed by the same character ids the dashboard and
 /// the worker use.
 ///
@@ -286,7 +288,11 @@ const Map<String, CharacterProfile> kCharacterProfiles = {
   ),
 };
 
+/// The profile for [characterId]: the worker's, when its catalogue carries
+/// one (a character added after this build, or a rewritten card), otherwise
+/// the one compiled in above.
 CharacterProfile? profileForCharacter(String? characterId) {
   if (characterId == null || characterId.isEmpty) return null;
-  return kCharacterProfiles[characterId];
+  return RemoteCatalogue.current.profiles[characterId] ??
+      kCharacterProfiles[characterId];
 }

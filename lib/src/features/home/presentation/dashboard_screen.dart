@@ -9,6 +9,7 @@ import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../character/presentation/character_profile_screen.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
@@ -26,13 +27,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// the rest of this file is unchanged.
   List<Map<String, dynamic>> get _characters => kCharacters;
 
-  /// Built-in characters allowed by AppConfig.visibleCharacterIds, in that
-  /// list's order.
-  List<Map<String, dynamic>> get _visibleCharacters {
-    return AppConfig.visibleCharacterIds
-        .map((id) => _characters.firstWhere((c) => c['id'] == id))
-        .toList();
-  }
+  /// Built-in characters on the dashboard, in display order: AppConfig's
+  /// lists with the worker's catalogue applied (characters.dart).
+  List<Map<String, dynamic>> get _visibleCharacters =>
+      _charactersForGroup(visibleCharacterIds);
 
   /// Characters for one dashboard group, in the group list's order. Ids with
   /// no matching entry are skipped rather than throwing, so a typo in
@@ -137,15 +135,35 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   void initState() {
     super.initState();
     // Precache all character images for smooth scrolling
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (final character in _visibleCharacters) {
-        precacheImage(AssetImage(character['image'] as String), context);
-      }
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _precachePortraits());
+    // The catalogue can arrive after the dashboard is up (first launch, or a
+    // character added while the app was closed): redraw the grid when it
+    // does, and warm the new portraits.
+    RemoteCatalogue.revision.addListener(_onCatalogueChanged);
+  }
+
+  void _precachePortraits() {
+    if (!mounted) return;
+    for (final character in _visibleCharacters) {
+      precacheImage(
+        catalogueImageProvider(character['image'] as String),
+        context,
+        // A portrait that cannot be fetched is the card's problem to draw
+        // around, not an uncaught error at startup.
+        onError: (_, _) {},
+      );
+    }
+  }
+
+  void _onCatalogueChanged() {
+    if (!mounted) return;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) => _precachePortraits());
   }
 
   @override
   void dispose() {
+    RemoteCatalogue.revision.removeListener(_onCatalogueChanged);
     for (final c in _gridControllers) {
       c.dispose();
     }
@@ -461,14 +479,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     children: [
                                       _buildCharacterGrid(
                                         _charactersForGroup(
-                                          AppConfig.greekCharacterIds,
+                                          greekCharacterIds,
                                         ),
                                         theme,
                                         controller: _gridControllers[0],
                                       ),
                                       _buildCharacterGrid(
                                         _charactersForGroup(
-                                          AppConfig.modernCharacterIds,
+                                          modernCharacterIds,
                                         ),
                                         theme,
                                         controller: _gridControllers[1],
@@ -849,8 +867,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 ]
               : null,
           image: DecorationImage(
-            image: AssetImage(character['image']),
+            image: catalogueImageProvider(character['image'] as String),
             fit: BoxFit.cover,
+            // A portrait the worker added after this build is fetched; with
+            // no network it is simply absent, and the card still shows the
+            // name over its gradient.
+            onError: (_, _) {},
             // Removed opacity to make image clear
           ),
         ),

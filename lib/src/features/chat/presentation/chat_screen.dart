@@ -19,6 +19,7 @@ import '../../../core/presentation/seen_detector.dart';
 import '../services/openai_service.dart';
 import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../character/presentation/character_profile_screen.dart';
 import '../../../core/services/revenue_cat_service.dart';
 import '../../wallet/coin_wallet.dart';
@@ -4051,7 +4052,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     width: 2,
                   ),
                   image: DecorationImage(
-                    image: AssetImage(widget.characterImage!),
+                    image: catalogueImageProvider(widget.characterImage!),
                     fit: BoxFit.cover,
                   ),
                 ),
@@ -4869,7 +4870,7 @@ class _EntryGate extends StatelessWidget {
                                 width: 2,
                               ),
                               image: DecorationImage(
-                                image: AssetImage(imagePath!),
+                                image: catalogueImageProvider(imagePath!),
                                 fit: BoxFit.cover,
                               ),
                             ),
@@ -5927,8 +5928,10 @@ class _ChatBubble extends StatelessWidget {
               height: 104,
               // The path is persisted with the message, so art renamed in a
               // later build must not blank an old bubble or throw.
-              child: Image.asset(
-                giftAsset,
+              child: Image(
+                // An asset for the gifts this build ships; a URL for one the
+                // worker's catalogue added since.
+                image: catalogueImageProvider(giftAsset),
                 fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => const Icon(
                   Icons.card_giftcard,

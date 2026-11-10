@@ -42,6 +42,41 @@ class NotificationService {
   final fln.FlutterLocalNotificationsPlugin _flutterLocalNotificationsPlugin =
       fln.FlutterLocalNotificationsPlugin();
 
+  /// Called with a roster character id when a notification written in that
+  /// character's voice is tapped while the app is running or suspended. The
+  /// app sets it to open that conversation. A tap that LAUNCHES the app is
+  /// reported by [launchCharacterId] instead — there is nobody to call yet.
+  void Function(String characterId)? onCharacterTap;
+
+  static const String _characterPayloadPrefix = 'character:';
+
+  /// The payload that makes a tap open [characterId]'s conversation.
+  static String characterPayload(String characterId) =>
+      '$_characterPayloadPrefix$characterId';
+
+  /// The character a payload names, or null for any other notification.
+  static String? characterIdFrom(String? payload) {
+    if (payload == null || !payload.startsWith(_characterPayloadPrefix)) {
+      return null;
+    }
+    final id = payload.substring(_characterPayloadPrefix.length);
+    return RegExp(r'^[a-z0-9_]{1,40}$').hasMatch(id) ? id : null;
+  }
+
+  /// The character whose notification opened the app from cold, if that is
+  /// how this launch began.
+  Future<String?> launchCharacterId() async {
+    if (kIsWeb) return null;
+    try {
+      final details = await _flutterLocalNotificationsPlugin
+          .getNotificationAppLaunchDetails();
+      if (details == null || !details.didNotificationLaunchApp) return null;
+      return characterIdFrom(details.notificationResponse?.payload);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> init() async {
     if (kIsWeb) {
       return;
@@ -70,7 +105,8 @@ class NotificationService {
       settings: initializationSettings,
       onDidReceiveNotificationResponse:
           (fln.NotificationResponse notificationResponse) async {
-            // Handle notification tap
+            final characterId = characterIdFrom(notificationResponse.payload);
+            if (characterId != null) onCharacterTap?.call(characterId);
           },
     );
   }
@@ -112,6 +148,7 @@ class NotificationService {
     required String title,
     required String body,
     required DateTime scheduledDate,
+    String? payload,
   }) async {
     if (kIsWeb) {
       return;
@@ -131,7 +168,7 @@ class NotificationService {
       androidScheduleMode: fln.AndroidScheduleMode.exactAllowWhileIdle,
       title: title,
       body: body,
-      payload: null,
+      payload: payload,
     );
   }
 

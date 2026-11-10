@@ -10,6 +10,12 @@
 
 import { CHARACTER_STARTERS, DEFAULT_STARTERS, SHARED_TAPS } from "./starters.generated.js";
 import {
+    SERVER_CATALOGUE,
+    publicCatalogue,
+    cataloguePersona,
+    catalogueStarters,
+} from "./catalogue.js";
+import {
     verifyGoogleIdToken,
     verifyAppleIdToken,
     appleKeyConfigured,
@@ -1571,6 +1577,18 @@ export default {
         //                               credits anything the ledger lacks
         //   POST /api/wallet/merge-ticket  a ticket that lets a sign-in carry
         //                                  this claimed wallet onto the account
+        // The remote catalogue: characters and gifts added or changed since
+        // the app was built (backend/src/catalogue.js). Unsigned and
+        // identity-free on purpose — it is the same presentation copy the
+        // public web bundle carries, the app wants it before it has settled
+        // who the user is, and a short shared cache keeps a launch from
+        // costing a worker invocation's worth of work each time.
+        if (request.method === "GET" && url.pathname === "/api/catalogue") {
+            return jsonResponse(publicCatalogue(url.origin), {
+                headers: { ...corsHeaders(request), "Cache-Control": "public, max-age=300" },
+            });
+        }
+
         if ((request.method === "GET" && url.pathname === "/api/wallet") ||
             (request.method === "POST" && url.pathname === "/api/wallet/sync") ||
             (request.method === "POST" && url.pathname === "/api/wallet/reconcile") ||
@@ -2905,6 +2923,32 @@ const GIFT_NARRATION = {
     pendant: "a pendant on a chain, to wear around their neck",
     laurel: "a golden laurel wreath, the crown of gods and heroes, set upon their head",
 };
+
+// Gifts from the remote catalogue (backend/src/catalogue.js) join the three
+// tables above here, once, at load — so everything below this line (the
+// debit, the prices in a wallet read, the keepsake queries, the narration)
+// treats a gift added without an app release exactly like a built-in one.
+// An entry for an item that already exists may reprice or re-narrate it;
+// `once` is never changed on an existing gift, because the ledger ids of
+// everything already given were derived from it.
+for (const gift of SERVER_CATALOGUE.gifts || []) {
+    if (!gift || typeof gift.item !== "string" || !/^[a-z_]{1,40}$/.test(gift.item)) continue;
+    const existing = Object.prototype.hasOwnProperty.call(COINS.gifts, gift.item)
+        ? COINS.gifts[gift.item] : null;
+    const price = Number.isInteger(gift.price) && gift.price > 0 ? gift.price : null;
+    if (existing) {
+        if (price) existing.price = price;
+    } else {
+        // A new gift with no usable price is not sold at all, rather than
+        // sold for nothing.
+        if (!price) continue;
+        COINS.gifts[gift.item] = { price, once: gift.once === true };
+        if (gift.once === true && typeof gift.keepsakeNote === "string" && gift.keepsakeNote) {
+            KEEPSAKE_NOTES[gift.item] = gift.keepsakeNote;
+        }
+    }
+    if (typeof gift.narration === "string" && gift.narration) GIFT_NARRATION[gift.item] = gift.narration;
+}
 
 /// Whether the wallet is live for this request.
 ///
@@ -4868,7 +4912,7 @@ function characterIdFromScenario(scenario) {
 function isStarterText(message, characterId) {
     const text = String(message || "").trim();
     if (!text) return false;
-    const list = CHARACTER_STARTERS[characterId] || DEFAULT_STARTERS;
+    const list = CHARACTER_STARTERS[characterId] || catalogueStarters(characterId) || DEFAULT_STARTERS;
     return list.some((s) => s === text) || SHARED_TAPS.some((s) => s === text);
 }
 
@@ -4886,7 +4930,8 @@ const INWORLD_CHARACTERS = {
 
 function getInworldCharacter(characterId) {
     if (typeof characterId !== "string" || !characterId) return null;
-    return INWORLD_CHARACTERS[characterId] || null;
+    return Object.prototype.hasOwnProperty.call(INWORLD_CHARACTERS, characterId)
+        ? INWORLD_CHARACTERS[characterId] : null;
 }
 
 /**
@@ -5791,7 +5836,13 @@ const CHARACTER_PERSONAS = {
 
 function getCharacterPersona(characterId) {
     if (typeof characterId !== "string" || !characterId) return null;
-    return CHARACTER_PERSONAS[characterId] || null;
+    // Own-property check: a character id is client-supplied, and
+    // "constructor" must not come back as a persona.
+    if (Object.prototype.hasOwnProperty.call(CHARACTER_PERSONAS, characterId)) {
+        return CHARACTER_PERSONAS[characterId];
+    }
+    // Characters added without an app release (backend/src/catalogue.js).
+    return cataloguePersona(characterId);
 }
 
 /**
