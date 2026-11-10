@@ -21,9 +21,9 @@ void main() {
     final plan = CharacterNudgePlanner.plan(recentChats: const [], now: noon);
     expect(plan.map((n) => n.id), [101, 102, 103]);
     expect(plan.map((n) => n.title), [
-      'In Mythos World · The day moves on',
-      'In Mythos World · A day has passed',
-      'In Mythos World · Still here',
+      'In the Greek World · The day moves on',
+      'In the Greek World · A day has passed',
+      'In the Greek World · Still here',
     ]);
     expect(plan.every((n) => n.characterId == null), isTrue);
     expect(plan.map((n) => n.when), [

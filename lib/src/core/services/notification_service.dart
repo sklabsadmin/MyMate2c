@@ -49,10 +49,10 @@ class NotificationService {
   void Function(String characterId)? onCharacterTap;
 
   /// What every notification in the app's own voice is titled with, ahead of
-  /// its own heading: "In Mythos World · Dawn ☀️". A character's notification
+  /// its own heading: "In the Greek World · Dawn ☀️". A character's notification
   /// is titled "Zeus says" instead (CharacterNudgePlanner), so the two kinds
   /// can be told apart at a glance on a lock screen.
-  static const String appLevelPrefix = 'In Mythos World';
+  static const String appLevelPrefix = 'In the Greek World';
 
   /// [heading] as an app-level notification title.
   static String appLevelTitle(String heading) => '$appLevelPrefix · $heading';
