@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/services/auth_service.dart';
 import '../../auth/presentation/sign_in_sheet.dart';
+import '../../../core/services/profile_sync_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/models/chat_message.dart';
 import '../../../core/config/app_config.dart';
@@ -26,6 +27,7 @@ import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
 import '../../wallet/presentation/coin_claim_screen.dart';
 import '../../leaderboard/leaderboard.dart';
+import '../../leaderboard/leaderboard_name.dart';
 import '../../wallet/presentation/coins_sheet.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
@@ -3388,6 +3390,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// (gate, funnel, score) because to everything downstream it IS a message —
   /// only the composer text box was never involved.
   Future<void> _sendTribute(String item, int price) async {
+    // A gift puts its giver on the leaderboards, so they have a display name
+    // first: the one in their profile, or one they are asked for now. "Not
+    // now" at that prompt is a gift not given — nothing has been charged.
+    final storage = ref.read(storageServiceProvider);
+    final named = await LeaderboardNameGate(
+      service: LeaderboardService(),
+      loadName: () async => (await storage.loadUserProfile()).name,
+      saveName: (name) async {
+        final profile = await storage.loadUserProfile();
+        final updated = profile.copyWith(name: name);
+        await storage.saveUserProfile(updated);
+        // Signed in: the account's copy follows, as it does from the profile
+        // screen. Signed out this is a 401 and the device copy stands.
+        await ref.read(profileSyncServiceProvider).push(updated);
+      },
+    ).ensureBeforeGift(context);
+    if (!named || !mounted) return;
+
     _stopScreenPing();
     _cancelIdleTimer();
     _idleNudges = 0;

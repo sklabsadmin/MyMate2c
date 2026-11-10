@@ -104,13 +104,42 @@ There is also an all-characters board. It lists people who have given two or
 more gifts, and it is only sent to someone who has done the same. Until then
 the app shows no tab and no hint that it exists.
 
-- **No names.** Rows show a made-up alias the worker derives from the user id
-  with a keyed hash ("Sea-Born Shepherd 86"). The viewer's own row says "You".
-  No real name, account name or id leaves the worker, and there is no
-  user-written text to moderate.
+- **Display names.** A row shows the name its owner chose. The app requires
+  one before a gift: it uses the profile's Name field if that is filled in,
+  and otherwise asks, and the gift waits on the answer. The viewer's own row
+  says "You". Someone with no name on file (a gift from an older build) is
+  shown under a generated alias such as "Sea-Born Shepherd 86". No user id
+  leaves the worker.
+- **Nothing private is published.** A name is public only once the app has
+  sent it to `PUT /api/leaderboard/name`. The server never reads
+  `user_profiles.name` for a board, so names typed before this existed stay
+  private until that person next gives a gift from a build that tells them.
+- **Moderation.** Names are user-written text shown to strangers, so:
+  - a filter refuses a name on the way in (`cleanDisplayName` in
+    `backend/src/leaderboard.js`: 2 to 20 characters, letters and digits of
+    any script plus space, hyphen, apostrophe; a short blocklist; reserved
+    words such as "You" and "Admin"). It deliberately errs toward letting a
+    real name through, and the lists are worker-side, so tightening them
+    needs no app release;
+  - every other person's chosen name has a flag to report it;
+  - three different reporters hide a name automatically, putting the row back
+    to its alias until the owner picks a different one;
+  - a person can review, hide and restore:
+
+    ```sh
+    # every name with a report against it, and every hidden one
+    curl -u admin:$ADMIN_TOKEN https://logs.deeplovepoems.com/api/admin/leaderboard-names
+    # hide (or restore with false) by the ref from that list
+    curl -u admin:$ADMIN_TOKEN -X POST -H 'content-type: application/json' \
+      -d '{"ref":"<ref>","hidden":true}' \
+      https://logs.deeplovepoems.com/api/admin/leaderboard-names
+    ```
+
+  Reports are also logged as `leaderboard_name_reported`. There is no admin
+  page or email for them yet.
 - **Read from the ledger.** `backend/src/leaderboard.js` groups the gift rows
-  in `coin_ledger`. Nothing is stored separately. Migration 0021 adds the
-  index. Developer wallets (dev-marked visits) are left off.
+  in `coin_ledger`. Migration 0021 adds the index; 0022 adds the two small
+  tables for names and reports. Developer wallets (dev-marked visits) are left off.
 - **Ties** go to whoever reached the total first.
 - **Off switch.** `LEADERBOARDS` in `wrangler.jsonc`; the exact string
   `"false"` turns it off and the app says "not available".

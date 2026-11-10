@@ -15,7 +15,13 @@ import {
     cataloguePersona,
     catalogueStarters,
 } from "./catalogue.js";
-import { leaderboards } from "./leaderboard.js";
+import {
+    leaderboards,
+    setDisplayName,
+    reportDisplayName,
+    reportedDisplayNames,
+    setDisplayNameHidden,
+} from "./leaderboard.js";
 import {
     verifyGoogleIdToken,
     verifyAppleIdToken,
@@ -1179,6 +1185,35 @@ export default {
             });
         }
 
+        // Reported leaderboard names: GET lists every name with a report
+        // against it (and every hidden one); POST { ref, hidden } hides or
+        // restores one. No page yet — docs/remote-catalogue.md has the curl.
+        if (url.pathname === "/api/admin/leaderboard-names") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+            try {
+                if (request.method === "POST") {
+                    const body = await request.json().catch(() => null);
+                    if (!body || typeof body.ref !== "string" || typeof body.hidden !== "boolean") {
+                        return jsonResponse({ error: "Expected { ref, hidden }" }, { status: 400 });
+                    }
+                    const changed = await setDisplayNameHidden(db, { ref: body.ref, hidden: body.hidden });
+                    return jsonResponse({ ok: changed }, { status: changed ? 200 : 404 });
+                }
+                if (request.method === "GET") {
+                    return jsonResponse({ names: await reportedDisplayNames(db) });
+                }
+                return jsonResponse({ error: "Method not allowed" }, { status: 405 });
+            } catch (error) {
+                return jsonResponse({
+                    error: error && error.message ? error.message : String(error),
+                    hint: "Apply backend/migrations/0022_leaderboard_names.sql to this database.",
+                }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/api/admin/coins") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -1644,6 +1679,93 @@ export default {
             } catch (error) {
                 console.error(JSON.stringify({
                     event: "leaderboard_failed",
+                    error: error && error.message ? error.message : String(error),
+                }));
+                return jsonResponse({ error: "Leaderboard unavailable" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
+        }
+
+        // Leaderboard display names: choosing one (PUT .../name) and
+        // reporting someone else's (POST .../report). Signed and gated like
+        // the board itself. See the NAMES note in backend/src/leaderboard.js.
+        if ((request.method === "PUT" && url.pathname === "/api/leaderboard/name") ||
+            (request.method === "POST" && url.pathname === "/api/leaderboard/report")) {
+            const signature = request.headers.get("x-signature");
+            const timestamp = request.headers.get("x-timestamp");
+            // Body first, verdicts after — the request stream does not
+            // outlive an early return.
+            const rawBody = await request.text();
+            if (env.REQUIRE_SIGNATURE !== "false") {
+                const reqTime = parseInt(timestamp || "", 10);
+                if (!signature || !Number.isFinite(reqTime)
+                    || Math.abs(Date.now() - reqTime) > 5 * 60 * 1000
+                    || !(await verifySignature(env.APP_SECRET, rawBody, timestamp, signature))) {
+                    return jsonResponse({ error: "Invalid signature" }, {
+                        status: 401, headers: corsHeaders(request),
+                    });
+                }
+            }
+            const session = await getSessionFromRequest(request, env);
+            const userId = session
+                ? sessionUserId(session)
+                : request.headers.get("x-user-id") || "anonymous";
+            if (env.LEADERBOARDS === "false" || !coinsActive(env, request, userId)) {
+                return jsonResponse({ enabled: false }, { headers: corsHeaders(request) });
+            }
+            if (!env.CHAT_LOGS_DB) {
+                return jsonResponse({ error: "Leaderboard storage is not configured" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
+            if (!isRealUserId(userId)) {
+                return jsonResponse({ error: "Unknown user" }, {
+                    status: 400, headers: corsHeaders(request),
+                });
+            }
+            let body = null;
+            try { body = JSON.parse(rawBody); } catch (_) { /* answered below */ }
+            if (!body || typeof body !== "object") {
+                return jsonResponse({ error: "Invalid JSON" }, {
+                    status: 400, headers: corsHeaders(request),
+                });
+            }
+            try {
+                if (url.pathname === "/api/leaderboard/name") {
+                    // A name is set only by whoever can spend from the wallet
+                    // it belongs to: a claimed anonymous wallet answers to
+                    // the device holding its secret, so knowing an id is not
+                    // enough to rename its owner.
+                    if (!(await coinClaimCheck(env.CHAT_LOGS_DB, userId, request)).ok) {
+                        return jsonResponse({ error: "Wallet claim required" }, {
+                            status: 403, headers: corsHeaders(request),
+                        });
+                    }
+                    const saved = await setDisplayName(env.CHAT_LOGS_DB, {
+                        userId, rawName: body.name, secret: env.SESSION_SECRET || env.APP_SECRET,
+                    });
+                    if (!saved.ok) {
+                        return jsonResponse({ enabled: true, ok: false, reason: saved.reason }, {
+                            status: 422, headers: corsHeaders(request),
+                        });
+                    }
+                    return jsonResponse({ enabled: true, ok: true, name: saved.name }, {
+                        headers: corsHeaders(request),
+                    });
+                }
+                const outcome = await reportDisplayName(env.CHAT_LOGS_DB, { reporterId: userId, ref: body.ref });
+                if (outcome.recorded) {
+                    console.log(JSON.stringify({
+                        event: "leaderboard_name_reported",
+                        name: outcome.name, reports: outcome.reports, hidden: outcome.hidden,
+                    }));
+                }
+                // The same answer whatever happened, so a ref cannot be probed.
+                return jsonResponse({ enabled: true, ok: true }, { headers: corsHeaders(request) });
+            } catch (error) {
+                console.error(JSON.stringify({
+                    event: "leaderboard_name_failed",
                     error: error && error.message ? error.message : String(error),
                 }));
                 return jsonResponse({ error: "Leaderboard unavailable" }, {

@@ -9,19 +9,197 @@
 //     GLOBAL_MIN_GIFTS gifts. It is only SENT to a requester who has done the
 //     same — until then the app does not show that it exists.
 //
-// NAMES. Nobody's real name, account name or user id is ever on a board. A
-// wallet may be an anonymous device, and even a signed-in person has not
-// agreed to be listed. Each row carries a made-up mythic handle derived from
-// the user id by a keyed hash, stable for that user and meaningless to anyone
-// else; the requester's own row is marked `you` and the app says "You". This
-// also keeps the boards free of user-written text, which would need
-// moderation and reporting (App Store Guideline 1.2).
+// NAMES. A row shows the display name its owner chose for the leaderboards —
+// the app asks for one before a first gift and sends it to
+// PUT /api/leaderboard/name. Someone who never sent one (a gift from an
+// older build, or from the web before it updated) is shown under a made-up
+// mythic handle derived from their user id by a keyed hash. No user id,
+// account name or profile field is ever on a board; the requester's own row
+// is marked `you` and the app says "You".
+//
+// Chosen names are user-written text shown to strangers, so they are held to
+// what App Store Guideline 1.2 asks of that: a filter on the way in
+// (cleanDisplayName), a way to report one (POST /api/leaderboard/report),
+// and action on reports — REPORTS_TO_HIDE distinct reporters put a row back
+// to its handle, and /api/admin/leaderboard-names lets a person review,
+// hide and restore.
 
 /// Rows shown on a board.
 export const BOARD_SIZE = 10;
 
 /// Gifts (to anyone) before someone is listed on, and shown, the global board.
 export const GLOBAL_MIN_GIFTS = 2;
+
+/// Distinct people reporting a name before it is hidden without waiting for
+/// anyone to look.
+export const REPORTS_TO_HIDE = 3;
+
+export const NAME_MIN = 2;
+export const NAME_MAX = 20;
+
+/// Names nobody may take: what the app itself prints in a row, and anything
+/// that reads as us.
+const RESERVED = ["you", "admin", "administrator", "moderator", "mythos", "mythoslive", "mythos live", "support", "staff", "official", "system"];
+
+/// Substrings that sink a name, matched after [fold] — so spacing, case,
+/// accents, repeats and the usual digit swaps do not get around it. Short on
+/// purpose: it is the first line, and reports are the second. It errs toward
+/// letting a real name through: a word that sits inside ordinary names is
+/// only blocked as the WHOLE name (the set below), which means "NaziKing"
+/// gets past the filter and has to be reported. That trade is deliberate —
+/// refusing Nazia, Pedro's cousin Torpedo or Mr Hancock at the moment they
+/// try to give a gift costs more than a bad name that lasts until three
+/// people flag it. Add to either list when a report shows a gap.
+const BLOCKED = [
+    "fuck", "shit", "bitch", "cunt", "nigg", "fagg", "faggot", "retard",
+    "whore", "slut", "rapist", "rape", "pedo", "paedo", "nazi", "hitler",
+    "kike", "spic", "chink", "tranny", "porn", "pussy", "dick", "cock",
+    "penis", "vagina", "anal", "cum", "jizz", "blowjob", "handjob",
+    "killyourself", "kys", "suicide", "asshole", "bastard", "wank",
+    "twat", "milf", "dildo", "horny", "sexy", "nude", "boob", "tits",
+];
+/// Blocked only as a whole name, because they hide inside ordinary ones
+/// ("Cockburn", "Dickson", "Analise", "Cumberland", "Nazia", "Swank",
+/// "Atwater", "Jizelle", "Drapeau"...).
+const BLOCKED_WHOLE_ONLY = new Set([
+    "cock", "dick", "anal", "cum", "tits", "rape", "spic", "nude", "kys",
+    "nazi", "pedo", "paedo", "wank", "twat", "jizz",
+]);
+
+/// A name reduced to what it sounds like: lower case, accents off, the
+/// common digit and symbol swaps undone, everything that is not a letter
+/// dropped, runs of one letter collapsed.
+function fold(name) {
+    return name
+        .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[0@]/g, (c) => (c === "0" ? "o" : "a"))
+        .replace(/1|!|\|/g, "i").replace(/3/g, "e").replace(/4/g, "a")
+        .replace(/5|\$/g, "s").replace(/7/g, "t").replace(/8/g, "b")
+        .replace(/[^a-z]/g, "")
+        .replace(/(.)\1+/g, "$1");
+}
+
+/// A submitted display name, tidied — or the reason it cannot be used.
+///
+/// Returns { ok: true, name } or { ok: false, reason } where reason is
+/// "length" | "characters" | "not_allowed". The app shows a sentence for
+/// each; none of them says which word tripped the filter.
+export function cleanDisplayName(raw) {
+    if (typeof raw !== "string") return { ok: false, reason: "length" };
+    const name = raw.normalize("NFC").replace(/\s+/g, " ").trim();
+    const length = [...name].length;
+    if (length < NAME_MIN || length > NAME_MAX) return { ok: false, reason: "length" };
+    // Letters and digits of any script, and the punctuation real names use.
+    // No @, /, : or dots-with-letters: a name is not a handle, a link or an
+    // address, and those are how one gets advertised on a leaderboard.
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} '’_-]*$/u.test(name)) return { ok: false, reason: "characters" };
+    if (!/\p{L}/u.test(name)) return { ok: false, reason: "characters" };
+    const folded = fold(name);
+    if (RESERVED.some((r) => fold(r) === folded)) return { ok: false, reason: "not_allowed" };
+    for (const word of BLOCKED) {
+        const w = fold(word);
+        if (BLOCKED_WHOLE_ONLY.has(word) ? folded === w : folded.includes(w)) {
+            return { ok: false, reason: "not_allowed" };
+        }
+    }
+    return { ok: true, name };
+}
+
+async function keyedHex(secret, text, bytes) {
+    const key = await crypto.subtle.importKey(
+        "raw", new TextEncoder().encode(secret || "mythos-leaderboard"),
+        { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+    return [...mac.slice(0, bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/// Stores [rawName] as [userId]'s display name. A changed name clears
+/// `hidden`: the new text has not been reported, and it went through the
+/// filter again. (Someone cycling through bad names is what the admin list
+/// and its per-user history are for.)
+export async function setDisplayName(db, { userId, rawName, secret }) {
+    const cleaned = cleanDisplayName(rawName);
+    if (!cleaned.ok) return cleaned;
+    const ref = await keyedHex(secret, `leaderboard-ref:${userId}`, 12);
+    await db.prepare(`
+        INSERT INTO leaderboard_names (user_id, name, ref) VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            hidden = CASE WHEN leaderboard_names.name = excluded.name THEN leaderboard_names.hidden ELSE 0 END,
+            name = excluded.name,
+            updated_at = CURRENT_TIMESTAMP
+    `).bind(userId, cleaned.name, ref).run();
+    return { ok: true, name: cleaned.name };
+}
+
+/// The display name [userId] has on file, hidden or not — it is still theirs.
+export async function displayNameOf(db, userId) {
+    try {
+        const row = await db.prepare(`SELECT name FROM leaderboard_names WHERE user_id = ?`).bind(userId).first();
+        return row ? row.name : null;
+    } catch (_) {
+        return null; // migration 0022 not applied yet
+    }
+}
+
+/// Records that [reporterId] objects to the name behind [ref], and hides the
+/// name once REPORTS_TO_HIDE different people have. Answers the same thing
+/// whether or not the ref exists, so the endpoint cannot be used to test
+/// refs. Returns what happened, for the log.
+export async function reportDisplayName(db, { reporterId, ref }) {
+    if (typeof ref !== "string" || !/^[0-9a-f]{24}$/.test(ref)) return { recorded: false };
+    const target = await db.prepare(
+        `SELECT user_id, name, hidden FROM leaderboard_names WHERE ref = ?`
+    ).bind(ref).first();
+    if (!target || target.user_id === reporterId) return { recorded: false };
+    await db.prepare(`
+        INSERT OR IGNORE INTO leaderboard_name_reports (reporter_id, reported_user_id, name)
+        VALUES (?, ?, ?)
+    `).bind(reporterId, target.user_id, target.name).run();
+    const count = await db.prepare(`
+        SELECT COUNT(DISTINCT reporter_id) AS n FROM leaderboard_name_reports
+        WHERE reported_user_id = ? AND name = ?
+    `).bind(target.user_id, target.name).first();
+    const reports = count ? Number(count.n) : 0;
+    let hidden = Number(target.hidden) === 1;
+    if (!hidden && reports >= REPORTS_TO_HIDE) {
+        await db.prepare(`UPDATE leaderboard_names SET hidden = 1 WHERE user_id = ?`).bind(target.user_id).run();
+        hidden = true;
+    }
+    return { recorded: true, name: target.name, reports, hidden };
+}
+
+/// For the admin API: every name with a report against it, most reported
+/// first, plus the names currently hidden.
+export async function reportedDisplayNames(db) {
+    const { results } = await db.prepare(`
+        SELECT n.ref, n.name, n.hidden, n.updated_at,
+               (SELECT COUNT(DISTINCT r.reporter_id) FROM leaderboard_name_reports r
+                 WHERE r.reported_user_id = n.user_id AND r.name = n.name) AS reports,
+               (SELECT COUNT(DISTINCT r.name) FROM leaderboard_name_reports r
+                 WHERE r.reported_user_id = n.user_id) AS names_reported
+        FROM leaderboard_names n
+        WHERE n.hidden = 1 OR EXISTS (
+            SELECT 1 FROM leaderboard_name_reports r WHERE r.reported_user_id = n.user_id)
+        ORDER BY reports DESC, n.updated_at DESC
+        LIMIT 200
+    `).all();
+    return (results || []).map((r) => ({
+        ref: r.ref, name: r.name, hidden: Number(r.hidden) === 1,
+        reports: Number(r.reports), names_reported: Number(r.names_reported),
+        updated_at: r.updated_at,
+    }));
+}
+
+/// For the admin API: hide or restore the name behind [ref]. True if a row
+/// changed hands.
+export async function setDisplayNameHidden(db, { ref, hidden }) {
+    const result = await db.prepare(
+        `UPDATE leaderboard_names SET hidden = ? WHERE ref = ?`
+    ).bind(hidden ? 1 : 0, String(ref || "")).run();
+    return !!(result && result.meta && result.meta.changes > 0);
+}
 
 /// Developer wallets — any user id a dev-marked visit carried (migration
 /// 0015) — are left off, the same rule the admin coins report uses. Test
@@ -87,13 +265,34 @@ async function board(db, { where, binds, minGifts, userId, secret }) {
         LIMIT ?
     `).bind(...binds, minGifts, BOARD_SIZE).all();
 
+    // The chosen names of the people on this page, in one read.
+    const ids = (results || []).map((r) => r.user_id);
+    const chosen = new Map();
+    if (ids.length) {
+        try {
+            const { results: named } = await db.prepare(`
+                SELECT user_id, name, ref FROM leaderboard_names
+                WHERE hidden = 0 AND user_id IN (${ids.map(() => "?").join(", ")})
+            `).bind(...ids).all();
+            for (const n of named || []) chosen.set(n.user_id, n);
+        } catch (_) {
+            // Migration 0022 not applied yet: everyone keeps their handle,
+            // and the board itself still answers.
+        }
+    }
+
     const entries = [];
     for (const [i, row] of (results || []).entries()) {
         const mine = !!userId && row.user_id === userId;
+        const own = chosen.get(row.user_id);
         entries.push({
             rank: i + 1,
-            name: await boardHandle(row.user_id, secret),
+            name: own ? own.name : await boardHandle(row.user_id, secret),
             spent: Number(row.spent),
+            // `ref` only on a chosen name, and never on your own row: it is
+            // what a report names, and a handle we generated needs no
+            // reporting.
+            ...(own && !mine ? { ref: own.ref } : {}),
             ...(mine ? { you: true } : {}),
         });
     }
@@ -151,5 +350,8 @@ export async function leaderboards(db, { characterId, userId, secret }) {
     return {
         character: { id: characterId, ...character },
         global,
+        // The requester's own display name, so the app knows whether it has
+        // been sent yet (null: not on file — ask before the next gift).
+        your_name: userId ? await displayNameOf(db, userId) : null,
     };
 }

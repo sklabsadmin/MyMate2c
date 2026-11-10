@@ -176,3 +176,164 @@ test('it is signed like a wallet read, and takes only roster-shaped ids', async 
     assert.equal((await get(open, 'Zeus; DROP TABLE')).status, 400);
     assert.equal((await get(open, '')).status, 400);
 });
+
+// ---------------------------------------------------------------------------
+// Display names: chosen by their owner, shown to strangers.
+// ---------------------------------------------------------------------------
+
+import { cleanDisplayName, REPORTS_TO_HIDE } from '../src/leaderboard.js';
+import { adminFetch } from './harness.mjs';
+
+async function send(env, method, pathname, body, { userId = ME, headers = {} } = {}) {
+    const worker = await loadWorker();
+    const res = await worker.fetch(new Request(`https://mythos.test${pathname}`, {
+        method,
+        headers: { 'content-type': 'application/json', ...(userId ? { 'x-user-id': userId } : {}), ...headers },
+        body: JSON.stringify(body),
+    }), env, { waitUntil() {}, passThroughOnException() {} });
+    return { status: res.status, json: JSON.parse(await res.text()) };
+}
+const setName = (env, name, opts) => send(env, 'PUT', '/api/leaderboard/name', { name }, opts);
+const report = (env, ref, opts) => send(env, 'POST', '/api/leaderboard/report', { ref }, opts);
+
+test('the filter lets names through and stops what should not be on a board', () => {
+    const ok = (name) => cleanDisplayName(name);
+    for (const name of ['Anna', 'José María', "O'Brien", 'Anne-Marie', '小林', 'Dr Who 2', 'Ελένη']) {
+        assert.equal(ok(name).ok, true, name);
+    }
+    assert.equal(ok('  Anna   Lee ').name, 'Anna Lee', 'tidied, not rejected');
+    // Ordinary names that contain a blocked word are not caught by it.
+    for (const name of ['Dickson', 'Cockburn', 'Analise', 'Cumberland', 'Hancock', 'Nazia', 'Swank', 'Atwater', 'Jizelle', 'Torpedo']) {
+        assert.equal(ok(name).ok, true, name);
+    }
+    assert.equal(ok('A').reason, 'length');
+    assert.equal(ok('x'.repeat(21)).reason, 'length');
+    assert.equal(ok('   ').reason, 'length');
+    assert.equal(ok(undefined).reason, 'length');
+    for (const name of ['anna@mail.com', 'buy.coins.io', 'http://x', '12345', '<b>Anna</b>', 'Anna😀']) {
+        assert.equal(ok(name).reason, 'characters', name);
+    }
+    for (const name of ['You', 'ADMIN', 'Mythos Live', 'F u c k', 'sh1t head', 'Fuuuck', 'Bitch', 'Dick', 'H1tler', 'Nazi', 'N4z1']) {
+        assert.equal(ok(name).reason, 'not_allowed', name);
+    }
+});
+
+test('a chosen name replaces the handle on every board, for everyone', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    gift(db, user(2), 'hector', 500);
+    gift(db, ME, 'zeus', 50);
+    gift(db, ME, 'hector', 50);
+    const before = (await get(e, 'zeus')).json;
+    assert.equal(before.your_name, null);
+    assert.ok(!('ref' in before.character.entries[0]), 'a handle carries nothing to report');
+
+    const saved = await setName(e, ' Penelope  of Ithaca', { userId: user(2) });
+    assert.deepEqual([saved.status, saved.json], [200, { enabled: true, ok: true, name: 'Penelope of Ithaca' }]);
+
+    const after = (await get(e, 'zeus')).json;
+    assert.equal(after.character.entries[0].name, 'Penelope of Ithaca');
+    assert.match(after.character.entries[0].ref, /^[0-9a-f]{24}$/);
+    assert.equal(after.global.entries[0].name, 'Penelope of Ithaca');
+    assert.equal(after.character.entries[1].name, before.character.entries[1].name, 'no name sent, still a handle');
+    assert.ok(!JSON.stringify(after).includes('user_17'), 'still no user id anywhere');
+
+    // Your own row says who you are to the server, and is never reportable.
+    await setName(e, 'Telemachus');
+    const mine = (await get(e, 'zeus')).json;
+    assert.equal(mine.your_name, 'Telemachus');
+    const row = mine.character.entries.find((x) => x.you);
+    assert.equal(row.name, 'Telemachus');
+    assert.ok(!('ref' in row));
+});
+
+test('a name that fails the filter is refused and nothing is stored', async () => {
+    const { env: e, db } = env();
+    gift(db, ME, 'zeus', 50);
+    const res = await setName(e, 'sh1thead');
+    assert.deepEqual([res.status, res.json], [422, { enabled: true, ok: false, reason: 'not_allowed' }]);
+    assert.equal((await get(e, 'zeus')).json.your_name, null);
+});
+
+test('a profile name typed before all this is never put on a board', async () => {
+    // user_profiles.name was entered as "what should they call you?", in
+    // private. Only a name sent to the leaderboard endpoint is public.
+    const { env: e, db } = env();
+    gift(db, ME, 'zeus', 50);
+    db.prepare("INSERT INTO user_profiles (user_id, provider, provider_id, name) VALUES (?, 'google', 'g1', 'Private Name')").run(ME);
+    const res = (await get(e, 'zeus', { userId: user(9) })).json;
+    assert.ok(!JSON.stringify(res).includes('Private Name'));
+});
+
+test('enough reports put a name back to its handle; changing it starts clean', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    await setName(e, 'Borderline', { userId: user(2) });
+    const ref = (await get(e, 'zeus')).json.character.entries[0].ref;
+
+    // The same person reporting repeatedly is one report.
+    for (let i = 0; i < REPORTS_TO_HIDE + 2; i++) await report(e, ref, { userId: user(10) });
+    assert.equal((await get(e, 'zeus')).json.character.entries[0].name, 'Borderline');
+
+    for (let n = 11; n < 10 + REPORTS_TO_HIDE; n++) await report(e, ref, { userId: user(n) });
+    const hidden = (await get(e, 'zeus')).json.character.entries[0];
+    assert.notEqual(hidden.name, 'Borderline');
+    assert.ok(!('ref' in hidden), 'a handle again');
+    // Its owner still has it on file, and is not told to choose again.
+    assert.equal((await get(e, 'zeus', { userId: user(2) })).json.your_name, 'Borderline');
+
+    // Sending the same name back does not undo the hiding…
+    await setName(e, 'Borderline', { userId: user(2) });
+    assert.notEqual((await get(e, 'zeus')).json.character.entries[0].name, 'Borderline');
+    // …a different one is a different name.
+    await setName(e, 'Perfectly Fine', { userId: user(2) });
+    assert.equal((await get(e, 'zeus')).json.character.entries[0].name, 'Perfectly Fine');
+});
+
+test('a report answers the same for a real ref, a made-up one, and your own', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    await setName(e, 'Someone', { userId: user(2) });
+    const ref = (await get(e, 'zeus')).json.character.entries[0].ref;
+    const answers = [
+        await report(e, ref),
+        await report(e, 'f'.repeat(24)),
+        await report(e, 'not a ref'),
+        await report(e, ref, { userId: user(2) }),
+    ];
+    for (const a of answers) assert.deepEqual([a.status, a.json], [200, { enabled: true, ok: true }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM leaderboard_name_reports').get().n, 1,
+        'only the real report of someone else was recorded');
+});
+
+test('the admin api lists reported names and can hide and restore one', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    await setName(e, 'Reported Once', { userId: user(2) });
+    const ref = (await get(e, 'zeus')).json.character.entries[0].ref;
+    await report(e, ref);
+
+    const listed = await adminFetch(e, '/api/admin/leaderboard-names');
+    assert.equal(listed.status, 200);
+    assert.deepEqual(listed.json.names.map((n) => [n.name, n.reports, n.hidden]), [['Reported Once', 1, false]]);
+    assert.ok(!JSON.stringify(listed.json).includes('user_17'), 'refs, not ids, even for admins');
+
+    assert.equal((await adminFetch(e, '/api/admin/leaderboard-names', { method: 'POST', body: { ref, hidden: true } })).status, 200);
+    assert.notEqual((await get(e, 'zeus')).json.character.entries[0].name, 'Reported Once');
+    await adminFetch(e, '/api/admin/leaderboard-names', { method: 'POST', body: { ref, hidden: false } });
+    assert.equal((await get(e, 'zeus')).json.character.entries[0].name, 'Reported Once');
+    assert.equal((await adminFetch(e, '/api/admin/leaderboard-names', { method: 'POST', body: { ref: 'nope', hidden: true } })).status, 404);
+});
+
+test('a name needs a real user, a signature, and the wallet\'s own device', async () => {
+    const signed = env({ REQUIRE_SIGNATURE: 'true' }).env;
+    assert.equal((await setName(signed, 'Anna')).status, 401);
+    const open = env().env;
+    assert.equal((await setName(open, 'Anna', { userId: 'someone' })).status, 400);
+    assert.deepEqual((await setName(env({ LEADERBOARDS: 'false' }).env, 'Anna')).json, { enabled: false });
+
+    // A claimed anonymous wallet: knowing its id is not enough to rename it.
+    const { env: e, db } = env();
+    db.prepare("INSERT INTO coin_wallets (user_id, claim_token_hash, claim_used_at) VALUES (?, 'somehash', CURRENT_TIMESTAMP)").run(ME);
+    assert.equal((await setName(e, 'Impostor')).status, 403);
+});

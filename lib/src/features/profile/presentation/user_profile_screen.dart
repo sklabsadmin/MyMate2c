@@ -11,6 +11,8 @@ import '../../../core/services/profile_sync_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../auth/presentation/sign_in_sheet.dart';
+import '../../leaderboard/leaderboard.dart';
+import '../../leaderboard/leaderboard_name.dart';
 import '../../wallet/coin_wallet.dart';
 
 /// "My Profile" — the player's own details, reached from the bottom nav.
@@ -215,6 +217,17 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     if (!mounted) return;
     setState(() => _dirty = false);
 
+    // Someone already on the leaderboards is listed under this name, so a
+    // change here follows them there. For anyone who has not given a gift
+    // this does nothing and the name stays on the device.
+    final refused = await LeaderboardNameGate(
+      service: LeaderboardService(),
+      loadName: () async => _current.name,
+      saveName: (_) async {},
+    ).afterProfileSaved(_current.name);
+    if (!mounted) return;
+    if (refused != null) _toast(refused);
+
     final authed = ref.read(authProvider).value?.authenticated ?? false;
     if (!authed) {
       if (AuthNotifier.signInAvailable && !_signInSuggested) {
@@ -323,6 +336,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               label: 'Name',
               controller: _name,
               hint: 'What should they call you?',
+              helper: 'Also your display name on the gift leaderboards, '
+                  'once you give a gift.',
             ),
             _field(theme, label: 'Age', controller: _age, hint: 'e.g. 29'),
             _field(
@@ -503,6 +518,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     required String hint,
     int maxLines = 1,
     List<String> suggestions = const [],
+    String? helper,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
@@ -558,6 +574,16 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               ),
             ),
           ),
+          if (helper != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 4),
+              child: Text(
+                helper,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: AppTheme.faintInkColor,
+                ),
+              ),
+            ),
         ],
       ),
     );

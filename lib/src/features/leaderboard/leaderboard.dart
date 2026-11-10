@@ -10,22 +10,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/config/app_config.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/delivery_log.dart';
+import '../../core/services/device_identity.dart';
 import '../../core/theme/app_theme.dart';
 
-/// One row of a board. [name] is a made-up handle the worker derives for
-/// every user — nobody's real name or id is ever sent. [you] marks the row
-/// that is this person, which the sheet labels "You".
+/// One row of a board. [name] is the display name that person chose for the
+/// leaderboards, or — for someone who has not sent one — a made-up handle the
+/// worker derives. No user id is ever sent. [you] marks the row that is this
+/// person, which the sheet labels "You".
 class LeaderboardEntry {
   final int rank;
   final String name;
   final int spent;
   final bool you;
 
+  /// Present only on someone ELSE's chosen name: the opaque token a report
+  /// names. A generated handle has none, because there is nothing to object
+  /// to in a name we made up.
+  final String? ref;
+
   const LeaderboardEntry({
     required this.rank,
     required this.name,
     required this.spent,
     this.you = false,
+    this.ref,
   });
 }
 
@@ -60,11 +68,13 @@ class Leaderboard {
         final name = row['name'];
         final spent = row['spent'];
         if (rank is! int || name is! String || spent is! int) continue;
+        final ref = row['ref'];
         entries.add(LeaderboardEntry(
           rank: rank,
           name: name,
           spent: spent,
           you: row['you'] == true,
+          ref: ref is String && ref.isNotEmpty ? ref : null,
         ));
       }
     }
@@ -95,10 +105,15 @@ class LeaderboardResult {
   final Leaderboard character;
   final Leaderboard? global;
 
+  /// The display name the worker has on file for this person, or null when
+  /// they have never sent one.
+  final String? yourName;
+
   const LeaderboardResult({
     required this.enabled,
     this.character = const Leaderboard(),
     this.global,
+    this.yourName,
   });
 
   static LeaderboardResult? tryParse(dynamic json) {
@@ -110,7 +125,13 @@ class LeaderboardResult {
     final global = rawGlobal is Map && rawGlobal['unlocked'] == true
         ? Leaderboard.tryParse(rawGlobal)
         : null;
-    return LeaderboardResult(enabled: true, character: character, global: global);
+    final yourName = json['your_name'];
+    return LeaderboardResult(
+      enabled: true,
+      character: character,
+      global: global,
+      yourName: yourName is String && yourName.isNotEmpty ? yourName : null,
+    );
   }
 }
 
@@ -121,6 +142,93 @@ class LeaderboardService {
   final Dio _dio;
   LeaderboardService({Dio? dio}) : _dio = dio ?? Dio();
 
+  /// Signed headers for a request whose body is [body] ('' for a GET).
+  Future<Map<String, String>> _headers(String body) async {
+    final prefs = await SharedPreferences.getInstance();
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final secret = AppConfig.appSecret;
+    final claim = DeviceIdentity.claimToken;
+    return {
+      'x-signature': secret.isEmpty
+          ? ''
+          : Hmac(sha256, utf8.encode(secret))
+              .convert(utf8.encode(body + timestamp))
+              .toString(),
+      'x-timestamp': timestamp,
+      'x-user-id': DeliveryLog.ensureUserId(prefs),
+      // A claimed wallet's name is set only by the device holding its claim.
+      'x-wallet-claim': ?claim,
+      ...AuthSession.header(),
+    };
+  }
+
+  /// Sends [name] as this person's leaderboard display name — PUT
+  /// /api/leaderboard/name. The worker is the judge of what is allowed; a
+  /// refusal comes back as [NameOutcome.rejected] with its reason.
+  Future<NameResult> setName(String name) async {
+    final url = AppConfig.apiUrl('/api/leaderboard/name');
+    if (url.isEmpty) return const NameResult(NameOutcome.unreachable);
+    try {
+      final body = jsonEncode({'name': name});
+      final res = await _dio.put(
+        url,
+        data: body,
+        options: Options(
+          headers: {
+            'content-type': 'application/json',
+            ...await _headers(body),
+          },
+          extra: {'withCredentials': true},
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
+          validateStatus: (status) => status == 200 || status == 422,
+        ),
+      );
+      final data = res.data;
+      if (data is! Map) return const NameResult(NameOutcome.unreachable);
+      if (data['enabled'] != true) return const NameResult(NameOutcome.disabled);
+      if (data['ok'] == true && data['name'] is String) {
+        return NameResult(NameOutcome.saved, name: data['name'] as String);
+      }
+      return NameResult(
+        NameOutcome.rejected,
+        reason: data['reason'] is String ? data['reason'] as String : null,
+      );
+    } catch (e) {
+      if (kDebugMode) debugPrint('Leaderboard name failed: $e');
+      return const NameResult(NameOutcome.unreachable);
+    }
+  }
+
+  /// Reports the display name behind [ref] — POST /api/leaderboard/report.
+  /// True once the worker has answered; it says the same thing whatever it
+  /// did with the report.
+  Future<bool> report(String ref) async {
+    final url = AppConfig.apiUrl('/api/leaderboard/report');
+    if (url.isEmpty) return false;
+    try {
+      final body = jsonEncode({'ref': ref});
+      final res = await _dio.post(
+        url,
+        data: body,
+        options: Options(
+          headers: {
+            'content-type': 'application/json',
+            ...await _headers(body),
+          },
+          extra: {'withCredentials': true},
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
+          validateStatus: (status) => status == 200,
+        ),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) debugPrint('Leaderboard report failed: $e');
+      return false;
+    }
+  }
+
   /// The boards for [characterId], or null when they could not be read.
   Future<LeaderboardResult?> fetch(String characterId) async {
     final url = AppConfig.apiUrl(
@@ -129,23 +237,10 @@ class LeaderboardService {
     );
     if (url.isEmpty) return null;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final secret = AppConfig.appSecret;
-      final signature = secret.isEmpty
-          ? ''
-          : Hmac(sha256, utf8.encode(secret))
-              .convert(utf8.encode(timestamp))
-              .toString();
       final res = await _dio.get(
         url,
         options: Options(
-          headers: {
-            'x-signature': signature,
-            'x-timestamp': timestamp,
-            'x-user-id': DeliveryLog.ensureUserId(prefs),
-            ...AuthSession.header(),
-          },
+          headers: await _headers(''),
           extra: {'withCredentials': true},
           sendTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
@@ -158,6 +253,28 @@ class LeaderboardService {
       return null;
     }
   }
+}
+
+/// What came of sending a display name to the worker.
+enum NameOutcome {
+  /// Stored. [NameResult.name] is it as the worker tidied it.
+  saved,
+
+  /// Refused; [NameResult.reason] is "length" | "characters" | "not_allowed".
+  rejected,
+
+  /// Leaderboards (or coins) are switched off: there is nothing to name.
+  disabled,
+
+  /// No answer. Not a verdict on the name.
+  unreachable,
+}
+
+class NameResult {
+  final NameOutcome outcome;
+  final String? name;
+  final String? reason;
+  const NameResult(this.outcome, {this.name, this.reason});
 }
 
 /// "#3", for a place on a board.
@@ -228,6 +345,48 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
 
   void _retry() {
     setState(() => _result = widget.service.fetch(widget.characterId));
+  }
+
+  /// Refs reported from this sheet, so a flag reads as done once tapped.
+  final Set<String> _reported = {};
+
+  /// Asks before reporting [entry]'s name, then sends the report. The thanks
+  /// is shown whether or not the worker could be reached being honest about
+  /// only one thing: that it was sent.
+  Future<void> _report(LeaderboardEntry entry) async {
+    final ref = entry.ref;
+    if (ref == null || _reported.contains(ref)) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Report this name?'),
+        content: Text(
+          '"${entry.name}" will be sent for review. Names that break the '
+          'rules are removed from the leaderboards.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Report'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final sent = await widget.service.report(ref);
+    if (!mounted) return;
+    if (sent) setState(() => _reported.add(ref));
+    messenger?.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      content: Text(sent
+          ? 'Thanks. That name has been reported.'
+          : 'The report could not be sent. Please try again.'),
+    ));
   }
 
   @override
@@ -309,6 +468,8 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
               else
                 Flexible(
                   child: _Board(
+                    onReport: _report,
+                    reported: _reported,
                     board: showGlobal ? global : result.character,
                     emptyText: showGlobal
                         ? 'No one is on this board yet.'
@@ -319,8 +480,8 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
               if (!loading && result != null && result.enabled) ...[
                 const SizedBox(height: 14),
                 Text(
-                  'Ranked by coins spent on gifts. Names are aliases; '
-                  'only you can see which one is yours.',
+                  'Ranked by coins spent on gifts. Tap the flag beside a '
+                  'name to report it.',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.lato(
                     color: AppTheme.faintInkColor,
@@ -425,8 +586,15 @@ class _Message extends StatelessWidget {
 class _Board extends StatelessWidget {
   final Leaderboard board;
   final String emptyText;
+  final void Function(LeaderboardEntry entry) onReport;
+  final Set<String> reported;
 
-  const _Board({required this.board, required this.emptyText});
+  const _Board({
+    required this.board,
+    required this.emptyText,
+    required this.onReport,
+    required this.reported,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -438,7 +606,12 @@ class _Board extends StatelessWidget {
       shrinkWrap: true,
       padding: EdgeInsets.zero,
       children: [
-        for (final entry in board.entries) _Row(entry: entry),
+        for (final entry in board.entries)
+          _Row(
+            entry: entry,
+            reported: reported.contains(entry.ref),
+            onReport: entry.ref == null ? null : () => onReport(entry),
+          ),
         if (belowFold) ...[
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 2),
@@ -462,7 +635,13 @@ class _Board extends StatelessWidget {
 
 class _Row extends StatelessWidget {
   final LeaderboardEntry entry;
-  const _Row({required this.entry});
+
+  /// Null where there is nothing to report: this person's own row, and a
+  /// generated handle.
+  final VoidCallback? onReport;
+  final bool reported;
+
+  const _Row({required this.entry, this.onReport, this.reported = false});
 
   @override
   Widget build(BuildContext context) {
@@ -516,6 +695,24 @@ class _Row extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
+          if (onReport != null) ...[
+            const SizedBox(width: 6),
+            InkResponse(
+              onTap: reported ? null : onReport,
+              radius: 18,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Tooltip(
+                  message: reported ? 'Reported' : 'Report this name',
+                  child: Icon(
+                    reported ? Icons.flag : Icons.outlined_flag,
+                    size: 16,
+                    color: AppTheme.faintInkColor,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

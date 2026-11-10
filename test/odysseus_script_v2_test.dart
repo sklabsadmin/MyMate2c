@@ -17,6 +17,7 @@
 
 import 'dart:convert';
 
+import 'package:mythos_live/src/features/leaderboard/leaderboard_name.dart';
 import 'package:mythos_live/src/core/config/app_config.dart';
 import 'package:mythos_live/src/features/chat/presentation/chat_screen.dart';
 import 'package:mythos_live/src/features/wallet/coin_wallet.dart';
@@ -1630,6 +1631,14 @@ void _giftSheetTests() {
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+
+    // A giver who already has a display name on the leaderboards, so the gift
+    // goes straight through — the prompt that asks for one, and the request
+    // that sends it, are leaderboard_name_test.dart's subject, not this
+    // file's.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('user_profile_v1', '{"name":"Tester"}');
+    await prefs.setString(LeaderboardNameGate.sentKey, 'Tester');
 
     await tester.pumpWidget(
       ProviderScope(
