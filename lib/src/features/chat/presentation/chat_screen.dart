@@ -25,6 +25,7 @@ import '../../../core/services/revenue_cat_service.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
 import '../../wallet/presentation/coin_claim_screen.dart';
+import '../../leaderboard/leaderboard.dart';
 import '../../wallet/presentation/coins_sheet.dart';
 
 /// Beat pacing for a scripted opening — see [_ChatScreenState._readablePacing]
@@ -207,6 +208,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// today and would disagree on the first title containing a parenthesis.
   /// Name and title come from the same split so the entry card and the profile
   /// screen cannot drift apart on what they call the character.
+  /// After a gift that was charged: reads the character's leaderboard and
+  /// offers it in a snackbar that says where the gift left this person.
+  ///
+  /// Roster characters only (a custom character has no board). Silent when
+  /// the board cannot be read, is switched off, or has no place for them —
+  /// a gift must never end in an error message about a leaderboard.
+  Future<void> _offerLeaderboardAfterGift() async {
+    final characterId = characterById(widget.characterId)?['id'] as String?;
+    if (characterId == null) return;
+    final name = _scenarioParts.name;
+    final result = await LeaderboardService().fetch(characterId);
+    final line = leaderboardGiftLine(result, name);
+    if (line == null || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 6),
+      content: Text(line),
+      action: SnackBarAction(
+        label: 'View',
+        onPressed: () {
+          if (!mounted) return;
+          showLeaderboardSheet(
+            context,
+            characterId: characterId,
+            characterName: name,
+            preloaded: result,
+          );
+        },
+      ),
+    ));
+  }
+
   ({String name, String? title}) get _scenarioParts {
     final scenario = widget.scenario;
     if (scenario == null || scenario.isEmpty) return (name: 'He', title: null);
@@ -3622,6 +3655,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         final keepsake = kTributeOptions
             .any((o) => o.item == gift['item'] && o.once);
         if (keepsake) ref.read(coinWalletProvider.notifier).refresh();
+        // A gift is what moves someone up the character's leaderboard: say
+        // where this one left them, with a way in. Not awaited — the reply
+        // must not wait on it.
+        _offerLeaderboardAfterGift();
       }
       // Some characters answer a gift with a photograph as well as words.
       // Queued here and sent after the reply's bubbles below, so it arrives

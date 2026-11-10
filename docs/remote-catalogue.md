@@ -93,6 +93,30 @@ they are written to at the top of that file. They are local notifications: no
 push certificate, no server, no device token. The worker can replace any
 character's lines through the catalogue.
 
+## Leaderboards
+
+Each roster character has a leaderboard: everyone who has given them a gift,
+ranked by the coins those gifts cost. It opens from a button on the
+character's profile, and a snackbar offers it after a gift ("You are #3 on
+Zeus's leaderboard. View").
+
+There is also an all-characters board. It lists people who have given two or
+more gifts, and it is only sent to someone who has done the same. Until then
+the app shows no tab and no hint that it exists.
+
+- **No names.** Rows show a made-up alias the worker derives from the user id
+  with a keyed hash ("Sea-Born Shepherd 86"). The viewer's own row says "You".
+  No real name, account name or id leaves the worker, and there is no
+  user-written text to moderate.
+- **Read from the ledger.** `backend/src/leaderboard.js` groups the gift rows
+  in `coin_ledger`. Nothing is stored separately. Migration 0021 adds the
+  index. Developer wallets (dev-marked visits) are left off.
+- **Ties** go to whoever reached the total first.
+- **Off switch.** `LEADERBOARDS` in `wrangler.jsonc`; the exact string
+  `"false"` turns it off and the app says "not available".
+- **Tuning.** `BOARD_SIZE` (10) and `GLOBAL_MIN_GIFTS` (2) are constants at
+  the top of the module. Changing them needs no app release.
+
 ## What still needs an app release
 
 - Hearts for a new gift (see above).

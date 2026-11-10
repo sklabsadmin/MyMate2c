@@ -95,6 +95,13 @@
     // entries. Acking discards on purpose; the endpoint's 503 still means a
     // write that failed and must be retried.
     "DELIVERY_LOGGING": "true",
+    // Gift leaderboards (/api/leaderboard, backend/src/leaderboard.js): who
+    // has given each character the most, plus an all-characters board shown
+    // only to people who have given two or more gifts. Same off-switch idiom
+    // as DELIVERY_LOGGING: only the exact string "false" disables it, and off
+    // answers { enabled: false } so the app says "not available" rather than
+    // failing. Needs COIN_LEDGER on; with the ledger off there are no boards.
+    "LEADERBOARDS": "true",
     // Mythos Coins (the wallet: /api/wallet*, the gift debit and reply
     // grant inside /api/chat, and the anon->account wallet merge on sign-in).
     // Default-off idiom — ONLY the exact string "true" enables it — because

@@ -372,8 +372,11 @@ test('saving a profile pays once, and a nameless save pays nothing', async () =>
 test('the admin api names the missing migration instead of a bare 500', async () => {
     const { env } = coinsEnv();
     // The wallet route says it too, for the client's benefit.
-    // 0017 alters the tables 0014 creates, so it has to go too.
-    const noTables = testEnv({ skip: ['0014_coin_ledger.sql', '0017_coin_packs.sql'] });
+    // 0017 alters the tables 0014 creates, and 0021 indexes one of them, so
+    // they have to go too.
+    const noTables = testEnv({ skip: [
+        '0014_coin_ledger.sql', '0017_coin_packs.sql', '0021_gift_leaderboard_index.sql',
+    ] });
     const res = await adminFetch(
         { ...noTables.env },
         '/api/admin/coins',

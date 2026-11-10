@@ -15,6 +15,7 @@ import {
     cataloguePersona,
     catalogueStarters,
 } from "./catalogue.js";
+import { leaderboards } from "./leaderboard.js";
 import {
     verifyGoogleIdToken,
     verifyAppleIdToken,
@@ -1587,6 +1588,68 @@ export default {
             return jsonResponse(publicCatalogue(url.origin), {
                 headers: { ...corsHeaders(request), "Cache-Control": "public, max-age=300" },
             });
+        }
+
+        // Leaderboards: who has given a character the most, and — for people
+        // who have given enough themselves — who has given the most overall.
+        // backend/src/leaderboard.js. Signed like a wallet read and gated on
+        // the same switch: no coin ledger, no boards.
+        //
+        // LEADERBOARDS is an off switch in the DELIVERY_LOGGING idiom: only
+        // the exact string "false" disables it, and off answers
+        // { enabled: false } rather than an error, so a build with the
+        // button in it shows "not available" instead of a failure.
+        if (request.method === "GET" && url.pathname === "/api/leaderboard") {
+            const signature = request.headers.get("x-signature");
+            const timestamp = request.headers.get("x-timestamp");
+            if (env.REQUIRE_SIGNATURE !== "false") {
+                const reqTime = parseInt(timestamp || "", 10);
+                if (!signature || !Number.isFinite(reqTime)
+                    || Math.abs(Date.now() - reqTime) > 5 * 60 * 1000
+                    || !(await verifySignature(env.APP_SECRET, "", timestamp, signature))) {
+                    return jsonResponse({ error: "Invalid signature" }, {
+                        status: 401, headers: corsHeaders(request),
+                    });
+                }
+            }
+            const session = await getSessionFromRequest(request, env);
+            const userId = session
+                ? sessionUserId(session)
+                : request.headers.get("x-user-id") || "anonymous";
+            if (env.LEADERBOARDS === "false" || !coinsActive(env, request, userId)) {
+                return jsonResponse({ enabled: false }, { headers: corsHeaders(request) });
+            }
+            const characterId = url.searchParams.get("character") || "";
+            // Roster-shaped ids only. A custom character's gifts are keyed by
+            // a per-person chat id, and a board of one is not a board.
+            if (!/^[a-z0-9_]{1,40}$/.test(characterId)) {
+                return jsonResponse({ error: "Unknown character" }, {
+                    status: 400, headers: corsHeaders(request),
+                });
+            }
+            if (!env.CHAT_LOGS_DB) {
+                return jsonResponse({ error: "Leaderboard storage is not configured" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
+            try {
+                const boards = await leaderboards(env.CHAT_LOGS_DB, {
+                    characterId,
+                    // An unrecognised id still sees the character's board; it
+                    // just has no standing on it and no global board.
+                    userId: isRealUserId(userId) ? userId : null,
+                    secret: env.SESSION_SECRET || env.APP_SECRET,
+                });
+                return jsonResponse({ enabled: true, ...boards }, { headers: corsHeaders(request) });
+            } catch (error) {
+                console.error(JSON.stringify({
+                    event: "leaderboard_failed",
+                    error: error && error.message ? error.message : String(error),
+                }));
+                return jsonResponse({ error: "Leaderboard unavailable" }, {
+                    status: 503, headers: corsHeaders(request),
+                });
+            }
         }
 
         if ((request.method === "GET" && url.pathname === "/api/wallet") ||

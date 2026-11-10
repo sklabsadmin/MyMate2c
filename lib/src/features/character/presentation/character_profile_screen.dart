@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import '../../../core/data/character_profiles.dart';
+import '../../../core/data/characters.dart';
 import '../../../core/data/remote_catalogue.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../leaderboard/leaderboard.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coins_sheet.dart';
 
@@ -93,9 +95,14 @@ class CharacterProfileScreen extends ConsumerWidget {
   Widget _buildScaffold(BuildContext context, WidgetRef ref) {
     // The keepsakes this person gave this character. Read from the wallet the
     // app already holds, so an unpriced or disabled wallet simply shows none.
+    final wallet = ref.watch(coinWalletProvider).value;
     final keepsakes =
-        ref.watch(coinWalletProvider).value?.keepsakesFor(characterKey) ??
-            const <Keepsake>[];
+        wallet?.keepsakesFor(characterKey) ?? const <Keepsake>[];
+    // Who has given this character the most. Roster characters only — a
+    // character somebody made up is theirs alone, and a board of one is not
+    // a board — and only where coins exist at all.
+    final rosterId = characterById(characterKey)?['id'] as String?;
+    final showLeaderboard = rosterId != null && (wallet?.enabled ?? false);
     return Scaffold(
       backgroundColor: AppTheme.backgroundColor,
       body: SafeArea(
@@ -219,6 +226,18 @@ class CharacterProfileScreen extends ConsumerWidget {
                                   for (final k in keepsakes)
                                     _KeepsakeRow(keepsake: k, characterName: name),
                                 ],
+                              ),
+                            ),
+                          if (showLeaderboard)
+                            _section(
+                              'Leaderboard',
+                              _LeaderboardButton(
+                                characterName: name,
+                                onTap: () => showLeaderboardSheet(
+                                  context,
+                                  characterId: rosterId,
+                                  characterName: name,
+                                ),
                               ),
                             ),
                           _section(
@@ -356,6 +375,52 @@ class _AskButton extends StatelessWidget {
 
 /// One keepsake on the profile: the painted gift, its name, and when it was
 /// given ("Golden Laurel for Penelope · Given 5 Oct 2026").
+/// The way into the leaderboard sheet from a profile.
+class _LeaderboardButton extends StatelessWidget {
+  final String characterName;
+  final VoidCallback onTap;
+
+  const _LeaderboardButton({required this.characterName, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.panelColor,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        key: const ValueKey('profile-leaderboard-button'),
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.hairlineColor),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.emoji_events,
+                  size: 20, color: CharacterProfileScreen._gold),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'See who has given $characterName the most',
+                  style: GoogleFonts.outfit(
+                    fontSize: 13,
+                    color: AppTheme.inkColor,
+                  ),
+                ),
+              ),
+              const Icon(Icons.chevron_right,
+                  size: 20, color: AppTheme.mutedInkColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _KeepsakeRow extends StatelessWidget {
   final Keepsake keepsake;
   final String characterName;
