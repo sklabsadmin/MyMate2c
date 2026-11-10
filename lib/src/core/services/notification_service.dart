@@ -101,6 +101,17 @@ class NotificationService {
           requestAlertPermission: true,
           requestBadgePermission: true,
           requestSoundPermission: true,
+          // Nothing is shown while the app is open. That is how it behaved
+          // before AppDelegate set the notification-centre delegate (needed
+          // for taps to reach us): with no delegate iOS drops a notification
+          // that arrives in the foreground, and with one the plugin would
+          // present it. A dawn line sliding over a conversation in progress
+          // is not wanted, so say so here rather than rely on the accident.
+          defaultPresentAlert: false,
+          defaultPresentBanner: false,
+          defaultPresentList: false,
+          defaultPresentSound: false,
+          defaultPresentBadge: false,
         );
 
     final fln.InitializationSettings initializationSettings =
