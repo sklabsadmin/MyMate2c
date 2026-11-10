@@ -135,9 +135,10 @@ void main() {
     }
     // Nothing is sent for a character with no entry; that is the normal case
     // and must stay silent rather than falling back to a stranger's photo.
+    // Since the 1.0.6 App Review cleanup that is every character.
     expect(giftRewardAsset('penelope', 'roses'), isNull);
     expect(giftRewardAsset(null, 'roses'), isNull);
-    expect(giftRewardAsset('hercules', 'roses'), isNotNull);
+    expect(giftRewardAsset('hercules', 'roses'), isNull);
   });
 
   test('the pendant and the laurel are the gifts given once, and the sheet knows it', () {

@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import 'analytics.dart';
+import 'auth_service.dart';
 import 'delivery_env.dart';
 
 /// Where a line the visitor read actually came from.
@@ -758,6 +759,9 @@ class DeliveryLog {
             'Content-Type': 'application/json',
             'x-signature': _sign(body, timestamp),
             'x-timestamp': timestamp,
+            // The worker attributes receipts to the session's account when
+            // there is one; natively that session is the bearer token.
+            ...AuthSession.header(),
           },
           validateStatus: (status) => status != null && status < 600,
         ),

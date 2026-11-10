@@ -375,13 +375,14 @@ class _CoinPurse extends StatelessWidget {
   final double fill;
   final double drop;
   final Color gold;
-  final int coinCount;
+
+  /// Coins drawn spilling from the purse.
+  static const int coinCount = 7;
 
   const _CoinPurse({
     required this.fill,
     required this.drop,
     required this.gold,
-    this.coinCount = 7,
   });
 
   @override

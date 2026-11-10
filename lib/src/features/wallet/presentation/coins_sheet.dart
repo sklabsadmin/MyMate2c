@@ -1,11 +1,11 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/data/characters.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../coin_wallet.dart';
@@ -92,9 +92,11 @@ String tributeHistoryLabel(String item, String? characterName) {
 /// Hercules flexing in answer to roses given to Penelope would be a bug you
 /// could see from space. A character with no entry simply answers in words,
 /// which is what every one of them did before this existed.
-const Map<String, Map<String, String>> kGiftRewards = {
-  'hercules': {'roses': 'assets/images/hercules_flex.jpg'},
-};
+///
+/// Empty since the 1.0.6 App Review cleanup removed the one entry (Hercules'
+/// roses photo); every character thanks in words. The plumbing stays so a
+/// reward can be added back as one line here plus its asset.
+const Map<String, Map<String, String>> kGiftRewards = {};
 
 /// The reward for [item] from [characterId], or null when there isn't one.
 String? giftRewardAsset(String? characterId, String item) =>
@@ -303,9 +305,9 @@ Future<void> showCoinsSheet(
                   '${wallet != null && wallet.replyGrantCap > 0 ? ' (${wallet.replyGrantsToday}/${wallet.replyGrantCap} today)' : ''}',
                   _grant(grants, 'reply'),
                 ),
-                if (kIsWeb)
-                  _EarnRow(Icons.account_circle_outlined, 'Sign in with Google',
-                      _grant(grants, 'link')),
+                if (AuthNotifier.signInAvailable)
+                  _EarnRow(Icons.account_circle_outlined,
+                      'Sign in with Apple or Google', _grant(grants, 'link')),
                 _EarnRow(Icons.badge_outlined, 'Complete your profile',
                     _grant(grants, 'profile')),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[

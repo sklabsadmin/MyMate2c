@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/services/auth_service.dart';
 import '../../core/services/delivery_log.dart';
 import '../../core/services/device_identity.dart';
 
@@ -326,6 +327,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -362,6 +364,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -399,6 +402,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -457,6 +461,7 @@ class CoinWalletService {
             'x-timestamp': timestamp,
             'x-user-id': userId,
             ..._claimHeader(requestNew: true),
+            ...AuthSession.header(),
           },
           extra: {'withCredentials': true},
           validateStatus: (status) => status != null && status < 500,
@@ -548,7 +553,16 @@ class CoinWalletNotifier extends AsyncNotifier<CoinWalletState?> {
   /// wherever the balance just needs refreshing (e.g. after a profile save).
   Future<void> _refresh() async {
     final fresh = await ref.read(coinWalletServiceProvider).fetch();
-    if (fresh == null) return; // keep whatever we had
+    if (fresh == null) {
+      // Keep whatever we had. With nothing at all, settle on "off" so that
+      // null keeps meaning "still checking" — the entry card shows the coins
+      // promise while it waits and needs to know when the answer is no.
+      // Not cached: the next launch asks again.
+      if (state.value == null) {
+        state = const AsyncData(CoinWalletState(enabled: false));
+      }
+      return;
+    }
     state = AsyncData(fresh);
     await _writeCache(fresh);
   }

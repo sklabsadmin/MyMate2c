@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
 import '../models/user_profile.dart';
+import 'auth_service.dart';
 
 final profileSyncServiceProvider = Provider<ProfileSyncService>((ref) {
   return ProfileSyncService();
@@ -11,14 +12,16 @@ final profileSyncServiceProvider = Provider<ProfileSyncService>((ref) {
 
 /// Syncs the player's profile with the worker for signed-in users.
 ///
-/// The worker resolves identity from the signed session cookie, so every call
-/// here must send credentials — there is no user id in the request, by design.
+/// The worker resolves identity from the signed session (the web's cookie, the
+/// app's bearer token), so every call here must send credentials — there is no user id in the request, by design.
 /// A signed-out user gets 401 and keeps the device-local copy; that is the
 /// normal path, not an error worth surfacing.
 class ProfileSyncService {
   final Dio _dio = Dio();
 
   Options get _authed => Options(
+        // The cookie on the web, the bearer token in the app.
+        headers: AuthSession.header(),
         extra: {'withCredentials': true},
         // 401 is expected for signed-out users, so don't let Dio throw on it.
         validateStatus: (status) => status != null && status < 500,

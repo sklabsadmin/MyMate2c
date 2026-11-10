@@ -1,12 +1,11 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../../../core/config/app_config.dart';
+import '../../../core/services/auth_service.dart';
 import '../../../core/theme/app_theme.dart';
-import '../../wallet/coin_wallet.dart';
+import 'sign_in_sheet.dart';
 
 /// Where sign-out lands, instead of dropping straight back into Settings.
 ///
@@ -17,29 +16,21 @@ import '../../wallet/coin_wallet.dart';
 ///
 /// Deliberately outside the nav shell — no bottom bar — so it cannot be
 /// wandered away from by accident.
-class SignedOutScreen extends StatelessWidget {
+class SignedOutScreen extends ConsumerWidget {
   const SignedOutScreen({super.key});
 
-  Future<void> _signInAgain() async {
-    // Come back to the dashboard rather than here: returning to a "you are
-    // signed out" page immediately after signing in would read as a failure.
-    final returnTo = kIsWeb
-        ? Uri.base.replace(path: '/dashboard', query: null).toString()
-        : 'mythoslive://dashboard';
-    final prefs = await SharedPreferences.getInstance();
-    final anonId = prefs.getString('user_id');
-    final ticket = await CoinWalletService().mergeTicket();
-    final authUrl =
-        AppConfig.googleAuthUrl(returnTo, anonId: anonId, ticket: ticket);
-    if (authUrl.isEmpty) return;
-    // Same tab: a popup opened after an await loses the user-gesture context
-    // and gets blocked silently.
-    await launchUrl(Uri.parse(authUrl), webOnlyWindowName: '_self');
-  }
+  // Come back to the dashboard rather than here: returning to a "you are
+  // signed out" page immediately after signing in would read as a failure.
+  String get _returnTo => kIsWeb
+      ? Uri.base.replace(path: '/dashboard', query: null).toString()
+      : 'mythoslive://dashboard';
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    // /signed-out?deleted=1 is where account deletion lands on the web.
+    final deleted =
+        GoRouterState.of(context).uri.queryParameters['deleted'] == '1';
 
     return Scaffold(
       body: Container(
@@ -80,7 +71,7 @@ class SignedOutScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      "You're signed out",
+                      deleted ? 'Your account was deleted' : "You're signed out",
                       textAlign: TextAlign.center,
                       style: theme.textTheme.headlineSmall?.copyWith(
                         color: AppTheme.inkColor,
@@ -89,8 +80,12 @@ class SignedOutScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Your conversations stay on this device. Sign back in '
-                      'whenever you want to pick up where you left off.',
+                      deleted
+                          ? 'Your account and its saved data are gone. You can '
+                              'keep chatting without one, or sign in again to '
+                              'start a fresh account.'
+                          : 'Your conversations stay on this device. Sign back in '
+                              'whenever you want to pick up where you left off.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: AppTheme.mutedInkColor,
@@ -98,22 +93,20 @@ class SignedOutScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 32),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _signInAgain,
-                        icon: const Icon(Icons.login, size: 20),
-                        label: const Text('Sign in again'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: theme.primaryColor,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
+                    if (AuthNotifier.signInAvailable)
+                      SignInButtons(
+                        onChoose: (provider) async {
+                          final outcome = await runSignIn(
+                              context, ref, provider,
+                              returnTo: _returnTo);
+                          // Native completes in place (the web navigates
+                          // away): leave the "signed out" page ourselves.
+                          if (outcome == SignInOutcome.signedIn &&
+                              context.mounted) {
+                            context.go('/dashboard');
+                          }
+                        },
                       ),
-                    ),
                     const SizedBox(height: 12),
                     // Signed-out browsing is still allowed (20 free replies per
                     // character), so this is a real option, not a way out of a

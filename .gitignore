@@ -88,3 +88,6 @@ backend/src/__*.mjs
 
 # Scratch output from a codex analysis run — not part of the app.
 .codex-analysis/
+
+# Local run configs: they carry APP_SECRET as a --dart-define.
+.run/

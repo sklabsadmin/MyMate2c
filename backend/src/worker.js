@@ -9,10 +9,29 @@
  */
 
 import { CHARACTER_STARTERS, DEFAULT_STARTERS, SHARED_TAPS } from "./starters.generated.js";
+import {
+    verifyGoogleIdToken,
+    verifyAppleIdToken,
+    appleKeyConfigured,
+    appleExchangeCode,
+    appleRevoke,
+} from "./identity.js";
 
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
+
+        // logs.<domain> exists only for the admin tools. A Workers custom
+        // domain binds the entire hostname, so without this the full app would
+        // be reachable there too — a second public entrance nobody intended.
+        // It has to come before every other route: below the /auth/* handlers
+        // it let the admin host start Google sign-in against a callback Google
+        // does not know, which ended on redirect_uri_mismatch.
+        if (url.hostname.startsWith("logs.")) {
+            if (!url.pathname.startsWith("/admin") && !url.pathname.startsWith("/api/admin")) {
+                return Response.redirect(`${url.origin}/admin`, 302);
+            }
+        }
 
         // Campaign deep links. Handled here rather than by the static asset
         // handler so the arrival is recorded and the character's Open Graph
@@ -52,15 +71,35 @@ export default {
             return finishGoogleAuth(request, env, url);
         }
 
+        // Sign in with Apple on the web. Apple delivers the result as a
+        // cross-site form POST (response_mode=form_post, required whenever
+        // name or email is requested), so the callback is a POST.
+        if (request.method === "GET" && url.pathname === "/auth/apple/start") {
+            return startAppleAuth(request, env, url);
+        }
+
+        if (request.method === "POST" && url.pathname === "/auth/apple/callback") {
+            return finishAppleAuth(request, env, url);
+        }
+
+        // The app's sign-in: the native Google / Apple SDK hands the app an
+        // identity token, the app posts it here, and gets back a session
+        // token it sends as `Authorization: Bearer`. See handleNativeSignIn.
+        if (request.method === "POST" && url.pathname === "/auth/native") {
+            return handleNativeSignIn(request, env);
+        }
+
+        // In-app account deletion (App Review 5.1.1(v)). Identity from the
+        // session only.
+        if (request.method === "POST" && url.pathname === "/api/account/delete") {
+            return handleAccountDelete(request, env);
+        }
+
         if (request.method === "GET" && url.pathname === "/auth/me") {
             const session = await getSessionFromRequest(request, env);
             return jsonResponse({
                 authenticated: Boolean(session),
-                user: session ? (
-                    session.provider === "google"
-                        ? { provider: "google", id: session.googleId, username: session.name || session.email, picture: session.picture || null }
-                        : { provider: "instagram", id: session.instagramId, username: session.username }
-                ) : null,
+                user: session ? sessionUserView(session) : null,
             }, { headers: corsHeaders(request) });
         }
 
@@ -118,15 +157,6 @@ export default {
             return redirectResponse(after, [
                 expiredCookie("mymate_session", request),
             ]);
-        }
-
-        // logs.<domain> exists only for the admin tools. A Workers custom
-        // domain binds the entire hostname, so without this the full app would
-        // be reachable there too — a second public entrance nobody intended.
-        if (url.hostname.startsWith("logs.")) {
-            if (!url.pathname.startsWith("/admin") && !url.pathname.startsWith("/api/admin")) {
-                return Response.redirect(`${url.origin}/admin`, 302);
-            }
         }
 
         if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
@@ -1576,7 +1606,7 @@ export default {
 
             const session = await getSessionFromRequest(request, env);
             const userId = session
-                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
+                ? sessionUserId(session)
                 : request.headers.get("x-user-id") || "anonymous";
 
             if (!coinsActive(env, request, userId)) {
@@ -1696,7 +1726,7 @@ export default {
             const timestamp = request.headers.get("x-timestamp");
             const session = await getSessionFromRequest(request, env);
             const userId = session
-                ? (session.provider === "google" ? `google:${session.googleId}` : `instagram:${session.instagramId}`)
+                ? sessionUserId(session)
                 : request.headers.get("x-user-id") || "anonymous";
             const requestId = crypto.randomUUID();
             const synthetic = isSyntheticTest(request);
@@ -2038,7 +2068,7 @@ export default {
                 // OpenAI itself returns, so every line below (logging, response
                 // shape) is shared with the plain-OpenAI path unchanged.
                 try {
-                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes);
+                    const cleanedText = await runInworldPipeline(env, inworldCharacter, outboundMessages, requestId, relationshipNotes, ctx);
                     responseData = { choices: [{ message: { role: "assistant", content: cleanedText } }] };
                     responseStatus = 200;
                     responseOk = true;
@@ -2047,6 +2077,16 @@ export default {
                     responseData = { error: "AI response failed. Please try again." };
                     responseStatus = (e instanceof AIError) ? e.status : 502;
                     responseOk = false;
+                    // The pipeline wraps every upstream failure as a 502, so
+                    // the provider's own verdict rides on the AIError.
+                    noteProviderFailure(env, ctx, {
+                        provider: (e instanceof AIError && e.provider) || "inworld",
+                        status: (e instanceof AIError && e.upstreamStatus) || responseStatus,
+                        body: (e instanceof AIError && e.upstreamBody) || null,
+                        errorText: technicalError,
+                        requestId,
+                        character: inworldCharacter.id,
+                    });
                 }
             } else {
                 // Proxy to OpenAI with Fixed Model. Enforce model: gpt-4o-mini
@@ -2075,6 +2115,16 @@ export default {
                 responseData = await openAiResponse.json();
                 responseStatus = openAiResponse.status;
                 responseOk = openAiResponse.ok;
+                if (!responseOk) {
+                    noteProviderFailure(env, ctx, {
+                        provider: "openai",
+                        status: responseStatus,
+                        body: responseData,
+                        errorText: extractErrorMessage(responseData),
+                        requestId,
+                        character: metadata.characterId || null,
+                    });
+                }
             }
 
             const replyLatencyMs = Date.now() - replyStartedAt;
@@ -2187,14 +2237,14 @@ async function finishInstagramAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_ig_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
 
     const [expectedState, returnTo] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -2232,13 +2282,13 @@ async function finishInstagramAuth(request, env, url) {
             exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?instagram=connected`, [
+        return redirectResponse(returnTo || `${requestOrigin(request)}/settings?instagram=connected`, [
             expiredCookie("mymate_ig_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "instagram_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/settings?instagram=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?instagram=failed`, [
             expiredCookie("mymate_ig_state", request),
         ]);
     }
@@ -2281,14 +2331,14 @@ async function finishGoogleAuth(request, env, url) {
     const stateCookie = getCookie(request, "mymate_google_state");
 
     if (!state || !code || !stateCookie) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
 
     const [expectedState, returnTo, anonId, anonTicket] = stateCookie.split("|");
     if (state !== expectedState) {
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
@@ -2319,16 +2369,15 @@ async function finishGoogleAuth(request, env, url) {
             throw new Error("Google profile lookup failed");
         }
 
-        const sessionValue = await signSession(env, {
+        const sessionValue = await issueSession(env, {
             provider: "google",
-            googleId: profile.sub,
+            sub: String(profile.sub),
             email: profile.email || null,
             name: profile.name || null,
             // Google's avatar URL, so the app can show the account's own icon
             // instead of a generic placeholder once linked.
             picture: profile.picture || null,
-            exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
-        });
+        }, WEB_SESSION_TTL_S);
 
         await recordLinkedAccount(env, {
             userId: `google:${profile.sub}`,
@@ -2340,16 +2389,363 @@ async function finishGoogleAuth(request, env, url) {
             anonTicket: anonTicket || null,
         });
 
-        return redirectResponse(returnTo || `${getAppOrigin(env)}/settings?google=connected`, [
+        return redirectResponse(returnTo || `${requestOrigin(request)}/settings?google=connected`, [
             expiredCookie("mymate_google_state", request),
             cookie("mymate_session", sessionValue, request, { maxAge: 60 * 60 * 24 * 30 }),
         ]);
     } catch (error) {
         console.error(JSON.stringify({ event: "google_auth_failed", error: error.message }));
-        return redirectResponse(`${getAppOrigin(env)}/settings?google=failed`, [
+        return redirectResponse(`${requestOrigin(request)}/settings?google=failed`, [
             expiredCookie("mymate_google_state", request),
         ]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sign in with Apple (web) and the app's native sign-in.
+//
+// Identity is always the provider's `sub`, verified from a signed ID token
+// (identity.js) — never anything the client asserts. The resulting session is
+// the same HMAC'd payload whether it travels as the web's cookie or as the
+// app's `Authorization: Bearer` token (getSessionFromRequest), and the same
+// recordLinkedAccount runs for every provider, so the anonymous chat history
+// and coin wallet follow the person onto the account identically everywhere.
+// ---------------------------------------------------------------------------
+
+const ANON_ID_SHAPE = /^user_\d{13}$/;
+
+function cleanAnonId(value) {
+    const v = typeof value === "string" ? value.trim() : "";
+    return ANON_ID_SHAPE.test(v) ? v : null;
+}
+
+function cleanAnonTicket(value) {
+    const v = typeof value === "string" ? value.replace(/[^0-9a-f.]/g, "") : "";
+    return v || null;
+}
+
+function getAppleRedirectUri(request, env) {
+    if (env.APPLE_REDIRECT_URI) return env.APPLE_REDIRECT_URI;
+    return `${new URL(request.url).origin}/auth/apple/callback`;
+}
+
+/// Apple's only chance to tell us the person's name: the first authorization,
+/// as given/family name fields the client passes along. Never trusted for
+/// identity, only shown back to them.
+function appleDisplayName(given, family) {
+    const name = [given, family]
+        .map((p) => (typeof p === "string" ? p.trim() : ""))
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 80);
+    return name || null;
+}
+
+/// Swaps the authorization code for Apple's refresh token, which is what
+/// account deletion revokes. Never fails the sign-in: without the .p8 key, or
+/// if Apple is slow, the person still signs in and we log that revocation at
+/// deletion will have nothing to revoke.
+async function appleRefreshTokenFor(env, { code, clientId, redirectUri = null }) {
+    if (!code) return null;
+    if (!appleKeyConfigured(env)) {
+        console.warn(JSON.stringify({ event: "apple_key_missing", detail: "refresh token not stored; deletion cannot revoke" }));
+        return null;
+    }
+    try {
+        const tokens = await appleExchangeCode(env, { code, clientId, redirectUri });
+        return tokens.refresh_token || null;
+    } catch (e) {
+        console.error(JSON.stringify({ event: "apple_code_exchange_failed", error: e.message }));
+        return null;
+    }
+}
+
+async function startAppleAuth(request, env, url) {
+    if (!env.APPLE_SERVICES_ID) {
+        return jsonResponse({ error: "Apple sign-in is not configured" }, {
+            status: 503,
+            headers: corsHeaders(request),
+        });
+    }
+    const state = crypto.randomUUID();
+    const nonce = crypto.randomUUID();
+    const returnTo = safeReturnTo(url.searchParams.get("return_to"), env, "apple=connected", request);
+    const anonId = cleanAnonId(url.searchParams.get("anon_id")) || "";
+    const anonTicket = cleanAnonTicket(url.searchParams.get("anon_ticket")) || "";
+
+    const authUrl = new URL("https://appleid.apple.com/auth/authorize");
+    authUrl.searchParams.set("client_id", env.APPLE_SERVICES_ID);
+    authUrl.searchParams.set("redirect_uri", getAppleRedirectUri(request, env));
+    authUrl.searchParams.set("response_type", "code id_token");
+    // Required by Apple whenever scope asks for name or email.
+    authUrl.searchParams.set("response_mode", "form_post");
+    authUrl.searchParams.set("scope", "name email");
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("nonce", nonce);
+
+    // SameSite=None (cookie() sets it on https): Apple's form POST back to us
+    // is a cross-site request, and a Lax cookie would not ride along.
+    return redirectResponse(authUrl.toString(), [
+        cookie("mymate_apple_state", [state, nonce, anonId, anonTicket, returnTo].join("|"), request, { maxAge: 600 }),
+    ]);
+}
+
+async function finishAppleAuth(request, env) {
+    const origin = new URL(request.url).origin;
+    const failed = (reason) => {
+        console.error(JSON.stringify({ event: "apple_auth_failed", error: reason }));
+        return redirectResponse(`${origin}/settings?apple=failed`, [
+            expiredCookie("mymate_apple_state", request),
+        ]);
+    };
+
+    let form;
+    try {
+        form = await request.formData();
+    } catch (_) {
+        return failed("unreadable form");
+    }
+    const stateCookie = getCookie(request, "mymate_apple_state");
+    if (form.get("error")) {
+        // user_cancelled_authorize: they closed the Apple sheet. Not an error
+        // worth an alarm — send them back where they were.
+        const back = stateCookie ? stateCookie.split("|").slice(4).join("|") : "";
+        return redirectResponse(back || `${origin}/settings`, [expiredCookie("mymate_apple_state", request)]);
+    }
+    if (!stateCookie) return failed("state cookie missing");
+    const [expectedState, nonce, anonId, anonTicket, ...rest] = stateCookie.split("|");
+    const returnTo = rest.join("|");
+    if (!expectedState || form.get("state") !== expectedState) return failed("state mismatch");
+
+    let identity;
+    try {
+        identity = await verifyAppleIdToken(env, String(form.get("id_token") || ""), {
+            rawNonce: nonce, nonceHashed: false,
+        });
+    } catch (e) {
+        return failed(`id token: ${e.message}`);
+    }
+
+    let displayName = null;
+    try {
+        const user = JSON.parse(String(form.get("user") || "null"));
+        displayName = appleDisplayName(user?.name?.firstName, user?.name?.lastName);
+    } catch (_) { /* only sent on the first authorization */ }
+
+    const refreshToken = await appleRefreshTokenFor(env, {
+        code: String(form.get("code") || ""),
+        clientId: env.APPLE_SERVICES_ID,
+        redirectUri: getAppleRedirectUri(request, env),
+    });
+
+    const userId = `apple:${identity.sub}`;
+    await recordLinkedAccount(env, {
+        userId,
+        provider: "apple",
+        providerId: identity.sub,
+        email: identity.email,
+        displayName,
+        anonId: anonId || null,
+        anonTicket: anonTicket || null,
+        appleRefreshToken: refreshToken,
+        appleClientId: refreshToken ? env.APPLE_SERVICES_ID : null,
+    });
+
+    const sessionValue = await issueSession(env, { ...identity, name: displayName }, WEB_SESSION_TTL_S);
+    return redirectResponse(returnTo || `${origin}/settings?apple=connected`, [
+        expiredCookie("mymate_apple_state", request),
+        cookie("mymate_session", sessionValue, request, { maxAge: WEB_SESSION_TTL_S }),
+    ]);
+}
+
+/// POST /auth/native — the app's sign-in.
+///
+/// Body: { provider: "google"|"apple", id_token, raw_nonce?, authorization_code?,
+///         given_name?, family_name?, anon_id?, anon_ticket? }
+///
+/// Answers { ok, token, expires_at, user }. The token is a session the app
+/// keeps in the keychain and sends as `Authorization: Bearer`. No cookie is
+/// set: the app is not a browser, and a cookie here would only confuse a web
+/// client that called this by mistake.
+async function handleNativeSignIn(request, env) {
+    const headers = corsHeaders(request);
+    let body;
+    try {
+        const raw = await request.text();
+        if (raw.length > 16384) {
+            return jsonResponse({ error: "Request too large" }, { status: 413, headers });
+        }
+        body = JSON.parse(raw);
+    } catch (_) {
+        return jsonResponse({ error: "Invalid JSON" }, { status: 400, headers });
+    }
+    const provider = body?.provider;
+    const idToken = typeof body?.id_token === "string" ? body.id_token : "";
+    if ((provider !== "google" && provider !== "apple") || !idToken) {
+        return jsonResponse({ error: "provider and id_token are required" }, { status: 400, headers });
+    }
+
+    let identity;
+    let displayName = null;
+    let refreshToken = null;
+    try {
+        if (provider === "google") {
+            if (!env.GOOGLE_IOS_CLIENT_ID && !env.GOOGLE_CLIENT_ID) {
+                return jsonResponse({ error: "Google sign-in is not configured" }, { status: 503, headers });
+            }
+            identity = await verifyGoogleIdToken(env, idToken);
+            displayName = identity.name;
+        } else {
+            if (!env.APPLE_BUNDLE_ID) {
+                return jsonResponse({ error: "Apple sign-in is not configured" }, { status: 503, headers });
+            }
+            // The nonce is what stops a token lifted from another app's
+            // sign-in being replayed here; the app always sends one.
+            const rawNonce = typeof body.raw_nonce === "string" ? body.raw_nonce : "";
+            if (!rawNonce) {
+                return jsonResponse({ error: "raw_nonce is required for Apple" }, { status: 400, headers });
+            }
+            identity = await verifyAppleIdToken(env, idToken, { rawNonce, nonceHashed: true });
+            displayName = appleDisplayName(body.given_name, body.family_name);
+        }
+    } catch (e) {
+        console.error(JSON.stringify({ event: "native_sign_in_rejected", provider, error: e.message }));
+        return jsonResponse({ error: "invalid_token" }, { status: 401, headers });
+    }
+
+    if (provider === "apple") {
+        refreshToken = await appleRefreshTokenFor(env, {
+            code: typeof body.authorization_code === "string" ? body.authorization_code : "",
+            clientId: identity.clientId,
+        });
+    }
+
+    const userId = `${provider}:${identity.sub}`;
+    await recordLinkedAccount(env, {
+        userId,
+        provider,
+        providerId: identity.sub,
+        email: identity.email,
+        displayName,
+        anonId: cleanAnonId(body.anon_id),
+        anonTicket: cleanAnonTicket(body.anon_ticket),
+        appleRefreshToken: refreshToken,
+        appleClientId: refreshToken ? identity.clientId : null,
+    });
+
+    // The name Apple sent once, or the one stored from that first time.
+    if (!displayName && env.CHAT_LOGS_DB) {
+        try {
+            const row = await env.CHAT_LOGS_DB.prepare(
+                `SELECT display_name FROM linked_accounts WHERE provider = ? AND provider_id = ?`
+            ).bind(provider, identity.sub).first();
+            displayName = row?.display_name || null;
+        } catch (_) { /* cosmetic */ }
+    }
+
+    const session = { ...identity, name: displayName };
+    const token = await issueSession(env, session, NATIVE_SESSION_TTL_S);
+    const issued = await verifySession(env, token);
+    return jsonResponse({
+        ok: true,
+        token,
+        expires_at: issued ? issued.exp : null,
+        user: sessionUserView(issued || session),
+    }, { headers });
+}
+
+/// POST /api/account/delete — deletes the signed-in account (App Review
+/// 5.1.1(v)). Identity from the session only.
+///
+/// Deleted: chat logs, delivery receipts, profile, gift reactions, the wallet
+/// balance, the linked-account rows (and with them Apple's refresh token,
+/// after revoking it), and the RevenueCat customer.
+/// Kept, with the user id replaced by an unlinkable pseudonym: coin ledger
+/// rows and RevenueCat event rows — purchase and refund records the business
+/// has to keep, which no longer say whose they were. Site visits keep their
+/// counts and lose the user id.
+async function handleAccountDelete(request, env) {
+    const headers = corsHeaders(request);
+    const session = await getSessionFromRequest(request, env);
+    if (!session || (session.provider !== "google" && session.provider !== "apple")) {
+        return jsonResponse({ error: "Sign in required" }, { status: 401, headers });
+    }
+    const db = env.CHAT_LOGS_DB;
+    if (!db) return jsonResponse({ error: "Storage is not configured" }, { status: 503, headers });
+    const userId = sessionUserId(session);
+
+    let links = [];
+    try {
+        links = (await db.prepare(
+            `SELECT provider, provider_id, merged_anon_id, apple_refresh_token, apple_client_id
+             FROM linked_accounts WHERE user_id = ?`
+        ).bind(userId).all()).results || [];
+    } catch (e) {
+        console.error(JSON.stringify({ event: "account_delete_lookup_failed", error: e.message }));
+        return jsonResponse({ error: "Could not delete the account, please try again" }, { status: 500, headers });
+    }
+
+    // Revoke first: if the deletion below fails the person can retry, and a
+    // second revoke of the same token is a no-op at Apple.
+    let appleRevoked = null;
+    for (const link of links) {
+        if (link.provider !== "apple" || !link.apple_refresh_token) continue;
+        try {
+            await appleRevoke(env, { token: link.apple_refresh_token, clientId: link.apple_client_id || env.APPLE_BUNDLE_ID });
+            appleRevoked = true;
+        } catch (e) {
+            appleRevoked = false;
+            console.error(JSON.stringify({ event: "apple_revoke_failed", error: e.message }));
+        }
+    }
+    if (session.provider === "apple" && appleRevoked === null) {
+        console.warn(JSON.stringify({ event: "apple_revoke_skipped", detail: "no refresh token on file" }));
+    }
+
+    const pseudonym = `deleted:${crypto.randomUUID()}`;
+    const anonIds = links.map((l) => l.merged_anon_id).filter(Boolean);
+    const visitIds = [userId, ...anonIds];
+    const now = Date.now();
+    try {
+        await db.batch([
+            db.prepare(`DELETE FROM conversation_logs WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM message_delivery WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM user_profiles WHERE user_id = ?`).bind(userId),
+            db.prepare(`DELETE FROM gift_reactions WHERE user_id = ?`).bind(userId),
+            db.prepare(`UPDATE coin_ledger SET user_id = ? WHERE user_id = ?`).bind(pseudonym, userId),
+            db.prepare(`DELETE FROM coin_wallets WHERE user_id = ?`).bind(userId),
+            db.prepare(`UPDATE rc_events SET user_id = ?, app_user_id = ? WHERE user_id = ? OR app_user_id = ?`)
+                .bind(pseudonym, pseudonym, userId, userId),
+            db.prepare(`UPDATE site_visits SET app_user_id = NULL WHERE app_user_id IN (${visitIds.map(() => "?").join(", ")})`)
+                .bind(...visitIds),
+            db.prepare(`DELETE FROM linked_accounts WHERE user_id = ?`).bind(userId),
+            db.prepare(`INSERT OR REPLACE INTO account_deletions (user_id, deleted_at) VALUES (?, ?)`).bind(userId, now),
+        ]);
+    } catch (e) {
+        console.error(JSON.stringify({ event: "account_delete_failed", error: e.message }));
+        return jsonResponse({ error: "Could not delete the account, please try again" }, { status: 500, headers });
+    }
+
+    // RevenueCat keeps the store receipts under our user id. Best effort: the
+    // account is already gone on our side either way.
+    if (env.RC_SECRET_KEY) {
+        try {
+            const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${env.RC_SECRET_KEY}` },
+            });
+            if (!res.ok && res.status !== 404) {
+                console.error(JSON.stringify({ event: "rc_delete_failed", status: res.status }));
+            }
+        } catch (e) {
+            console.error(JSON.stringify({ event: "rc_delete_failed", error: e.message }));
+        }
+    }
+
+    console.log(JSON.stringify({ event: "account_deleted", provider: session.provider, appleRevoked }));
+    const res = jsonResponse({ ok: true, apple_revoked: appleRevoked }, { headers });
+    res.headers.append("Set-Cookie", expiredCookie("mymate_session", request));
+    return res;
 }
 
 // Records that userId is now linked to (provider, providerId), and - if this
@@ -2357,7 +2753,7 @@ async function finishGoogleAuth(request, env, url) {
 // reattributes that anonymous user's existing conversation_logs rows to the
 // linked account so their prior history carries over. Never throws: a DB
 // hiccup here shouldn't fail an otherwise-successful login.
-async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null }) {
+async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null, appleRefreshToken = null, appleClientId = null }) {
     if (!env.CHAT_LOGS_DB) return;
 
     try {
@@ -2371,16 +2767,38 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider, provider_id) DO UPDATE SET
                 linked_at = CURRENT_TIMESTAMP,
-                email = excluded.email,
-                display_name = excluded.display_name
+                email = COALESCE(excluded.email, linked_accounts.email),
+                -- Apple sends the name on the first sign-in only; a later
+                -- sign-in must not blank it.
+                display_name = COALESCE(excluded.display_name, linked_accounts.display_name)
         `).bind(
             crypto.randomUUID(), userId, provider, providerId, email, displayName,
             existing ? existing.merged_anon_id : (anonId || null)
         ).run();
 
-        // Only merge once per account, and only if there's actually an
-        // anonymous id to merge from (skip if already merged before).
-        if (anonId && anonId !== userId && !existing?.merged_anon_id) {
+        // Separate statement so a database without migration 0020 still
+        // records the link; only the revocation token is lost there.
+        if (appleRefreshToken) {
+            try {
+                await env.CHAT_LOGS_DB.prepare(
+                    `UPDATE linked_accounts SET apple_refresh_token = ?, apple_client_id = ?
+                     WHERE provider = ? AND provider_id = ?`
+                ).bind(appleRefreshToken, appleClientId, provider, providerId).run();
+            } catch (e) {
+                console.error(JSON.stringify({ event: "apple_token_store_failed", error: e.message }));
+            }
+        }
+
+        // The first link merges whatever anonymous id it is given, as it
+        // always has. A LATER sign-in from another device (an iPad after the
+        // iPhone, a reinstall) merges only with proof the caller owns that
+        // device's wallet — the merge ticket — so repeat sign-ins cannot be
+        // used to sweep strangers' unclaimed ids into one account. Both the
+        // log move and coinMergeWallet are idempotent per anonymous id.
+        const firstLink = !existing?.merged_anon_id;
+        const proven = Boolean(anonId && anonTicket)
+            && await coinMergeTicketValid(env, anonId, anonTicket);
+        if (anonId && anonId !== userId && (firstLink || proven)) {
             await env.CHAT_LOGS_DB.prepare(
                 `UPDATE conversation_logs SET user_id = ? WHERE user_id = ?`
             ).bind(userId, anonId).run();
@@ -2782,7 +3200,14 @@ async function coinKeepsakesHeld(db, userId, characterId) {
 async function coinSync(db, { userId, localDate, visitId = null, appVersion = null }) {
     const granted = [];
 
-    if (await coinGrant(db, {
+    // The welcome is per person, not per id. An account comes into being by
+    // a sign-in from a device that already had its welcome as an anonymous
+    // wallet, and that sign-in always leaves a link-bonus row; so an account
+    // with one has been welcomed already and does not get a second 80.
+    const welcomedViaLink = !coinIsAnonymousId(userId) && Boolean(await db.prepare(
+        `SELECT 1 AS present FROM coin_ledger WHERE id = ?`
+    ).bind(`grant:link:${userId}`).first());
+    if (!welcomedViaLink && await coinGrant(db, {
         id: `grant:welcome:${userId}`,
         userId, delta: COINS.welcome, reason: "welcome", visitId, appVersion,
     })) {
@@ -2862,6 +3287,49 @@ async function coinChatSettlement(db, { userId, requestId, responseOk, visitId }
 /// device id could sign in with a fresh account and walk off with the wallet.
 /// An unclaimed wallet merges as it always did, so older clients keep working.
 /// Refused merges still pay the link bonus; the coins stay where they were.
+/// Moves a whole anonymous balance onto an account as one out/in pair of
+/// ledger rows, idempotent under the ids the caller picks. How much of what
+/// crosses was paid for (a pack bought before signing in) rides in meta_json:
+/// free coins are spent first, so the paid remainder is whatever the balance
+/// holds beyond the unspent free income. A NEGATIVE balance is a refund debt,
+/// which is paid debt in full — it crosses too, or a sign-in would launder it
+/// away (E1 in the brief). The trigger reads meta_json so lifetime_purchased
+/// follows the coins (0017); the ledger rows are still the only write.
+/// Returns the balance moved (0 when there was nothing, or rows existed).
+async function coinMoveBalance(db, fromWallet, fromId, toId, { outId, inId, reason }) {
+    const balance = fromWallet ? Number(fromWallet.balance) : 0;
+    if (balance === 0) return 0;
+    const freeUnspent = Math.max(0,
+        Number(fromWallet.lifetime_earned) - Number(fromWallet.lifetime_spent));
+    const paid = balance < 0 ? balance : Math.max(0, Math.min(balance, balance - freeUnspent));
+    const [out] = await db.batch([
+        db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+            VALUES (?, ?, ?, 'merge', ?, ?, ?)
+        `).bind(outId, fromId, -balance, reason, toId,
+            paid !== 0 ? JSON.stringify({ paid: -paid }) : null),
+        db.prepare(`
+            INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+            VALUES (?, ?, ?, 'merge', ?, ?, ?)
+        `).bind(inId, toId, balance, reason, fromId,
+            paid !== 0 ? JSON.stringify({ paid }) : null),
+    ]);
+    return d1Changes(out) > 0 ? balance : 0;
+}
+
+/// The account an anonymous wallet was merged onto at sign-in, when it was.
+/// Only a merge that actually happened counts (its merge:out row): a link
+/// bonus alone is paid even to a sign-in whose merge was refused for lack
+/// of a ticket, and must not hand that account the wallet's later purchases.
+async function coinMergedOwner(db, userId) {
+    if (!coinIsAnonymousId(userId)) return userId;
+    const row = await db.prepare(
+        `SELECT ref FROM coin_ledger WHERE id = ? AND kind = 'merge'`
+    ).bind(`merge:out:${userId}`).first();
+    return row && typeof row.ref === "string" && isRealUserId(row.ref) && !coinIsAnonymousId(row.ref)
+        ? row.ref : userId;
+}
+
 async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket = null } = {}) {
     const anonWallet = await db.prepare(
         `SELECT balance, lifetime_earned, lifetime_spent, last_daily_on, last_daily_at, claim_token_hash FROM coin_wallets WHERE user_id = ?`
@@ -2877,28 +3345,9 @@ async function coinMergeWallet(db, accountUserId, anonId, { env = null, ticket =
     }
 
     if (allowed && balance !== 0) {
-        // How much of what crosses was paid for (a pack bought before signing
-        // in). Free coins are spent first, so the paid remainder is whatever
-        // the balance holds beyond the unspent free income. A NEGATIVE balance
-        // is a refund debt, which is paid debt in full — it crosses too, or a
-        // sign-in would launder it away (E1 in the brief). Told to the trigger
-        // through meta_json so lifetime_purchased follows the coins onto the
-        // account (0017); the ledger row is still the only write.
-        const freeUnspent = Math.max(0,
-            Number(anonWallet.lifetime_earned) - Number(anonWallet.lifetime_spent));
-        const paid = balance < 0 ? balance : Math.max(0, Math.min(balance, balance - freeUnspent));
-        await db.batch([
-            db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
-                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
-            `).bind(`merge:out:${anonId}`, anonId, -balance, accountUserId,
-                paid !== 0 ? JSON.stringify({ paid: -paid }) : null),
-            db.prepare(`
-                INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
-                VALUES (?, ?, ?, 'merge', 'link', ?, ?)
-            `).bind(`merge:in:${accountUserId}:${anonId}`, accountUserId, balance, anonId,
-                paid !== 0 ? JSON.stringify({ paid }) : null),
-        ]);
+        await coinMoveBalance(db, anonWallet, anonId, accountUserId, {
+            outId: `merge:out:${anonId}`, inId: `merge:in:${accountUserId}:${anonId}`, reason: "link",
+        });
     }
 
     // The bonus goes before the clock copy below on purpose: a brand-new
@@ -3026,16 +3475,55 @@ async function coinApplyRcEvent(env, db, event) {
         if (!transactionId) return { applied: false, note: "no transaction id", userId };
         const pack = productId ? COIN_PACKS[productId] : null;
         if (!pack) return { applied: false, note: `unknown product ${productId}`, userId };
-        if (event.environment === "SANDBOX" && !(await coinSandboxAllowed(env, db, userId))) {
-            return { applied: false, note: "sandbox purchase on a non-dev wallet", userId };
+        // The SDK can still be on the device id for a moment after a sign-in
+        // merged that wallet onto the account (seen 2026-10-30: the pack
+        // bought right after signing in landed on the emptied anonymous
+        // wallet, and RevenueCat's TRANSFER came 37 seconds later). The coins
+        // belong to the person, so they go where the wallet went.
+        const owner = await coinMergedOwner(db, userId);
+        if (event.environment === "SANDBOX"
+            && !(await coinSandboxAllowed(env, db, owner))
+            && !(owner !== userId && await coinSandboxAllowed(env, db, userId))) {
+            return { applied: false, note: "sandbox purchase on a non-dev wallet", userId: owner };
         }
         // Apple lets a consumable be bought several-at-once; RevenueCat passes
         // that through as quantity when it does.
         const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
         const wrote = await coinPurchaseCredit(db, {
-            transactionId, userId, coins: pack.coins * quantity, productId, meta,
+            transactionId, userId: owner, coins: pack.coins * quantity, productId, meta,
         });
-        return { applied: wrote, note: wrote ? null : "already credited", userId };
+        return { applied: wrote, note: wrote ? null : "already credited", userId: owner };
+    }
+
+    if (type === "TRANSFER") {
+        // RevenueCat moved a customer's purchases from one of its ids to
+        // another — logIn on a device whose anonymous id had bought packs.
+        // When the source is one of our anonymous wallets and the target an
+        // account, whatever the wallet still holds follows: the sign-in merge
+        // ran before the purchase landed (above), or the wallet was empty at
+        // sign-in and so has no merge rows for the purchase path to follow.
+        // The webhook is RevenueCat's word that this device logged in as that
+        // account, which is the ownership proof the merge ticket exists for.
+        const toIds = (Array.isArray(event.transferred_to) ? event.transferred_to : [])
+            .filter((id) => isRealUserId(id) && !coinIsAnonymousId(id));
+        const fromIds = (Array.isArray(event.transferred_from) ? event.transferred_from : [])
+            .filter((id) => coinIsAnonymousId(id));
+        if (toIds.length !== 1 || fromIds.length === 0) {
+            return { applied: false, note: "transfer not from an anonymous wallet to one account", userId: toIds[0] || null };
+        }
+        const accountId = toIds[0];
+        let moved = 0;
+        for (const anonId of fromIds) {
+            const fromWallet = await db.prepare(
+                `SELECT balance, lifetime_earned, lifetime_spent FROM coin_wallets WHERE user_id = ?`
+            ).bind(anonId).first();
+            moved += await coinMoveBalance(db, fromWallet, anonId, accountId, {
+                outId: `transfer:out:${event.id}:${anonId}`,
+                inId: `transfer:in:${event.id}:${anonId}`,
+                reason: "transfer",
+            });
+        }
+        return { applied: moved !== 0, note: moved !== 0 ? null : "nothing left to move", userId: accountId };
     }
 
     if (type === "CANCELLATION") {
@@ -3053,14 +3541,15 @@ async function coinApplyRcEvent(env, db, event) {
         // zero instead of crediting a refunded pack in full.
         const pack = productId ? COIN_PACKS[productId] : null;
         if (!pack || !userId) return { applied: false, note: refund.note, userId };
+        const owner = await coinMergedOwner(db, userId);
         const quantity = Number.isInteger(event.quantity) && event.quantity > 1 ? event.quantity : 1;
         const result = await db.prepare(`
             INSERT OR IGNORE INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
             VALUES (?, ?, ?, 'refund', 'pack', ?, ?)
-        `).bind(`refund:${transactionId}`, userId, -(pack.coins * quantity), productId,
+        `).bind(`refund:${transactionId}`, owner, -(pack.coins * quantity), productId,
             JSON.stringify({ ...refundMeta, before_purchase: true })).run();
         const wrote = d1Changes(result) > 0;
-        return { applied: wrote, note: wrote ? "refund before purchase" : "already refunded", userId };
+        return { applied: wrote, note: wrote ? "refund before purchase" : "already refunded", userId: owner };
     }
 
     // TEST (the dashboard's "send test event"), TRANSFER, subscription types
@@ -3309,7 +3798,7 @@ function corsHeaders(request) {
         // at all (preflight rejects it), so the tester drops the header to make
         // the request work and their traffic lands in the analytics tables —
         // which is how a "browsertest" user id got into conversation_logs.
-        "Access-Control-Allow-Headers": "Content-Type, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
         "Vary": "Origin",
     };
 }
@@ -3353,6 +3842,15 @@ function getGoogleRedirectUri(request, env) {
 
 function getAppOrigin(env) {
     return (env.APP_ORIGIN || "http://localhost:8787").replace(/\/$/, "");
+}
+
+// Where an OAuth callback lands the user when there is no saved returnTo,
+// including every failure. The callback always arrives on the host sign-in
+// started on, and the app's history and anonymous id live per host, so going
+// to APP_ORIGIN instead dropped a cancelled sign-in into an empty app on
+// workers.dev.
+function requestOrigin(request) {
+    return new URL(request.url).origin;
 }
 
 function safeReturnTo(value, env, fallbackQuery = "instagram=connected", request = null) {
@@ -3403,17 +3901,19 @@ function getCookie(request, name) {
  * Resolves the signed session into the identity a profile row is keyed by.
  *
  * Returns null for anonymous users and for Instagram sessions: only Google
- * gives the stable, cross-device identifier this table depends on. userId is
+ * and Apple give the stable, cross-device identifier this table depends on. userId is
  * composed exactly as recordLinkedAccount composes it, so user_profiles and
  * linked_accounts join on the same value.
  */
 async function getProfileIdentity(request, env) {
     const session = await getSessionFromRequest(request, env);
-    if (!session || session.provider !== "google" || !session.googleId) return null;
+    if (!session || (session.provider !== "google" && session.provider !== "apple")) return null;
+    const providerId = session.sub || session.googleId;
+    if (!providerId) return null;
     return {
-        userId: `google:${session.googleId}`,
-        provider: "google",
-        providerId: session.googleId,
+        userId: sessionUserId(session),
+        provider: session.provider,
+        providerId,
     };
 }
 
@@ -3553,10 +4053,86 @@ async function handlePutProfile(request, env) {
     });
 }
 
+/// The signed session, from the web's cookie or the app's bearer token —
+/// the same HMAC'd payload either way (signSession). Null when absent,
+/// forged, expired, or issued before the account was deleted.
 async function getSessionFromRequest(request, env) {
-    const value = getCookie(request, "mymate_session");
+    let value = getCookie(request, "mymate_session");
+    if (!value) {
+        const auth = request.headers.get("Authorization") || "";
+        const match = /^Bearer\s+(\S+)$/i.exec(auth);
+        if (match) value = match[1];
+    }
     if (!value) return null;
-    return verifySession(env, value);
+    const session = await verifySession(env, value);
+    if (!session) return null;
+    if (await sessionRevokedByDeletion(env, session)) return null;
+    return session;
+}
+
+/// True when this session's account was deleted after the session was issued.
+/// Only Google/Apple identities can be deleted in-app. Compared in ms so a
+/// re-sign-in in the same second as the deletion is not mistaken for an old
+/// session. A session without iat_ms predates this check and is treated as
+/// older than any deletion.
+async function sessionRevokedByDeletion(env, session) {
+    if (!env.CHAT_LOGS_DB || (session.provider !== "google" && session.provider !== "apple")) return false;
+    try {
+        const row = await env.CHAT_LOGS_DB.prepare(
+            `SELECT deleted_at FROM account_deletions WHERE user_id = ?`
+        ).bind(sessionUserId(session)).first();
+        if (!row) return false;
+        return !(typeof session.iat_ms === "number" && session.iat_ms > Number(row.deleted_at));
+    } catch (_) {
+        // Pre-migration database: no table, nothing has been deleted.
+        return false;
+    }
+}
+
+/// The user id a session speaks for, composed exactly as recordLinkedAccount
+/// composes it — so wallets, logs, profiles and linked_accounts all agree.
+function sessionUserId(session) {
+    if (session.provider === "google") return `google:${session.sub || session.googleId}`;
+    if (session.provider === "apple") return `apple:${session.sub}`;
+    return `instagram:${session.instagramId}`;
+}
+
+/// What /auth/me and /auth/native tell the client about who is signed in.
+function sessionUserView(session) {
+    if (session.provider === "google" || session.provider === "apple") {
+        return {
+            provider: session.provider,
+            id: sessionUserId(session),
+            username: session.name || session.email || null,
+            email: session.email || null,
+            picture: session.picture || null,
+        };
+    }
+    return { provider: "instagram", id: session.instagramId, username: session.username };
+}
+
+const WEB_SESSION_TTL_S = 60 * 60 * 24 * 30;
+// The app keeps its token in the keychain and has no cookie-style silent
+// renewal, so a longer life: being signed out of a phone every month is how
+// people lose track of which account holds their coins.
+const NATIVE_SESSION_TTL_S = 60 * 60 * 24 * 180;
+
+async function issueSession(env, identity, ttlS) {
+    const nowMs = Date.now();
+    const now = Math.floor(nowMs / 1000);
+    return signSession(env, {
+        provider: identity.provider,
+        sub: identity.sub,
+        // Kept so a session minted here still reads correctly in a worker
+        // rolled back to before `sub` existed.
+        ...(identity.provider === "google" ? { googleId: identity.sub } : {}),
+        email: identity.email || null,
+        name: identity.name || null,
+        picture: identity.picture || null,
+        iat: now,
+        iat_ms: nowMs,
+        exp: now + ttlS,
+    });
 }
 
 async function signSession(env, payload) {
@@ -4656,6 +5232,7 @@ function isSyntheticTest(request) {
 ///   user_<13-digit epoch ms>  anonymous, generated once by the client and
 ///                             kept in prefs (openai_service.dart)
 ///   google:<sub>              signed in with Google (worker, from the session)
+///   apple:<sub>               signed in with Apple (worker, same place)
 ///   instagram:<id>            signed in with Instagram (worker, same place)
 ///
 /// Anything else arrived as a hand-typed x-user-id — which in practice means a
@@ -4664,7 +5241,7 @@ function isSyntheticTest(request) {
 /// The 13 digits are deliberate rather than \d+: `user_1`, `user_test_smoke_1`
 /// and friends are exactly what the ad-hoc traffic looks like. (13 digits is
 /// correct for epoch-ms until the year 2286.)
-const REAL_USER_ID = /^(?:user_\d{13}|google:.+|instagram:.+)$/;
+const REAL_USER_ID = /^(?:user_\d{13}|google:.+|apple:.+|instagram:.+)$/;
 
 function isRealUserId(userId) {
     return typeof userId === "string" && REAL_USER_ID.test(userId);
@@ -4682,7 +5259,8 @@ function isRealUserId(userId) {
 /// a filter list.
 function realUserIdSql(column) {
     return `(${column} GLOB 'user_[0-9]*' AND length(${column}) = 18
-             OR ${column} LIKE 'google:%' OR ${column} LIKE 'instagram:%')`;
+             OR ${column} LIKE 'google:%' OR ${column} LIKE 'apple:%'
+             OR ${column} LIKE 'instagram:%')`;
 }
 
 /// Wall-clock time from arrival to the last thing the browser reported, as SQL.
@@ -5320,6 +5898,195 @@ class AIError extends Error {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ops alerts: email when a provider says we are out of credit.
+//
+// Every character answers "having trouble thinking" the moment OpenAI's
+// balance hits zero, and nothing in the logs distinguishes that from an
+// ordinary bad minute until someone reads the response bodies. This turns the
+// provider's own verdict into an email, throttled through ops_alerts so an
+// outage that fails every turn produces one message an hour, not one per turn.
+//
+// Transport is the Cloudflare Email Sending binding (ALERT_EMAIL in
+// wrangler.jsonc); the sending domain has to be enabled once with
+// `wrangler email sending enable <domain>`. Recipient and sender come from
+// ALERT_EMAIL_TO / ALERT_EMAIL_FROM. With any of the three missing the
+// detection still runs and logs an `ops_alert` line for `wrangler tail`, it
+// just cannot post.
+// ---------------------------------------------------------------------------
+
+const OPS_ALERT_RESEND_MS = 60 * 60 * 1000;
+
+/// Words a provider uses when the problem is money rather than load. Kept
+/// deliberately narrow: "rate limit" is a different outage with a different
+/// fix, and OpenAI returns both as 429.
+const FUNDS_EXHAUSTED_PATTERN =
+    /insufficient[_ ]quota|exceeded your current quota|insufficient[_ ](funds|credits?|balance)|out of (credits?|funds)|billing (hard limit|details|issue|problem)|payment required|(account|credits?)[^.]*(suspended|deactivated|exhausted|depleted)|no (remaining )?credits?|add (funds|credits?)|top up/i;
+
+/// Reads a provider's failed response and says whether it is an out-of-funds
+/// failure. Returns { kind, reason } or null.
+function detectFundsExhausted({ status, body, errorText }) {
+    const err = body && typeof body === "object" ? body.error : null;
+    const code = err && typeof err === "object"
+        ? String(err.code || err.type || "")
+        : "";
+    const message = [
+        errorText,
+        err && typeof err === "object" ? err.message : (typeof err === "string" ? err : null),
+        body && typeof body === "object" && typeof body.message === "string" ? body.message : null,
+    ].filter((s, i, all) => typeof s === "string" && s && all.indexOf(s) === i).join(" | ");
+
+    if (status === 402) {
+        return { kind: "out_of_funds", reason: `HTTP 402 Payment Required${message ? `: ${message}` : ""}` };
+    }
+    if (/insufficient_quota|billing_not_active|account_deactivated/i.test(code)) {
+        return { kind: "out_of_funds", reason: `${code}: ${message || "(no message)"}` };
+    }
+    if (FUNDS_EXHAUSTED_PATTERN.test(message)) {
+        return { kind: "out_of_funds", reason: `HTTP ${status}: ${message}` };
+    }
+    return null;
+}
+
+/// Called wherever a provider answered with a failure. Cheap when the failure
+/// is not about money (one regex), and never throws: alerting must not be able
+/// to take down the request it is reporting on.
+function noteProviderFailure(env, ctx, { provider, status, body, errorText, requestId, character, stage }) {
+    let verdict;
+    try {
+        verdict = detectFundsExhausted({ status, body, errorText });
+    } catch (_) {
+        return;
+    }
+    if (!verdict) return;
+
+    const detail = {
+        provider,
+        kind: verdict.kind,
+        reason: verdict.reason,
+        status,
+        requestId: requestId || null,
+        character: character || null,
+        stage: stage || "chat",
+    };
+    const work = raiseOpsAlert(env, detail).catch((e) => {
+        console.error("ops_alert failed", e && e.message ? e.message : String(e));
+    });
+    if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(work);
+    }
+}
+
+function opsAlertKey(detail) {
+    return `${detail.provider}:${detail.kind}`;
+}
+
+/// Updates the throttle row and sends the email if the key has not been
+/// emailed inside OPS_ALERT_RESEND_MS. The row is written before the send so
+/// a concurrent burst of failing turns mostly collapses into one email; the
+/// odd duplicate on the very first failure is acceptable, a silent outage is
+/// not. Likewise a missing ops_alerts table (migration not applied yet) or a
+/// D1 error falls through to "send": the throttle is a nicety, the alert is
+/// the point.
+async function raiseOpsAlert(env, detail) {
+    const key = opsAlertKey(detail);
+    const nowIso = new Date().toISOString();
+    let shouldSend = true;
+    let seenCount = 1;
+    let firstSeenAt = nowIso;
+
+    const db = env.CHAT_LOGS_DB;
+    if (db) {
+        try {
+            const row = await db.prepare(
+                "SELECT first_seen_at, last_sent_at, seen_count FROM ops_alerts WHERE alert_key = ?"
+            ).bind(key).first();
+            if (row) {
+                seenCount = (row.seen_count || 0) + 1;
+                firstSeenAt = row.first_seen_at || nowIso;
+                const lastSent = row.last_sent_at ? Date.parse(row.last_sent_at) : NaN;
+                shouldSend = !(lastSent > 0) || (Date.now() - lastSent) >= OPS_ALERT_RESEND_MS;
+                await db.prepare(
+                    `UPDATE ops_alerts
+                        SET last_seen_at = ?, seen_count = seen_count + 1, last_detail = ?,
+                            last_sent_at = CASE WHEN ? THEN ? ELSE last_sent_at END,
+                            sent_count = sent_count + CASE WHEN ? THEN 1 ELSE 0 END
+                      WHERE alert_key = ?`
+                ).bind(nowIso, JSON.stringify(detail), shouldSend ? 1 : 0, nowIso, shouldSend ? 1 : 0, key).run();
+            } else {
+                await db.prepare(
+                    `INSERT INTO ops_alerts (alert_key, first_seen_at, last_seen_at, last_sent_at, seen_count, sent_count, last_detail)
+                     VALUES (?, ?, ?, ?, 1, 1, ?)`
+                ).bind(key, nowIso, nowIso, nowIso, JSON.stringify(detail)).run();
+            }
+        } catch (e) {
+            console.error("ops_alerts throttle unavailable, sending anyway:", e && e.message ? e.message : String(e));
+            shouldSend = true;
+        }
+    }
+
+    console.log(JSON.stringify({
+        event: "ops_alert",
+        key,
+        sent: shouldSend,
+        seenCount,
+        firstSeenAt,
+        ...detail,
+    }));
+
+    if (!shouldSend) return { sent: false, throttled: true };
+
+    return sendOpsAlertEmail(env, { ...detail, key, seenCount, firstSeenAt, at: nowIso });
+}
+
+function providerDisplayName(provider) {
+    if (provider === "openai") return "OpenAI";
+    if (provider === "inworld") return "Inworld";
+    return provider;
+}
+
+async function sendOpsAlertEmail(env, alert) {
+    const to = env.ALERT_EMAIL_TO;
+    const from = env.ALERT_EMAIL_FROM;
+    const binding = env.ALERT_EMAIL;
+    if (!binding || typeof binding.send !== "function" || !to || !from) {
+        console.error("ops_alert not emailed: ALERT_EMAIL binding, ALERT_EMAIL_TO or ALERT_EMAIL_FROM missing");
+        return { sent: false, reason: "not_configured" };
+    }
+
+    const name = providerDisplayName(alert.provider);
+    const subject = `[Mythos Live] ${name} is out of credit (HTTP ${alert.status})`;
+    const lines = [
+        `${name} refused a request because the account is out of funds.`,
+        "",
+        `Reason:      ${alert.reason}`,
+        `HTTP status: ${alert.status}`,
+        `Stage:       ${alert.stage}`,
+        `Character:   ${alert.character || "-"}`,
+        `Request id:  ${alert.requestId || "-"}`,
+        `First seen:  ${alert.firstSeenAt}`,
+        `This email:  ${alert.at}`,
+        `Failures since first seen: ${alert.seenCount}`,
+        "",
+        "Every chat turn through this provider is failing until credit is added.",
+        "No further email for this provider for an hour; the counter keeps running.",
+        "",
+        "Recent failures: https://logs.deeplovepoems.com/admin/logs?status=ai_error",
+    ];
+    const text = lines.join("\n");
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    const html = `<pre style="font: 14px/1.5 ui-monospace, Menlo, monospace">${esc(text)}</pre>`;
+
+    const result = await binding.send({
+        to,
+        from: { email: from, name: "Mythos Live alerts" },
+        subject,
+        text,
+        html,
+    });
+    return { sent: true, messageId: result && result.messageId ? result.messageId : null };
+}
+
 function buildInworldSystemPrompt(character, notes = []) {
     return [
         `You are ${character.name}.`,
@@ -5399,7 +6166,11 @@ async function callInworldChat(env, character, normalizedMessages, notes = []) {
             }
             const data = await response.json().catch(() => ({}));
             const details = (data.error && data.error.message) || data.message || `Inworld request failed with status ${response.status}`;
-            throw new AIError(502, details);
+            const err = new AIError(502, details);
+            err.provider = "inworld";
+            err.upstreamStatus = response.status;
+            err.upstreamBody = data;
+            throw err;
         }
 
         const data = await response.json().catch(() => ({}));
@@ -5419,7 +6190,7 @@ async function callInworldChat(env, character, normalizedMessages, notes = []) {
     throw new AIError(502, "Inworld request failed");
 }
 
-async function cleanupInworldReply(env, rawReply, characterName) {
+async function cleanupInworldReply(env, rawReply, characterName, ctx = null, requestId = null) {
     if (!env.OPENAI_API_KEY) {
         // No cleanup key configured — show the raw in-character reply as-is.
         return rawReply;
@@ -5459,6 +6230,18 @@ async function cleanupInworldReply(env, rawReply, characterName) {
     const data = await response.json().catch(() => ({}));
     const cleaned = extractAssistantMessage(data);
 
+    if (!response.ok) {
+        noteProviderFailure(env, ctx, {
+            provider: "openai",
+            status: response.status,
+            body: data,
+            errorText: extractErrorMessage(data),
+            requestId,
+            character: characterName,
+            stage: "inworld_cleanup",
+        });
+    }
+
     if (!response.ok || typeof cleaned !== "string" || !cleaned.trim()) {
         return rawReply;
     }
@@ -5477,13 +6260,13 @@ async function cleanupInworldReply(env, rawReply, characterName) {
  * which is insert time for the whole request. requestId here matches
  * conversation_logs.id so a log line can be joined back to its row.
  */
-async function runInworldPipeline(env, character, clientMessages, requestId, notes = []) {
+async function runInworldPipeline(env, character, clientMessages, requestId, notes = [], ctx = null) {
     const normalizedMessages = normalizeInworldMessages(clientMessages);
 
     const startedAt = Date.now();
     const rawReply = await callInworldChat(env, character, normalizedMessages, notes);
     const generatedAt = Date.now();
-    const cleanedReply = await cleanupInworldReply(env, rawReply, character.name);
+    const cleanedReply = await cleanupInworldReply(env, rawReply, character.name, ctx, requestId);
     const finishedAt = Date.now();
 
     console.log(JSON.stringify({
@@ -9689,4 +10472,4 @@ ${visitTimelineJs()}
 
 /// Internals the worker suite drives directly where no route reaches them
 /// without a live OAuth exchange. Not part of the Worker's runtime surface.
-export const __test = { coinMergeWallet };
+export const __test = { coinMergeWallet, coinMergeTicket, coinSync };

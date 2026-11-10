@@ -128,8 +128,10 @@ class AppConfig {
   static const String modernSectionTitle = 'Modern';
 
   /// Whether the dashboard offers user-created custom characters: the
-  /// "Create Custom" card and any already-created ones. Set to TRUE to
-  /// bring the feature back.
+  /// "Create Custom" card and any already-created ones. The creation screen
+  /// itself was deleted in the 1.0.6 App Review cleanup, so flipping this
+  /// back to TRUE also means restoring create_character_screen.dart and its
+  /// /create-character route (see git history).
   static const bool enableCustomCharacters = false;
 
   /// Range (inclusive) for the randomized pause, in milliseconds, before
@@ -173,7 +175,11 @@ class AppConfig {
   /// arm b still grants on the tap and still gets the claim screen, as a
   /// surprise rather than a promise. The wallet, chip, gifts and streak are
   /// identical in both arms.
-  static const String entryCtaExperiment = 'entry-cta-20260825';
+  ///
+  /// Retired 2026-10-31 ('entry-cta-20260825' before that): empty here and in
+  /// both page-script copies, so no visitor is in arm b and every card makes
+  /// the coins promise. The plumbing stays for the next experiment.
+  static const String entryCtaExperiment = '';
 
   /// Widget tests run off the web, where the page assigns no arm; this lets
   /// them put a visitor in arm b. Never set outside a test.
@@ -303,6 +309,18 @@ class AppConfig {
   /// [ticket] is the wallet merge ticket (CoinWalletService.mergeTicket): a
   /// claimed anonymous wallet only follows the sign-in when the redirect
   /// carries one. Without it the account still links; the coins stay put.
+  /// Sign in with Apple on the web; same contract as [googleAuthUrl].
+  static String appleAuthUrl(String returnTo, {String? anonId, String? ticket}) {
+    return apiUrl(
+      '/auth/apple/start',
+      queryParameters: {
+        'return_to': returnTo,
+        if (anonId != null && anonId.isNotEmpty) 'anon_id': anonId,
+        if (ticket != null && ticket.isNotEmpty) 'anon_ticket': ticket,
+      },
+    );
+  }
+
   static String googleAuthUrl(String returnTo, {String? anonId, String? ticket}) {
     return apiUrl(
       '/auth/google/start',

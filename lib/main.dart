@@ -7,6 +7,7 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'src/app.dart';
 import 'src/core/config/app_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'src/core/services/auth_service.dart';
 import 'src/core/services/device_identity.dart';
 import 'src/core/services/delivery_log.dart';
 import 'src/core/services/revenue_cat_service.dart';
@@ -58,13 +59,19 @@ Future<void> main() async {
     // Identity first: a reinstall gets its device id (and paid wallet) back
     // from the keychain before anything can mint a fresh one.
     await DeviceIdentity.restore();
+    // And the signed-in session, if any, so the very first request already
+    // speaks for the account.
+    await AuthSession.restore();
 
     // Coin packs are bought through RevenueCat under OUR user id, so the
     // worker can match the store's webhook to the wallet. Not awaited past
     // the identity step it needs: a slow store must not delay first paint.
     if (RevenueCatService.isSupported) {
       final prefs = await SharedPreferences.getInstance();
-      RevenueCatService().init(DeliveryLog.ensureUserId(prefs));
+      // Signed in: buy under the account, so a purchase lands in the wallet
+      // that follows the person between devices. Otherwise the device id.
+      RevenueCatService().init(
+          AuthSession.userId ?? DeliveryLog.ensureUserId(prefs));
     }
 
     // Initialize Local Notifications

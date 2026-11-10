@@ -5,12 +5,10 @@ import 'core/theme/app_theme.dart';
 
 import 'core/services/notification_service.dart';
 import 'core/services/storage_service.dart';
-import 'core/services/background_chat_service.dart';
 import 'core/data/characters.dart';
 import 'features/auth/presentation/signed_out_screen.dart';
 
 
-import 'features/character/presentation/create_character_screen.dart';
 import 'features/chat/presentation/chat_screen.dart';
 import 'features/chat/presentation/recent_chats_screen.dart';
 import 'features/home/presentation/dashboard_screen.dart';
@@ -48,6 +46,12 @@ class _RouteNotFoundRedirectState extends State<_RouteNotFoundRedirect> {
     );
   }
 }
+
+/// Whether [path] is an open conversation: a chat session or a /c/<id>
+/// character link. '/chat' alone is the recent-chats list, not a
+/// conversation.
+bool isConversationPath(String path) =>
+    path.startsWith('/chat/session') || path.startsWith('/c/');
 
 // Placeholder screens - will be implemented later
 class PlaceholderScreen extends StatelessWidget {
@@ -89,9 +93,9 @@ class AIApp extends ConsumerStatefulWidget {
 
 class _AIAppState extends ConsumerState<AIApp> {
   late final AppLifecycleListener _listener;
-  // Held so dispose() can stop the simulator's periodic timer without reading
-  // a provider off a container that may already be tearing down.
-  BackgroundChatSimulator? _simulator;
+  // The router build() made, kept so the lifecycle hook can ask where the
+  // user was when they left the app.
+  GoRouter? _router;
 
   @override
   void initState() {
@@ -99,19 +103,15 @@ class _AIAppState extends ConsumerState<AIApp> {
     _listener = AppLifecycleListener(
       onStateChange: _onStateChanged,
     );
-     // Start Background Simulator
-     WidgetsBinding.instance.addPostFrameCallback((_) {
-       if (!mounted) return;
-       final simulator = ref.read(backgroundChatSimulatorProvider);
-       _simulator = simulator;
-       simulator.start();
-     });
+    // There used to be a "background chat simulator" started here: every 45s
+    // (labelled "short for demo") it wrote a canned line from a random recent
+    // character into that chat's history and bumped its unread count. Those
+    // lines were then sent to the model as the character's own turns. Removed
+    // for build 100; StorageService drops the ones already on disk.
   }
 
   @override
   void dispose() {
-    // Its 45s periodic timer outlives the widget tree otherwise.
-    _simulator?.stop();
     _listener.dispose();
     super.dispose();
   }
@@ -132,8 +132,13 @@ class _AIAppState extends ConsumerState<AIApp> {
     final activeChat = ref.read(activeChatProvider);
     final now = DateTime.now();
 
-    // Quick Return Notification (10 seconds)
-    if (activeChat != null) {
+    // Quick return notification: only when they left the app from inside a
+    // conversation, and an hour later. It used to fire 10 seconds after ANY
+    // app switch — activeChat is set when a chat opens and never cleared, so
+    // leaving from the dashboard, or glancing at a text, also got
+    // "You left mid-thought" from whoever they last talked to.
+    final path = _router?.routerDelegate.currentConfiguration.uri.path ?? '';
+    if (activeChat != null && isConversationPath(path)) {
       final name = activeChat['name']!;
       final vibe = activeChat['vibe']!;
 
@@ -144,12 +149,11 @@ class _AIAppState extends ConsumerState<AIApp> {
         body = "Come back when you can — I want to hear the rest.";
       }
 
-      // 10 seconds later
       NotificationService().scheduleNotification(
         id: 999,
         title: "$name 💬",
         body: body,
-        scheduledDate: now.add(const Duration(seconds: 10)),
+        scheduledDate: now.add(const Duration(hours: 1)),
       );
     }
 
@@ -309,10 +313,10 @@ class _AIAppState extends ConsumerState<AIApp> {
               ],
             ),
             // Third nav slot. Was the Roleplay/Fantasy tab, which this replaces
-            // outright — the /roleplay route is gone, so roleplay_screen.dart
-            // is now unreferenced. The file is left in place deliberately:
-            // restoring the tab means re-adding an import and this one route,
-            // and its scenario copy predates the friend/mentor rewrite anyway.
+            // outright. roleplay_screen.dart itself was deleted in the 1.0.6
+            // App Review cleanup — its scenario copy predated the friend/mentor
+            // rewrite and could not ship under Extended Review. Restoring the
+            // tab means rewriting that screen, not just re-adding a route.
             StatefulShellBranch(
               navigatorKey: _shellNavigatorProfileKey,
               routes: [
@@ -338,11 +342,9 @@ class _AIAppState extends ConsumerState<AIApp> {
           parentNavigatorKey: _rootNavigatorKey,
           builder: (context, state) => const SignedOutScreen(),
         ),
-        GoRoute(
-          path: '/create-character',
-          parentNavigatorKey: _rootNavigatorKey,
-          builder: (context, state) => const CreateCharacterScreen(),
-        ),
+        // /create-character is gone: the creation screen was deleted in the
+        // 1.0.6 App Review cleanup (the roster is authored, not user-made).
+        // An old link lands on the not-found redirect like any unknown path.
         // The coin store. Kept at /paywall as well because older call sites
         // (all behind isFreeTier, so unreachable today) still push that path.
         GoRoute(
@@ -367,6 +369,7 @@ class _AIAppState extends ConsumerState<AIApp> {
       ],
     );
 
+    _router = router;
     return MaterialApp.router(
       title: 'Mythos Live',
       theme: AppTheme.romanticTheme,
