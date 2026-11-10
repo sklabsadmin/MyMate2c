@@ -48,6 +48,15 @@ class NotificationService {
   /// reported by [launchCharacterId] instead — there is nobody to call yet.
   void Function(String characterId)? onCharacterTap;
 
+  /// What every notification in the app's own voice is titled with, ahead of
+  /// its own heading: "In Mythos World · Dawn ☀️". A character's notification
+  /// is titled "Zeus says" instead (CharacterNudgePlanner), so the two kinds
+  /// can be told apart at a glance on a lock screen.
+  static const String appLevelPrefix = 'In Mythos World';
+
+  /// [heading] as an app-level notification title.
+  static String appLevelTitle(String heading) => '$appLevelPrefix · $heading';
+
   static const String _characterPayloadPrefix = 'character:';
 
   /// The payload that makes a tap open [characterId]'s conversation.
@@ -196,7 +205,7 @@ class NotificationService {
             (now.day + i) % _morningMessages.length; // Rotate messages
         await scheduleNotification(
           id: 200 + i,
-          title: "Dawn ☀️",
+          title: appLevelTitle("Dawn ☀️"),
           body: _morningMessages[msgIndex],
           scheduledDate: morningDate,
         );
@@ -215,7 +224,7 @@ class NotificationService {
             (now.day + i) % _eveningMessages.length; // Rotate messages
         await scheduleNotification(
           id: 300 + i,
-          title: "Nightfall 🌙",
+          title: appLevelTitle("Nightfall 🌙"),
           body: _eveningMessages[msgIndex],
           scheduledDate: eveningDate,
         );

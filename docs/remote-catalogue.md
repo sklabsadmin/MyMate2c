@@ -82,7 +82,8 @@ hours, one day, three days) are now written as the characters the person has
 talked to, most recent first, each in that character's voice. Tapping one
 opens that conversation. Each is titled "Zeus says" with the line beneath.
 Someone with no chats yet gets the app-level lines as
-before. The daily dawn and nightfall notifications are unchanged.
+before. App-level notifications, including the daily dawn and nightfall ones, are
+titled "In Mythos World · " followed by their heading.
 
 It is the same three slots, not three more. Times that would land between
 21:30 and 09:30 move to 10:30 the following morning.

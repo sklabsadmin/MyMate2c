@@ -1,5 +1,6 @@
 import '../data/character_nudges.dart';
 import '../data/characters.dart';
+import 'notification_service.dart';
 
 /// One notification to schedule.
 class PlannedNudge {
@@ -67,7 +68,12 @@ class CharacterNudgePlanner {
       final when = outOfQuietHours(now.add(delay));
       if (speakers.isEmpty) {
         final (title, body) = _appLevel[i];
-        planned.add(PlannedNudge(id: id, title: title, body: body, when: when));
+        planned.add(PlannedNudge(
+          id: id,
+          title: NotificationService.appLevelTitle(title),
+          body: body,
+          when: when,
+        ));
         continue;
       }
       final speaker = speakers[i % speakers.length];

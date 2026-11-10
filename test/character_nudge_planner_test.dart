@@ -20,8 +20,11 @@ void main() {
   test('nobody talked to: the three app-level lines, as before', () {
     final plan = CharacterNudgePlanner.plan(recentChats: const [], now: noon);
     expect(plan.map((n) => n.id), [101, 102, 103]);
-    expect(plan.map((n) => n.title),
-        ['The day moves on', 'A day has passed', 'Still here']);
+    expect(plan.map((n) => n.title), [
+      'In Mythos World · The day moves on',
+      'In Mythos World · A day has passed',
+      'In Mythos World · Still here',
+    ]);
     expect(plan.every((n) => n.characterId == null), isTrue);
     expect(plan.map((n) => n.when), [
       noon.add(const Duration(hours: 4)),
