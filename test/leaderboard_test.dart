@@ -43,6 +43,14 @@ class _NoNetwork extends LeaderboardService {
       throw StateError('the sheet was given a preloaded result');
 }
 
+/// Fails the first read and answers the second.
+class _Flaky extends LeaderboardService {
+  int calls = 0;
+  @override
+  Future<LeaderboardResult?> fetch(String characterId) async =>
+      ++calls == 1 ? null : LeaderboardResult.tryParse(response());
+}
+
 Future<void> openSheet(WidgetTester tester, LeaderboardResult result) async {
   tester.view.physicalSize = const Size(800, 1600);
   tester.view.devicePixelRatio = 2;
@@ -186,6 +194,35 @@ void main() {
         const LeaderboardResult(enabled: true),
       );
       expect(find.textContaining('Yours would be the first'), findsOneWidget);
+    });
+
+    testWidgets('unreachable offers another try, and trying works',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      final service = _Flaky();
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showLeaderboardSheet(
+                context,
+                characterId: 'zeus',
+                characterName: 'Zeus',
+                service: service,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.text('The leaderboard could not be reached.'), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(find.text('User 482913'), findsOneWidget);
     });
 
     testWidgets('switched off says so', (tester) async {

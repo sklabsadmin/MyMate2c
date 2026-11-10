@@ -128,7 +128,12 @@ ranked by the coins those gifts cost. It opens from a button on the
 character's profile, and a snackbar offers it after a gift ("You are #3 on
 Zeus's leaderboard. View").
 
-There is also an all-characters board. It lists people who have given two or
+The trophy button in the dashboard header opens the Leaderboards menu: one
+row per character showing who leads and where the viewer stands, each
+opening that character's board (`GET /api/leaderboard/summary`).
+
+There is also an all-characters board, at the top of that menu and as a
+second tab on a character's board. It lists people who have given two or
 more gifts, and it is only sent to someone who has done the same. Until then
 the app shows no tab and no hint that it exists.
 

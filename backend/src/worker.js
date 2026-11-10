@@ -19,6 +19,7 @@ import {
 } from "./catalogue.js";
 import {
     leaderboards,
+    leaderboardSummary,
     setDisplayName,
     reportDisplayName,
     reportedDisplayNames,
@@ -1636,7 +1637,8 @@ export default {
         // the exact string "false" disables it, and off answers
         // { enabled: false } rather than an error, so a build with the
         // button in it shows "not available" instead of a failure.
-        if (request.method === "GET" && url.pathname === "/api/leaderboard") {
+        if (request.method === "GET"
+            && (url.pathname === "/api/leaderboard" || url.pathname === "/api/leaderboard/summary")) {
             const signature = request.headers.get("x-signature");
             const timestamp = request.headers.get("x-timestamp");
             if (env.REQUIRE_SIGNATURE !== "false") {
@@ -1656,10 +1658,12 @@ export default {
             if (env.LEADERBOARDS === "false" || !coinsActive(env, request, userId)) {
                 return jsonResponse({ enabled: false }, { headers: corsHeaders(request) });
             }
+            // The menu's view: every character at once, one row each.
+            const summary = url.pathname === "/api/leaderboard/summary";
             const characterId = url.searchParams.get("character") || "";
             // Roster-shaped ids only. A custom character's gifts are keyed by
             // a per-person chat id, and a board of one is not a board.
-            if (!/^[a-z0-9_]{1,40}$/.test(characterId)) {
+            if (!summary && !/^[a-z0-9_]{1,40}$/.test(characterId)) {
                 return jsonResponse({ error: "Unknown character" }, {
                     status: 400, headers: corsHeaders(request),
                 });
@@ -1670,14 +1674,16 @@ export default {
                 });
             }
             try {
-                const boards = await leaderboards(env.CHAT_LOGS_DB, {
-                    characterId,
-                    // An unrecognised id still sees the character's board; it
-                    // just has no standing on it and no global board.
+                const who = {
+                    // An unrecognised id still sees the boards; it just has
+                    // no standing on them and no global board.
                     userId: isRealUserId(userId) ? userId : null,
                     secret: env.SESSION_SECRET || env.APP_SECRET,
                     showNames: featureOn("leaderboard_names"),
-                });
+                };
+                const boards = summary
+                    ? await leaderboardSummary(env.CHAT_LOGS_DB, who)
+                    : await leaderboards(env.CHAT_LOGS_DB, { characterId, ...who });
                 return jsonResponse({ enabled: true, ...boards }, { headers: corsHeaders(request) });
             } catch (error) {
                 console.error(JSON.stringify({

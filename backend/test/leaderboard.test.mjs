@@ -400,3 +400,88 @@ test('a filtered name is refused even when it would only be logged', async () =>
     const { env: e } = env();
     assert.equal((await logName(e, 'sh1thead')).status, 422);
 });
+
+// ---------------------------------------------------------------------------
+// The menu: every character at a glance.
+// ---------------------------------------------------------------------------
+
+import { leaderboardSummary } from '../src/leaderboard.js';
+
+async function summary(env, { userId = ME } = {}) {
+    const worker = await loadWorker();
+    const res = await worker.fetch(new Request('https://mythos.test/api/leaderboard/summary', {
+        headers: userId ? { 'x-user-id': userId } : {},
+    }), env, { waitUntil() {}, passThroughOnException() {} });
+    return { status: res.status, json: JSON.parse(await res.text()) };
+}
+
+test('the summary gives each character its leader, its givers, and your place', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    gift(db, user(3), 'zeus', 150);
+    gift(db, ME, 'zeus', 50);
+    gift(db, ME, 'penelope', 150);
+    gift(db, user(2), 'A Custom Chat (Mine)', 900);   // not a roster id: left out
+
+    const res = await summary(e);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.enabled, true);
+    const by = Object.fromEntries(res.json.characters.map((c) => [c.id, c]));
+    assert.deepEqual(Object.keys(by).sort(), ['penelope', 'zeus']);
+
+    assert.equal(by.zeus.givers, 3);
+    assert.equal(by.zeus.top.spent, 500);
+    assert.match(by.zeus.top.name, /^User \d{6}$/);
+    assert.ok(!by.zeus.top.you);
+    assert.deepEqual(by.zeus.you, { rank: 3, spent: 50 });
+
+    assert.deepEqual(by.penelope.top, { name: by.penelope.top.name, spent: 150, you: true });
+    assert.deepEqual(by.penelope.you, { rank: 1, spent: 150 });
+    assert.ok(!JSON.stringify(res.json).includes('user_17'), 'no user id anywhere');
+});
+
+test('the summary agrees with each character\'s own board', async () => {
+    // Two code paths rank the same rows; a tie is where they would differ.
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 150, { at: '2026-11-02 09:00:00' });
+    gift(db, user(3), 'zeus', 150, { at: '2026-11-01 09:00:00' });
+    gift(db, ME, 'zeus', 150, { at: '2026-11-03 09:00:00' });
+    const board = (await get(e, 'zeus')).json.character;
+    const zeus = (await summary(e)).json.characters.find((c) => c.id === 'zeus');
+    assert.equal(zeus.top.name, board.entries[0].name);
+    assert.equal(zeus.you.rank, board.you.rank);
+    assert.equal(zeus.you.rank, 3);
+});
+
+test('the summary carries the all-characters board on the same terms', async () => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    gift(db, user(2), 'hector', 500);
+    gift(db, ME, 'zeus', 50);
+    assert.deepEqual((await summary(e)).json.global, { unlocked: false });
+    gift(db, ME, 'hector', 50);
+    const global = (await summary(e)).json.global;
+    assert.equal(global.unlocked, true);
+    assert.deepEqual(global.entries.map((x) => x.spent), [1000, 100]);
+});
+
+test('the summary: nobody has given, developers are left out, off says so', async () => {
+    const { env: e, db } = env();
+    assert.deepEqual((await summary(e)).json, { enabled: true, characters: [], global: { unlocked: false } });
+    gift(db, user(2), 'zeus', 500);
+    db.prepare("INSERT INTO site_visits (id, visit_id, event, app_user_id, is_dev) VALUES ('sv_dev2', 'v_dev2', 'arrive', ?, 1)").run(user(2));
+    assert.deepEqual((await summary(e)).json.characters, []);
+    assert.deepEqual((await summary(env({ LEADERBOARDS: 'false' }).env)).json, { enabled: false });
+    assert.equal((await summary(env({ REQUIRE_SIGNATURE: 'true' }).env)).status, 401);
+});
+
+test('the summary shows a chosen name for a leader only with the switch on', async (t) => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    namesOn(t);
+    await setName(e, 'Leader Name', { userId: user(2) });
+    assert.equal((await summary(e)).json.characters[0].top.name, 'Leader Name');
+    SERVER_CATALOGUE.features.leaderboard_names = false;
+    assert.match((await summary(e)).json.characters[0].top.name, /^User \d{6}$/);
+    assert.equal(typeof leaderboardSummary, 'function');
+});

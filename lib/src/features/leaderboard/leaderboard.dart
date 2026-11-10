@@ -234,6 +234,29 @@ class LeaderboardService {
     }
   }
 
+  /// Every character's leader and this person's place, or null when it
+  /// could not be read.
+  Future<LeaderboardSummary?> fetchSummary() async {
+    final url = AppConfig.apiUrl('/api/leaderboard/summary');
+    if (url.isEmpty) return null;
+    try {
+      final res = await _dio.get(
+        url,
+        options: Options(
+          headers: await _headers(''),
+          extra: {'withCredentials': true},
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
+          validateStatus: (status) => status == 200,
+        ),
+      );
+      return LeaderboardSummary.tryParse(res.data);
+    } catch (e) {
+      if (kDebugMode) debugPrint('Leaderboard summary failed: $e');
+      return null;
+    }
+  }
+
   /// The boards for [characterId], or null when they could not be read.
   Future<LeaderboardResult?> fetch(String characterId) async {
     final url = AppConfig.apiUrl(
@@ -257,6 +280,83 @@ class LeaderboardService {
       if (kDebugMode) debugPrint('Leaderboard fetch failed: $e');
       return null;
     }
+  }
+}
+
+/// One character's line in the Leaderboards menu: who leads, how many people
+/// have given, and where this person stands.
+class LeaderboardSummaryRow {
+  final String characterId;
+  final int givers;
+  final String topName;
+  final int topSpent;
+
+  /// This person is the leader.
+  final bool topIsYou;
+
+  /// Null when they have not given this character anything.
+  final int? yourRank;
+  final int? yourSpent;
+
+  const LeaderboardSummaryRow({
+    required this.characterId,
+    required this.givers,
+    required this.topName,
+    required this.topSpent,
+    this.topIsYou = false,
+    this.yourRank,
+    this.yourSpent,
+  });
+}
+
+/// GET /api/leaderboard/summary: every character at a glance, plus the
+/// all-characters board once it has been unlocked (null until then).
+class LeaderboardSummary {
+  final bool enabled;
+  final Map<String, LeaderboardSummaryRow> characters;
+  final Leaderboard? global;
+
+  const LeaderboardSummary({
+    required this.enabled,
+    this.characters = const {},
+    this.global,
+  });
+
+  static LeaderboardSummary? tryParse(dynamic json) {
+    if (json is! Map) return null;
+    if (json['enabled'] != true) return const LeaderboardSummary(enabled: false);
+    final rows = <String, LeaderboardSummaryRow>{};
+    final raw = json['characters'];
+    if (raw is List) {
+      for (final c in raw) {
+        if (c is! Map) continue;
+        final id = c['id'];
+        final top = c['top'];
+        if (id is! String || top is! Map) continue;
+        final name = top['name'];
+        final spent = top['spent'];
+        if (name is! String || spent is! int) continue;
+        final you = c['you'];
+        rows[id] = LeaderboardSummaryRow(
+          characterId: id,
+          givers: c['givers'] is int ? c['givers'] as int : 1,
+          topName: name,
+          topSpent: spent,
+          topIsYou: top['you'] == true,
+          yourRank: you is Map && you['rank'] is int ? you['rank'] as int : null,
+          yourSpent:
+              you is Map && you['spent'] is int ? you['spent'] as int : null,
+        );
+      }
+    }
+    final rawGlobal = json['global'];
+    return LeaderboardSummary(
+      enabled: true,
+      characters: rows,
+      global: rawGlobal is Map && rawGlobal['unlocked'] == true
+          ? Leaderboard.tryParse(rawGlobal)
+          : null,
+    );
   }
 }
 
@@ -349,7 +449,10 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
   int _tab = 0;
 
   void _retry() {
-    setState(() => _result = widget.service.fetch(widget.characterId));
+    // A block, not an arrow: an arrow would hand setState the Future.
+    setState(() {
+      _result = widget.service.fetch(widget.characterId);
+    });
   }
 
   /// Refs reported from this sheet, so a flag reads as done once tapped.
@@ -472,7 +575,7 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
                 const _Message(text: 'Leaderboards are not available right now.')
               else
                 Flexible(
-                  child: _Board(
+                  child: LeaderboardBoardView(
                     onReport: _report,
                     reported: _reported,
                     board: showGlobal ? global : result.character,
@@ -593,17 +696,23 @@ class _Message extends StatelessWidget {
   }
 }
 
-class _Board extends StatelessWidget {
+/// The rows of one board, with this person's own place added at the foot
+/// when it is below the rows shown. Used by the sheet and by the
+/// Leaderboards screen.
+class LeaderboardBoardView extends StatelessWidget {
   final Leaderboard board;
   final String emptyText;
   final void Function(LeaderboardEntry entry) onReport;
   final Set<String> reported;
+  final bool scrollable;
 
-  const _Board({
+  const LeaderboardBoardView({
+    super.key,
     required this.board,
     required this.emptyText,
     required this.onReport,
     required this.reported,
+    this.scrollable = true,
   });
 
   @override
@@ -614,6 +723,8 @@ class _Board extends StatelessWidget {
     final belowFold = you != null && !board.entries.any((e) => e.you);
     return ListView(
       shrinkWrap: true,
+      // Inside the Leaderboards screen the page scrolls, not the board.
+      physics: scrollable ? null : const NeverScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       children: [
         for (final entry in board.entries)

@@ -320,6 +320,91 @@ async function board(db, { where, binds, minGifts, userId, secret, showNames }) 
     return { entries, you };
 }
 
+/// What GET /api/leaderboard/summary answers: for every character anyone has
+/// given to, who leads and by how much, how many people have given, and
+/// where the requester stands — plus the all-characters board on the same
+/// terms as [leaderboards] (only once the requester has given
+/// GLOBAL_MIN_GIFTS gifts).
+///
+/// One pass over the gift rows, grouped by (character, user); the ranking is
+/// done here rather than in SQL because it is the same small result set
+/// either way and this keeps the tie rule in one readable place. Only
+/// roster-shaped ids are reported: a custom character's gifts are keyed by a
+/// per-person chat name, and a board of one is not a board.
+export async function leaderboardSummary(db, { userId, secret, showNames = false }) {
+    const { results } = await db.prepare(`
+        SELECT ref, user_id, SUM(-delta) AS spent, MAX(created_at) AS last_at
+        FROM coin_ledger
+        WHERE ${IS_GIFT} AND ref IS NOT NULL AND ${NOT_DEV}
+        GROUP BY ref, user_id
+    `).all();
+
+    const byCharacter = new Map();
+    for (const row of results || []) {
+        if (!/^[a-z0-9_]{1,40}$/.test(row.ref)) continue;
+        if (!byCharacter.has(row.ref)) byCharacter.set(row.ref, []);
+        byCharacter.get(row.ref).push({
+            userId: row.user_id, spent: Number(row.spent), lastAt: row.last_at,
+        });
+    }
+    // The same ordering as a board: coins, then who got there first.
+    const ahead = (a, b) => b.spent - a.spent
+        || (a.lastAt < b.lastAt ? -1 : a.lastAt > b.lastAt ? 1 : 0)
+        || (a.userId < b.userId ? -1 : 1);
+
+    const leaders = [];
+    const characters = [];
+    for (const [id, givers] of byCharacter) {
+        givers.sort(ahead);
+        const top = givers[0];
+        const mineAt = userId ? givers.findIndex((g) => g.userId === userId) : -1;
+        leaders.push(top.userId);
+        characters.push({
+            id,
+            givers: givers.length,
+            top: { userId: top.userId, spent: top.spent },
+            you: mineAt >= 0 ? { rank: mineAt + 1, spent: givers[mineAt].spent } : null,
+        });
+    }
+
+    // Chosen names for the leaders, where the switch is on.
+    const chosen = new Map();
+    if (showNames && leaders.length) {
+        try {
+            const unique = [...new Set(leaders)];
+            const { results: named } = await db.prepare(`
+                SELECT user_id, name FROM leaderboard_names
+                WHERE hidden = 0 AND noticed = 1 AND user_id IN (${unique.map(() => "?").join(", ")})
+            `).bind(...unique).all();
+            for (const n of named || []) chosen.set(n.user_id, n.name);
+        } catch (_) { /* migration 0022 not applied: numbers */ }
+    }
+    for (const c of characters) {
+        const leader = c.top.userId;
+        const mine = !!userId && leader === userId;
+        c.top = {
+            name: chosen.get(leader) || await boardHandle(leader, secret),
+            spent: c.top.spent,
+            ...(mine ? { you: true } : {}),
+        };
+    }
+
+    let totalGifts = 0;
+    if (userId) {
+        const row = await db.prepare(
+            `SELECT COUNT(*) AS n FROM coin_ledger WHERE ${IS_GIFT} AND user_id = ?`
+        ).bind(userId).first();
+        totalGifts = row ? Number(row.n) : 0;
+    }
+    const global = totalGifts >= GLOBAL_MIN_GIFTS
+        ? { unlocked: true, ...(await board(db, {
+            where: "1 = 1", binds: [], minGifts: GLOBAL_MIN_GIFTS, userId, secret, showNames,
+        })) }
+        : { unlocked: false };
+
+    return { characters, global };
+}
+
 /// What GET /api/leaderboard answers for [userId] looking at [characterId].
 ///
 /// `global` is { unlocked: false } until the requester has given

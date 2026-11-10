@@ -11,6 +11,7 @@ import '../../../core/data/character_profiles.dart';
 import '../../../core/data/characters.dart';
 import '../../../core/data/remote_catalogue.dart';
 import '../../character/presentation/character_profile_screen.dart';
+import '../../leaderboard/leaderboards_screen.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../wallet/presentation/coin_chip.dart';
 import '../../wallet/presentation/coins_sheet.dart';
@@ -299,6 +300,40 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             // fallback whenever coins are off or unknown, so
                             // flipping COIN_LEDGER off restores the header
                             // exactly as it was.
+                            // The way into the Leaderboards menu. Only where
+                            // coins exist — the boards are made of gifts —
+                            // and before the chip, so the gear stays the
+                            // rightmost control. It costs the greeting 42pt,
+                            // which ellipsises as it was built to.
+                            if (coinsLive) ...[
+                              GestureDetector(
+                                key: const ValueKey('dashboard-leaderboards'),
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => const LeaderboardsScreen(),
+                                  ),
+                                ),
+                                child: Tooltip(
+                                  message: 'Leaderboards',
+                                  child: Container(
+                                    padding: const EdgeInsets.all(7),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.panelColor,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: AppTheme.hairlineColor,
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.emoji_events,
+                                      color: AppTheme.goldInkColor,
+                                      size: 20,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
                             if (coinsLive)
                               CoinChip(
                                 balance: coinWallet.balance,
