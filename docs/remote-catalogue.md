@@ -95,7 +95,9 @@ character's voice:
 | 3 days | the character they talk to most |
 | 5 days | their third |
 
-With two characters that is four notifications, with one it is three. Tapping one
+With two characters that is four notifications, with one it is three. The older
+reminder an hour after leaving an open conversation is gone; the four-hour
+notification replaces it. Tapping one
 opens that conversation. Each is titled "Zeus says" with the line beneath.
 Someone with no chats yet gets the app-level lines as
 before. App-level notifications, including the daily dawn and nightfall ones, are

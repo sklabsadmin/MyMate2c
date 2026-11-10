@@ -49,12 +49,6 @@ class _RouteNotFoundRedirectState extends State<_RouteNotFoundRedirect> {
   }
 }
 
-/// Whether [path] is an open conversation: a chat session or a /c/<id>
-/// character link. '/chat' alone is the recent-chats list, not a
-/// conversation.
-bool isConversationPath(String path) =>
-    path.startsWith('/chat/session') || path.startsWith('/c/');
-
 /// The chat for a roster character, as the `/c/<id>` route opens it.
 Widget _chatWith(Map<String, dynamic> character, String? initialMessage) {
   return ChatScreen(
@@ -194,9 +188,7 @@ class _AIAppState extends ConsumerState<AIApp> {
   }
 
   Future<void> _scheduleRetentionNotifications() async {
-    final activeChat = ref.read(activeChatProvider);
     final now = DateTime.now();
-    final path = _router?.routerDelegate.currentConfiguration.uri.path ?? '';
     final leftAt = _foregroundCount;
 
     // Who they have talked to, newest first — the characters the "come
@@ -223,30 +215,11 @@ class _AIAppState extends ConsumerState<AIApp> {
     } catch (_) {}
     if (!mounted || leftAt != _foregroundCount) return;
 
-    // Quick return notification: only when they left the app from inside a
-    // conversation, and an hour later. It used to fire 10 seconds after ANY
-    // app switch — activeChat is set when a chat opens and never cleared, so
-    // leaving from the dashboard, or glancing at a text, also got
-    // "You left mid-thought" from whoever they last talked to.
-    if (activeChat != null && isConversationPath(path)) {
-      final name = activeChat['name']!;
-      final vibe = activeChat['vibe']!;
-
-      String body = "You left mid-thought. The story isn't finished.";
-      if (vibe == 'Flirty') {
-        body = "You slipped away like Odysseus from a harbour.";
-      } else if (vibe == 'Friendly') {
-        body = "Come back when you can — I want to hear the rest.";
-      }
-
-      NotificationService().scheduleNotification(
-        id: 999,
-        title: "$name 💬",
-        body: body,
-        scheduledDate: now.add(const Duration(hours: 1)),
-        payload: _characterPayloadFor(name, recentChats),
-      );
-    }
+    // There used to be a separate reminder an hour after leaving an open
+    // conversation ("You left mid-thought"). Dropped on 2026-11-10: the
+    // character notifications below start at four hours, in the character's
+    // own voice, and two from the same character three hours apart was one
+    // too many.
 
     // Daily Morning/Evening Notifications
     NotificationService().scheduleDailyNotifications();
@@ -271,21 +244,6 @@ class _AIAppState extends ConsumerState<AIApp> {
             : NotificationService.characterPayload(characterId),
       );
     }
-  }
-
-  /// The tap payload for a notification titled [name]: that character's
-  /// chat, when the recent chats say which roster character the name is.
-  String? _characterPayloadFor(
-    String name,
-    List<Map<String, dynamic>> recentChats,
-  ) {
-    for (final chat in recentChats) {
-      final id = chat['characterId'];
-      if (chat['name'] == name && id is String && id.isNotEmpty) {
-        return NotificationService.characterPayload(id);
-      }
-    }
-    return null;
   }
 
   @override

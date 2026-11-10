@@ -2,15 +2,13 @@
 // 45s it wrote a canned line from a random recent character into that chat's
 // history (id prefix 'bg_') and bumped its unread count. The lines were then
 // sent to the model as the character's own turns. These tests pin the cleanup
-// for installs that already have them on disk, and the rule that decides when
-// the "you left mid-thought" notification may be scheduled.
+// for installs that already have them on disk.
 
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:mythos_live/src/app.dart';
 import 'package:mythos_live/src/core/models/chat_message.dart';
 import 'package:mythos_live/src/core/services/storage_service.dart';
 
@@ -89,16 +87,5 @@ void main() {
         .toList();
     expect(stored.first['chatId'], 'zeus');
     expect(stored.last['unreadCount'], 0);
-  });
-
-  test('only an open conversation counts as leaving mid-chat', () {
-    expect(isConversationPath('/chat/session'), isTrue);
-    expect(isConversationPath('/c/odysseus'), isTrue);
-    expect(isConversationPath('/chat'), isFalse,
-        reason: 'the recent-chats list is not a conversation');
-    expect(isConversationPath('/dashboard'), isFalse);
-    expect(isConversationPath('/settings'), isFalse);
-    expect(isConversationPath('/coins'), isFalse);
-    expect(isConversationPath(''), isFalse);
   });
 }
