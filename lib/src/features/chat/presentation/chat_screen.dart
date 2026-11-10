@@ -396,7 +396,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     "You've gone quiet. That's allowed.",
     "What are you thinking?",
     "No rush. Say something whenever you're ready.",
-    "Where did you get to?",
+    "Open to a few Greek moments now?",
   ];
   String _currentVibe = "Gentle";
   OpenAIService? _aiService;
@@ -3390,11 +3390,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// (gate, funnel, score) because to everything downstream it IS a message —
   /// only the composer text box was never involved.
   Future<void> _sendTribute(String item, int price) async {
-    // A gift puts its giver on the leaderboards, so they have a display name
-    // first: the one in their profile, or one they are asked for now. "Not
-    // now" at that prompt is a gift not given — nothing has been charged.
+    // A gift puts its giver on the leaderboards. Where those show chosen
+    // names (a worker switch, off as shipped) they have one first: the one
+    // in their profile, or one they are asked for now. "Not now" at that
+    // prompt is a gift not given — nothing has been charged.
     final storage = ref.read(storageServiceProvider);
     final named = await LeaderboardNameGate(
+      // Off as shipped: the boards show user numbers and nobody is asked.
+      publicNames: RemoteCatalogue.current.feature('leaderboard_names'),
       service: LeaderboardService(),
       loadName: () async => (await storage.loadUserProfile()).name,
       saveName: (name) async {

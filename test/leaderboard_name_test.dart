@@ -17,9 +17,13 @@ class FakeService extends LeaderboardService {
   final List<String> namesSent = [];
   final List<String> reports = [];
 
+  /// Whether each name was sent as public, in step with [namesSent].
+  final List<bool> sentAsPublic = [];
+
   @override
-  Future<NameResult> setName(String name) async {
+  Future<NameResult> setName(String name, {bool public = true}) async {
     namesSent.add(name);
+    sentAsPublic.add(public);
     return onSetName(name);
   }
 
@@ -39,9 +43,14 @@ class Harness {
   String profileName;
   bool? outcome;
 
-  Harness({this.profileName = ''});
+  /// The worker's leaderboard_names switch. On for most of this file, which
+  /// is about what happens when it is; it ships off.
+  final bool publicNames;
+
+  Harness({this.profileName = '', this.publicNames = true});
 
   LeaderboardNameGate get gate => LeaderboardNameGate(
+        publicNames: publicNames,
         service: service,
         loadName: () async => profileName,
         saveName: (name) async => profileName = name,
@@ -203,6 +212,68 @@ void main() {
     });
   });
 
+  group('as shipped: boards show user numbers', () {
+    testWidgets('a gift asks for nothing, with or without a name',
+        (tester) async {
+      final unnamed = Harness(publicNames: false);
+      await unnamed.giveGift(tester);
+      expect(find.text('Choose a display name'), findsNothing);
+      expect(unnamed.outcome, isTrue);
+      expect(unnamed.service.namesSent, isEmpty);
+
+      final named = Harness(profileName: 'Anna', publicNames: false);
+      await named.giveGift(tester);
+      expect(find.text('Choose a display name'), findsNothing);
+      expect(named.outcome, isTrue);
+    });
+
+    testWidgets('a profile name is passed on to be kept, never as public',
+        (tester) async {
+      final h = Harness(profileName: 'Anna', publicNames: false);
+      await h.giveGift(tester);
+      await tester.pumpAndSettle();
+      expect(h.service.namesSent, ['Anna']);
+      expect(h.service.sentAsPublic, [false]);
+      // Not marked as sent-for-the-leaderboards: on the day names are
+      // switched on, it has to go again with its owner told.
+      expect(await sentName(), isNull);
+
+      // And only once per name.
+      await h.giveGift(tester);
+      await tester.pumpAndSettle();
+      expect(h.service.namesSent, ['Anna']);
+    });
+
+    testWidgets('a name the worker would refuse does not get in a gift\'s way',
+        (tester) async {
+      final h = Harness(profileName: 'Rude Word', publicNames: false);
+      h.service.onSetName =
+          (_) => const NameResult(NameOutcome.rejected, reason: 'not_allowed');
+      await h.giveGift(tester);
+      expect(find.text('Choose a display name'), findsNothing);
+      expect(h.outcome, isTrue);
+    });
+
+    test('saving the profile logs the name and says nothing', () async {
+      final h = Harness(publicNames: false);
+      expect(await h.gate.afterProfileSaved('Anna'), isNull);
+      expect(h.service.sentAsPublic, [false]);
+    });
+
+    testWidgets('a name logged while off is asked about properly once on',
+        (tester) async {
+      final off = Harness(profileName: 'Anna', publicNames: false);
+      await off.giveGift(tester);
+      await tester.pumpAndSettle();
+
+      final on = Harness(profileName: 'Anna');
+      await on.giveGift(tester);
+      expect(on.service.namesSent, ['Anna']);
+      expect(on.service.sentAsPublic, [true]);
+      expect(await sentName(), 'Anna');
+    });
+  });
+
   group('after the profile is saved', () {
     test('someone who has never given a gift: the name stays private',
         () async {
@@ -243,7 +314,7 @@ void main() {
             'id': 'zeus',
             'entries': [
               {'rank': 1, 'name': 'Chosen Name', 'spent': 900, 'ref': 'a' * 24},
-              {'rank': 2, 'name': 'Wine-Dark Navigator 47', 'spent': 500},
+              {'rank': 2, 'name': 'User 482913', 'spent': 500},
               {'rank': 3, 'name': 'Mine', 'spent': 50, 'you': true},
             ],
             'you': {'rank': 3, 'spent': 50, 'gifts': 1},

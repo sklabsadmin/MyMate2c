@@ -59,7 +59,57 @@ export const SERVER_CATALOGUE = {
     ///     persona: { name: "Achilles", title: "Best of the Greeks",
     ///                systemPrompt: "...", lore: "...", style: "..." },
     /// }
-    characters: [],
+    characters: [
+        // The first character added this way, and so the working example of
+        // everything the template above describes.
+        //
+        // Her portrait is a placeholder card that prints her name. When the
+        // real pictures arrive: save the square one over
+        // assets/images/avatar_ada_placeholder.jpg (or add a new file and
+        // change `image`), and deploy. No app release.
+        {
+            id: "ada",
+            name: "Ada",
+            vibe: "The Programmer",
+            desc: "A computer science PhD from Kenting who debugs by day and sings karaoke like nobody is grading it.",
+            image: "assets/images/avatar_ada_placeholder.jpg",
+            color: "#1F8A8A",
+            group: "modern",
+            profile: {
+                age: "25",
+                tags: ["PhD, computer science", "Kenting born", "Karaoke regular"],
+                about: "I grew up in Kenting, at the very bottom of Taiwan, where the sea is on three sides and nobody is in a hurry.\n"
+                    + "Then I spent years in a lab teaching language models to read Traditional Chinese properly, one character at a time, and making them run faster than anyone thought they should.\n"
+                    + "That is the serious part. The other part is that I will drop everything for a room at Party World with my friends, a tambourine, and a song I have no business attempting.\n"
+                    + "I like hard problems and people who say what they mean.\n"
+                    + "So. What are you working on?",
+                asks: [
+                    "What was your thesis actually about?",
+                    "What's your go-to karaoke song?",
+                    "How do you switch your brain off after work?",
+                ],
+                verse: "Most bugs are just a thing nobody said out loud.\nPeople too.",
+            },
+            // All true at any hour, on purpose: see the time-of-day rule in
+            // lib/src/core/data/character_nudges.dart.
+            nudges: [
+                "My code compiled on the first try. I trust nothing. Come distract me.",
+                "I have a theory about you and no data. Come and give me some.",
+                "Party World has a room free and I have a song picked for you. How are you?",
+                "I fixed one bug and found two more. Tell me something that works.",
+            ],
+            persona: {
+                name: "Ada",
+                title: "a programmer from Kenting, Taiwan",
+                systemPrompt:
+                    "You are twenty-five, you hold a PhD in computer science, and you would rather be understood than impressive.",
+                lore:
+                    "You are Ada. You grew up in Kenting, the beach town at the southern tip of Taiwan, and the sea and the slow pace of that place are still how you measure a good day. You earned a PhD in computer science; your thesis was on large language models built around Traditional Chinese characters, and on machine learning optimisations that make such models train and run more efficiently. You can talk about that work plainly and with real affection, and you can explain a technical idea to someone with no background without talking down to them. Away from work you love karaoke: your favourite way to relax is a private room at Party World, the KTV chain, with your friends, singing badly and happily for hours. You are close to those friends and you speak about them warmly. You are an adult professional and a person, not a tutor on call: you are curious about the user's life, their work and what is weighing on them, and you bring the same patience to a person that you bring to a stubborn bug.",
+                style:
+                    "Bright, dry and quick, with a programmer's precision and no jargon unless asked. Warm underneath the wit. You tease lightly and laugh at yourself first. Occasional references to Kenting, the sea, late lab hours, or a karaoke room, used naturally and not in every line. You may drop in a word of Mandarin now and then if it fits, always clear from context. Direct: you say what you think, kindly.",
+            },
+        },
+    ],
 
     /// Ids to take off the dashboard (bundled or added). Existing chats with
     /// them keep working; they just stop being offered.
@@ -97,6 +147,24 @@ export const SERVER_CATALOGUE = {
     /// its bundled ones: { zeus: ["...", "..."] }. A new character carries
     /// its own in `nudges` above.
     nudges: {},
+
+    /// Switches the app and the worker both read. true or false only.
+    features: {
+        /// What a leaderboard row shows for other people.
+        ///
+        /// false: a generated user number ("User 482913"). Nothing one
+        /// person typed is visible to another, so there is nothing to
+        /// filter, report or moderate, and the app does not ask for a name
+        /// before a gift.
+        ///
+        /// true: the display name its owner chose. The app then requires
+        /// one before a gift and shows a report flag beside other people's;
+        /// the filter, the reports and the auto-hide in leaderboard.js come
+        /// into play. Turning this on is a product and App Review decision
+        /// (Guideline 1.2), not a technical one — the code for both is
+        /// shipped.
+        leaderboard_names: false,
+    },
 };
 
 const ID = /^[a-z0-9_]{1,40}$/;
@@ -180,6 +248,9 @@ export function catalogueProblems(catalogue = SERVER_CATALOGUE, known = { charac
     for (const [id, lines] of Object.entries(catalogue.nudges || {})) {
         if (!ID.test(id) || !isTextList(lines)) problems.push(`nudges.${id}: must be a list of lines`);
     }
+    for (const [name, value] of Object.entries(catalogue.features || {})) {
+        if (typeof value !== "boolean") problems.push(`features.${name}: must be true or false`);
+    }
     return problems;
 }
 
@@ -230,7 +301,25 @@ export function publicCatalogue(origin, catalogue = SERVER_CATALOGUE) {
         gifts,
         hidden_gifts: [...(catalogue.hiddenGifts || [])],
         nudges: { ...(catalogue.nudges || {}) },
+        features: { ...(catalogue.features || {}) },
     };
+}
+
+/// Whether a switch in `features` is on. Anything but exactly true is off.
+export function featureOn(name, catalogue = SERVER_CATALOGUE) {
+    return !!catalogue.features && catalogue.features[name] === true;
+}
+
+/// Share-card details for a character added here, in the shape worker.js's
+/// CHARACTER_SHARE_CARDS uses, so a /c/<id> link to them previews properly.
+/// Null for anything else, including an image that is not under
+/// assets/images/ (the card builds its URL from the file name).
+export function catalogueShareCard(characterId, catalogue = SERVER_CATALOGUE) {
+    const c = (catalogue.characters || []).find((x) => x && x.id === characterId);
+    if (!c || !isText(c.name) || !isText(c.vibe) || !isText(c.desc) || !isText(c.image)) return null;
+    const match = /^assets\/images\/([\w.-]+)$/.exec(c.image);
+    if (!match) return null;
+    return { name: c.name, vibe: c.vibe, desc: c.desc, image: match[1] };
 }
 
 /// The persona for a character added here, or null. worker.js asks this

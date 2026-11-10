@@ -21,6 +21,8 @@ import {
     SERVER_CATALOGUE,
     catalogueProblems,
     publicCatalogue,
+    cataloguePersona,
+    catalogueShareCard,
 } from '../src/catalogue.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -53,6 +55,36 @@ test('every image the shipped catalogue names is a file that will be deployed', 
         assert.ok(fs.existsSync(path.join(ROOT, entry.image)),
             `${entry.id || entry.item}: ${entry.image} is not in the repo, so the URL the app is sent would 404`);
     }
+});
+
+test('Ada ships whole: a card, a profile, a voice, and a picture that exists', () => {
+    // The first character added without an app release. If this entry is
+    // ever broken, every phone shows it within five minutes of a deploy.
+    const served = publicCatalogue('https://chat.example.test', SHIPPED);
+    const ada = served.characters.find((c) => c.id === 'ada');
+    assert.equal(ada.name, 'Ada');
+    assert.equal(ada.group, 'modern');
+    assert.equal(ada.profile.age, '25');
+    assert.equal(ada.profile.asks.length, 3);
+    assert.ok(ada.nudges.length >= 3, 'three notification lines, so her three are different');
+    assert.equal(ada.image_url, 'https://chat.example.test/assets/' + ada.image);
+    assert.ok(!('persona' in ada), 'her persona stays on the server');
+
+    const persona = cataloguePersona('ada', SHIPPED);
+    assert.equal(persona.name, 'Ada');
+    for (const fact of ['Kenting', 'PhD', 'Traditional Chinese', 'Party World', 'karaoke']) {
+        assert.ok(persona.lore.includes(fact), `her background mentions ${fact}`);
+    }
+    assert.deepEqual(catalogueShareCard('ada', SHIPPED), {
+        name: 'Ada', vibe: ada.vibe, desc: ada.desc, image: 'avatar_ada_placeholder.jpg',
+    });
+    assert.equal(catalogueShareCard('zeus', SHIPPED), null, 'built-in characters keep their own card');
+});
+
+test('the shipped switches are the ones that were decided', () => {
+    // Boards show user numbers. Turning names on is an App Review decision,
+    // so a stray edit that flips it should fail here first.
+    assert.deepEqual(SHIPPED.features, { leaderboard_names: false });
 });
 
 // ---------------------------------------------------------------------------
@@ -207,6 +239,7 @@ test('publicCatalogue of an empty catalogue is empty, not missing keys', () => {
     });
     assert.deepEqual(empty, {
         schema: 1, characters: [], hidden_characters: [], order: {}, gifts: [], hidden_gifts: [], nudges: {},
+        features: {},
     });
 });
 

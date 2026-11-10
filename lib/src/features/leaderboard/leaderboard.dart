@@ -13,9 +13,10 @@ import '../../core/services/delivery_log.dart';
 import '../../core/services/device_identity.dart';
 import '../../core/theme/app_theme.dart';
 
-/// One row of a board. [name] is the display name that person chose for the
-/// leaderboards, or — for someone who has not sent one — a made-up handle the
-/// worker derives. No user id is ever sent. [you] marks the row that is this
+/// One row of a board. [name] is whatever the worker says that person goes
+/// by: a generated user number ("User 482913") as things ship, or the display
+/// name they chose once the worker's leaderboard_names switch is on. No user
+/// id is ever sent. [you] marks the row that is this
 /// person, which the sheet labels "You".
 class LeaderboardEntry {
   final int rank;
@@ -165,11 +166,15 @@ class LeaderboardService {
   /// Sends [name] as this person's leaderboard display name — PUT
   /// /api/leaderboard/name. The worker is the judge of what is allowed; a
   /// refusal comes back as [NameOutcome.rejected] with its reason.
-  Future<NameResult> setName(String name) async {
+  ///
+  /// [public] says the person has just been told the name is shown on
+  /// leaderboards. False sends it to be kept only — which is all that
+  /// happens while the boards show user numbers.
+  Future<NameResult> setName(String name, {bool public = true}) async {
     final url = AppConfig.apiUrl('/api/leaderboard/name');
     if (url.isEmpty) return const NameResult(NameOutcome.unreachable);
     try {
-      final body = jsonEncode({'name': name});
+      final body = jsonEncode({'name': name, 'public': public});
       final res = await _dio.put(
         url,
         data: body,
@@ -480,8 +485,13 @@ class _LeaderboardSheetState extends State<_LeaderboardSheet> {
               if (!loading && result != null && result.enabled) ...[
                 const SizedBox(height: 14),
                 Text(
-                  'Ranked by coins spent on gifts. Tap the flag beside a '
-                  'name to report it.',
+                  // The flag only exists beside a name somebody chose; while
+                  // every row is a user number there is nothing to report.
+                  [result.character, ?result.global]
+                          .any((b) => b.entries.any((e) => e.ref != null))
+                      ? 'Ranked by coins spent on gifts. Tap the flag beside '
+                          'a name to report it.'
+                      : 'Ranked by coins spent on gifts.',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.lato(
                     color: AppTheme.faintInkColor,

@@ -14,6 +14,8 @@ import {
     publicCatalogue,
     cataloguePersona,
     catalogueStarters,
+    catalogueShareCard,
+    featureOn,
 } from "./catalogue.js";
 import {
     leaderboards,
@@ -1674,6 +1676,7 @@ export default {
                     // just has no standing on it and no global board.
                     userId: isRealUserId(userId) ? userId : null,
                     secret: env.SESSION_SECRET || env.APP_SECRET,
+                    showNames: featureOn("leaderboard_names"),
                 });
                 return jsonResponse({ enabled: true, ...boards }, { headers: corsHeaders(request) });
             } catch (error) {
@@ -1744,6 +1747,10 @@ export default {
                     }
                     const saved = await setDisplayName(env.CHAT_LOGS_DB, {
                         userId, rawName: body.name, secret: env.SESSION_SECRET || env.APP_SECRET,
+                        // Public only when the app says it told them so AND
+                        // the switch is on: a name sent while boards show
+                        // numbers is kept, never shown.
+                        noticed: body.public === true && featureOn("leaderboard_names"),
                     });
                     if (!saved.ok) {
                         return jsonResponse({ enabled: true, ok: false, reason: saved.reason }, {
@@ -5810,7 +5817,10 @@ function extractCharacterId(pathname) {
 /// would preview identically.
 async function serveCharacterLanding(request, env, url, ctx) {
     const characterId = extractCharacterId(url.pathname);
-    const card = CHARACTER_SHARE_CARDS[characterId];
+    // Own-property: "constructor" is not a character. Then characters added
+    // without an app release (backend/src/catalogue.js).
+    const card = (Object.prototype.hasOwnProperty.call(CHARACTER_SHARE_CARDS, characterId)
+        ? CHARACTER_SHARE_CARDS[characterId] : null) || catalogueShareCard(characterId);
 
     // Record the arrival even for unknown ids — a typo'd campaign link is
     // worth seeing in the numbers. Never let logging break the page.

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../../core/models/user_profile.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/profile_sync_service.dart';
@@ -221,6 +222,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     // change here follows them there. For anyone who has not given a gift
     // this does nothing and the name stays on the device.
     final refused = await LeaderboardNameGate(
+      publicNames: RemoteCatalogue.current.feature('leaderboard_names'),
       service: LeaderboardService(),
       loadName: () async => _current.name,
       saveName: (_) async {},
@@ -336,8 +338,12 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               label: 'Name',
               controller: _name,
               hint: 'What should they call you?',
-              helper: 'Also your display name on the gift leaderboards, '
-                  'once you give a gift.',
+              // Only true — and only said — where the worker has leaderboards
+              // showing chosen names. As shipped they show user numbers.
+              helper: RemoteCatalogue.current.feature('leaderboard_names')
+                  ? 'Also your display name on the gift leaderboards, '
+                      'once you give a gift.'
+                  : null,
             ),
             _field(theme, label: 'Age', controller: _age, hint: 'e.g. 29'),
             _field(

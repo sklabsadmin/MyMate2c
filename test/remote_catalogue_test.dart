@@ -91,6 +91,19 @@ void main() {
       }
     });
 
+    test('a switch is off until the worker says otherwise', () {
+      expect(RemoteCatalogue.current.feature('leaderboard_names'), isFalse);
+      RemoteCatalogue.debugSet(RemoteCatalogue.tryParse({
+        'schema': 1,
+        'features': {'leaderboard_names': true, 'bogus': 'yes', 'other': false},
+      }));
+      expect(RemoteCatalogue.current.feature('leaderboard_names'), isTrue);
+      expect(RemoteCatalogue.current.feature('bogus'), isFalse,
+          reason: 'only a real true counts');
+      expect(RemoteCatalogue.current.feature('other'), isFalse);
+      expect(RemoteCatalogue.current.feature('never_heard_of_it'), isFalse);
+    });
+
     test('an empty response changes nothing', () {
       RemoteCatalogue.debugSet(RemoteCatalogue.tryParse({
         'schema': 1,

@@ -83,7 +83,7 @@ test('only gifts count: grants, purchases and refunds are not giving', async () 
     assert.deepEqual((await get(e, 'zeus')).json.character.entries.map((x) => x.spent), [50]);
 });
 
-test('nobody is named: handles are made up, stable, and not the user id', async () => {
+test('nobody is named: every row is a user number, stable, and not the user id', async () => {
     const { env: e, db } = env();
     gift(db, user(2), 'zeus', 500);
     gift(db, user(3), 'zeus', 150);
@@ -93,11 +93,11 @@ test('nobody is named: handles are made up, stable, and not the user id', async 
 
     assert.deepEqual(second.character.entries.map((x) => x.name), names, 'the same handle whoever is looking');
     assert.equal(names[0], await boardHandle(user(2), 'board-secret'));
-    for (const name of names) assert.match(name, /^[A-Z][A-Za-z-]+ [A-Z][a-z]+ \d\d$/);
+    for (const name of names) assert.match(name, /^User \d{6}$/);
     const body = JSON.stringify(first);
     assert.ok(!body.includes('user_17'), 'no user id anywhere in the response');
     assert.notEqual(await boardHandle(user(2), 'other-secret'), names[0],
-        'keyed: a handle cannot be recomputed without the server secret');
+        'keyed: a number cannot be recomputed without the server secret');
 });
 
 test('a tie goes to whoever got there first', async () => {
@@ -183,6 +183,13 @@ test('it is signed like a wallet read, and takes only roster-shaped ids', async 
 
 import { cleanDisplayName, REPORTS_TO_HIDE } from '../src/leaderboard.js';
 import { adminFetch } from './harness.mjs';
+import { SERVER_CATALOGUE } from '../src/catalogue.js';
+
+/// Turns the leaderboard_names switch on for one test. It ships off.
+function namesOn(t) {
+    SERVER_CATALOGUE.features.leaderboard_names = true;
+    t.after(() => { SERVER_CATALOGUE.features.leaderboard_names = false; });
+}
 
 async function send(env, method, pathname, body, { userId = ME, headers = {} } = {}) {
     const worker = await loadWorker();
@@ -193,7 +200,10 @@ async function send(env, method, pathname, body, { userId = ME, headers = {} } =
     }), env, { waitUntil() {}, passThroughOnException() {} });
     return { status: res.status, json: JSON.parse(await res.text()) };
 }
-const setName = (env, name, opts) => send(env, 'PUT', '/api/leaderboard/name', { name }, opts);
+/// As the app sends it once it has told its owner the name is public.
+const setName = (env, name, opts) => send(env, 'PUT', '/api/leaderboard/name', { name, public: true }, opts);
+/// As the app sends a profile name while boards show numbers: kept, not shown.
+const logName = (env, name, opts) => send(env, 'PUT', '/api/leaderboard/name', { name, public: false }, opts);
 const report = (env, ref, opts) => send(env, 'POST', '/api/leaderboard/report', { ref }, opts);
 
 test('the filter lets names through and stops what should not be on a board', () => {
@@ -218,7 +228,8 @@ test('the filter lets names through and stops what should not be on a board', ()
     }
 });
 
-test('a chosen name replaces the handle on every board, for everyone', async () => {
+test('a chosen name replaces the number on every board, for everyone', async (t) => {
+    namesOn(t);
     const { env: e, db } = env();
     gift(db, user(2), 'zeus', 500);
     gift(db, user(2), 'hector', 500);
@@ -226,7 +237,7 @@ test('a chosen name replaces the handle on every board, for everyone', async () 
     gift(db, ME, 'hector', 50);
     const before = (await get(e, 'zeus')).json;
     assert.equal(before.your_name, null);
-    assert.ok(!('ref' in before.character.entries[0]), 'a handle carries nothing to report');
+    assert.ok(!('ref' in before.character.entries[0]), 'a number carries nothing to report');
 
     const saved = await setName(e, ' Penelope  of Ithaca', { userId: user(2) });
     assert.deepEqual([saved.status, saved.json], [200, { enabled: true, ok: true, name: 'Penelope of Ithaca' }]);
@@ -235,7 +246,7 @@ test('a chosen name replaces the handle on every board, for everyone', async () 
     assert.equal(after.character.entries[0].name, 'Penelope of Ithaca');
     assert.match(after.character.entries[0].ref, /^[0-9a-f]{24}$/);
     assert.equal(after.global.entries[0].name, 'Penelope of Ithaca');
-    assert.equal(after.character.entries[1].name, before.character.entries[1].name, 'no name sent, still a handle');
+    assert.equal(after.character.entries[1].name, before.character.entries[1].name, 'no name sent, still a number');
     assert.ok(!JSON.stringify(after).includes('user_17'), 'still no user id anywhere');
 
     // Your own row says who you are to the server, and is never reportable.
@@ -265,7 +276,8 @@ test('a profile name typed before all this is never put on a board', async () =>
     assert.ok(!JSON.stringify(res).includes('Private Name'));
 });
 
-test('enough reports put a name back to its handle; changing it starts clean', async () => {
+test('enough reports put a name back to its number; changing it starts clean', async (t) => {
+    namesOn(t);
     const { env: e, db } = env();
     gift(db, user(2), 'zeus', 500);
     await setName(e, 'Borderline', { userId: user(2) });
@@ -278,7 +290,7 @@ test('enough reports put a name back to its handle; changing it starts clean', a
     for (let n = 11; n < 10 + REPORTS_TO_HIDE; n++) await report(e, ref, { userId: user(n) });
     const hidden = (await get(e, 'zeus')).json.character.entries[0];
     assert.notEqual(hidden.name, 'Borderline');
-    assert.ok(!('ref' in hidden), 'a handle again');
+    assert.ok(!('ref' in hidden), 'a number again');
     // Its owner still has it on file, and is not told to choose again.
     assert.equal((await get(e, 'zeus', { userId: user(2) })).json.your_name, 'Borderline');
 
@@ -290,7 +302,8 @@ test('enough reports put a name back to its handle; changing it starts clean', a
     assert.equal((await get(e, 'zeus')).json.character.entries[0].name, 'Perfectly Fine');
 });
 
-test('a report answers the same for a real ref, a made-up one, and your own', async () => {
+test('a report answers the same for a real ref, a made-up one, and your own', async (t) => {
+    namesOn(t);
     const { env: e, db } = env();
     gift(db, user(2), 'zeus', 500);
     await setName(e, 'Someone', { userId: user(2) });
@@ -306,7 +319,8 @@ test('a report answers the same for a real ref, a made-up one, and your own', as
         'only the real report of someone else was recorded');
 });
 
-test('the admin api lists reported names and can hide and restore one', async () => {
+test('the admin api lists reported names and can hide and restore one', async (t) => {
+    namesOn(t);
     const { env: e, db } = env();
     gift(db, user(2), 'zeus', 500);
     await setName(e, 'Reported Once', { userId: user(2) });
@@ -336,4 +350,53 @@ test('a name needs a real user, a signature, and the wallet\'s own device', asyn
     const { env: e, db } = env();
     db.prepare("INSERT INTO coin_wallets (user_id, claim_token_hash, claim_used_at) VALUES (?, 'somehash', CURRENT_TIMESTAMP)").run(ME);
     assert.equal((await setName(e, 'Impostor')).status, 403);
+});
+
+test('as shipped, boards show user numbers — even for people who have set a name', async () => {
+    // The switch is off: nothing anyone typed is visible to anyone else, so
+    // there is no user-written content on a board at all.
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    gift(db, user(2), 'hector', 500);
+    gift(db, ME, 'zeus', 50);
+    gift(db, ME, 'hector', 50);
+    assert.equal(SERVER_CATALOGUE.features.leaderboard_names, false, 'the shipped default');
+
+    // Whatever the app claims, a name is never public while the switch is off.
+    assert.equal((await setName(e, 'Loud Name', { userId: user(2) })).status, 200);
+    assert.equal((await logName(e, 'Quiet Name')).status, 200);
+
+    const res = (await get(e, 'zeus')).json;
+    for (const board of [res.character, res.global]) {
+        for (const row of board.entries) {
+            assert.match(row.name, /^User \d{6}$/);
+            assert.ok(!('ref' in row), 'nothing to report');
+        }
+    }
+    assert.ok(!JSON.stringify(res.character).includes('Loud Name'));
+    // The names are kept, for the day the switch is turned on.
+    assert.equal(res.your_name, 'Quiet Name');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM leaderboard_names').get().n, 2);
+});
+
+test('turning names on does not publish what was sent while they were off', async (t) => {
+    const { env: e, db } = env();
+    gift(db, user(2), 'zeus', 500);
+    gift(db, user(3), 'zeus', 300);
+    await setName(e, 'Sent While Off', { userId: user(2) });   // switch off: stored as not noticed
+    namesOn(t);
+    await setName(e, 'Sent After', { userId: user(3) });       // told it is public
+
+    const names = (await get(e, 'zeus')).json.character.entries.map((x) => x.name);
+    assert.match(names[0], /^User \d{6}$/, 'its owner was never told it would be shown');
+    assert.equal(names[1], 'Sent After');
+
+    // Sending it again from an app that now says so is what makes it public.
+    await setName(e, 'Sent While Off', { userId: user(2) });
+    assert.equal((await get(e, 'zeus')).json.character.entries[0].name, 'Sent While Off');
+});
+
+test('a filtered name is refused even when it would only be logged', async () => {
+    const { env: e } = env();
+    assert.equal((await logName(e, 'sh1thead')).status, 422);
 });

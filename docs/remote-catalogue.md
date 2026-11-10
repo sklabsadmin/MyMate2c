@@ -43,6 +43,12 @@ share link `/c/<id>` works immediately, including on a phone that has not
 launched since: the route waits for the catalogue before deciding the id is
 unknown.
 
+Ada is the worked example: her entry in `backend/src/catalogue.js` is the
+first character added this way. Her portrait is a placeholder card
+(`assets/images/avatar_ada_placeholder.jpg`) that prints her name. To swap in
+real pictures, save the square portrait over that file, or add a new file and
+change `image`, then deploy.
+
 ## Add a gift
 
 1. Put the art in `assets/images/` (256px PNG cut-out, like the others).
@@ -77,16 +83,38 @@ A shipped character's persona is not overridable from the catalogue. Edit
 
 ## Notifications from characters
 
-The three "come back" notifications scheduled when the app is left (four
-hours, one day, three days) are now written as the characters the person has
-talked to, most recent first, each in that character's voice. Tapping one
+The "come back" notifications scheduled when the app is left are written as
+the characters the person talks to most, by messages exchanged, each in that
+character's voice:
+
+| After leaving | From |
+|---|---|
+| 4 hours | the character they talk to most |
+| 1 day | the character they talk to most |
+| 2 days | their second |
+| 3 days | the character they talk to most |
+| 5 days | their third |
+
+With two characters that is four notifications, with one it is three. Tapping one
 opens that conversation. Each is titled "Zeus says" with the line beneath.
 Someone with no chats yet gets the app-level lines as
 before. App-level notifications, including the daily dawn and nightfall ones, are
 titled "In the Greek World · " followed by their heading.
 
-It is the same three slots, not three more. Times that would land between
-21:30 and 09:30 move to 10:30 the following morning.
+Times that would land between 21:30 and 09:30 move to 10:30 the following
+morning. All of it is the phone's own clock.
+
+A line may mention the time of day. The planner reads the words and only
+uses a line at a matching hour: "tonight", "evening", "sunset" from 17:00;
+"morning", "dawn" before noon; "afternoon" from noon to 18:00; "how your day
+went", "all day" from 15:00. So each character needs at least three lines
+that are true at any hour, and a test counts them. Lines sent through the
+catalogue are held to the same rule with no extra markup. Do not name a day
+of the week in a line; nothing checks that against the calendar.
+
+One limit: times are fixed when the app is left. Someone who then flies to
+another time zone gets them at the old zone's hour until they next open the
+app, which reschedules everything.
 
 The lines live in `lib/src/core/data/character_nudges.dart`, with the rules
 they are written to at the top of that file. They are local notifications: no
@@ -104,39 +132,34 @@ There is also an all-characters board. It lists people who have given two or
 more gifts, and it is only sent to someone who has done the same. Until then
 the app shows no tab and no hint that it exists.
 
-- **Display names.** A row shows the name its owner chose. The app requires
-  one before a gift: it uses the profile's Name field if that is filled in,
-  and otherwise asks, and the gift waits on the answer. The viewer's own row
-  says "You". Someone with no name on file (a gift from an older build) is
-  shown under a generated alias such as "Sea-Born Shepherd 86". No user id
-  leaves the worker.
-- **Nothing private is published.** A name is public only once the app has
-  sent it to `PUT /api/leaderboard/name`. The server never reads
-  `user_profiles.name` for a board, so names typed before this existed stay
-  private until that person next gives a gift from a build that tells them.
-- **Moderation.** Names are user-written text shown to strangers, so:
-  - a filter refuses a name on the way in (`cleanDisplayName` in
-    `backend/src/leaderboard.js`: 2 to 20 characters, letters and digits of
-    any script plus space, hyphen, apostrophe; a short blocklist; reserved
-    words such as "You" and "Admin"). It deliberately errs toward letting a
-    real name through, and the lists are worker-side, so tightening them
-    needs no app release;
-  - every other person's chosen name has a flag to report it;
-  - three different reporters hide a name automatically, putting the row back
-    to its alias until the owner picks a different one;
-  - a person can review, hide and restore:
+- **User numbers, not names.** Every other person on a board is shown as a
+  generated number such as "User 482913". The viewer's own row says "You".
+  Nothing one person typed is visible to another, so there is no
+  user-written content on a board and App Store Guideline 1.2 does not come
+  into it. The number is a keyed hash of the user id: stable for that
+  person, not a count of anything, and not reversible.
+- **Names are collected, not shown.** If someone has a Name in their profile
+  the app passes it to the worker to keep (`leaderboard_names` table,
+  migration 0022). It is filtered on the way in and never displayed.
+- **Chosen names are built and switched off.** `features.leaderboard_names`
+  in `backend/src/catalogue.js` turns them on with no app release. With it
+  on, the app requires a display name before a gift (the profile's Name, or
+  a prompt the gift waits on), boards show chosen names, and each one
+  carries a report flag. Three different reporters hide a name
+  automatically, and a person can review, hide and restore:
 
-    ```sh
-    # every name with a report against it, and every hidden one
-    curl -u admin:$ADMIN_TOKEN https://logs.deeplovepoems.com/api/admin/leaderboard-names
-    # hide (or restore with false) by the ref from that list
-    curl -u admin:$ADMIN_TOKEN -X POST -H 'content-type: application/json' \
-      -d '{"ref":"<ref>","hidden":true}' \
-      https://logs.deeplovepoems.com/api/admin/leaderboard-names
-    ```
+  ```sh
+  curl -u admin:$ADMIN_TOKEN https://logs.deeplovepoems.com/api/admin/leaderboard-names
+  curl -u admin:$ADMIN_TOKEN -X POST -H 'content-type: application/json' \
+    -d '{"ref":"<ref>","hidden":true}' \
+    https://logs.deeplovepoems.com/api/admin/leaderboard-names
+  ```
 
-  Reports are also logged as `leaderboard_name_reported`. There is no admin
-  page or email for them yet.
+  A name collected while the switch was off is NOT published when it is
+  turned on. Its owner was never told it would be public, so it is shown
+  only after they next give a gift from a build that says so. Before turning
+  it on, read Guideline 1.2 and tell App Review: names are user-written text
+  shown to strangers, which is why the filter, flag and auto-hide exist.
 - **Read from the ledger.** `backend/src/leaderboard.js` groups the gift rows
   in `coin_ledger`. Migration 0021 adds the index; 0022 adds the two small
   tables for names and reports. Developer wallets (dev-marked visits) are left off.

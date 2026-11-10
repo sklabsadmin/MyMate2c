@@ -1,7 +1,14 @@
 -- Display names on the gift leaderboards (backend/src/leaderboard.js).
 --
--- A name is here only because its owner sent it for this purpose — the app
--- asks for one before a first gift. It is deliberately NOT read from
+-- WHAT A BOARD SHOWS is decided by one worker switch,
+-- SERVER_CATALOGUE.features.leaderboard_names (backend/src/catalogue.js):
+--   off (now)  every row is a generated user number, "User 482913". Nothing
+--              anyone typed is shown to anyone else. Names people have set
+--              in their profile are still stored here, for later.
+--   on         a row shows the name its owner chose, once they have been
+--              told it is public; everyone else keeps their number.
+--
+-- A name is here only because its owner's app sent it for this purpose. It is deliberately NOT read from
 -- user_profiles.name: that field was typed as "what should they call you?"
 -- for the characters, by people who were never told anyone else would see
 -- it, and it only exists for signed-in accounts anyway. Most givers are
@@ -15,6 +22,12 @@ CREATE TABLE IF NOT EXISTS leaderboard_names (
     name       TEXT NOT NULL,
     ref        TEXT NOT NULL,
     hidden     INTEGER NOT NULL DEFAULT 0,
+    -- 1 only when the name was sent by an app that had just told its owner
+    -- it would be shown on leaderboards. While the boards show user numbers
+    -- (SERVER_CATALOGUE.features.leaderboard_names off) names arrive with 0:
+    -- kept, never displayed, and still not displayed on the day the switch
+    -- is turned on — their owners were not asked.
+    noticed    INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

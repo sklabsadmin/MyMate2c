@@ -1546,7 +1546,7 @@ const List<String> _idlePrompts = [
   "You've gone quiet. That's allowed.",
   "What are you thinking?",
   "No rush. Say something whenever you're ready.",
-  "Where did you get to?",
+  "Open to a few Greek moments now?",
 ];
 
 

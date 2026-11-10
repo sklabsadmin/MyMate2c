@@ -9,20 +9,26 @@
 //     GLOBAL_MIN_GIFTS gifts. It is only SENT to a requester who has done the
 //     same — until then the app does not show that it exists.
 //
-// NAMES. A row shows the display name its owner chose for the leaderboards —
-// the app asks for one before a first gift and sends it to
-// PUT /api/leaderboard/name. Someone who never sent one (a gift from an
-// older build, or from the web before it updated) is shown under a made-up
-// mythic handle derived from their user id by a keyed hash. No user id,
-// account name or profile field is ever on a board; the requester's own row
-// is marked `you` and the app says "You".
+// WHO A ROW SAYS IT IS. No user id, account name or profile field is ever on
+// a board, and the requester's own row is marked `you` (the app says "You").
+// For everyone else it is one of two things, chosen by a single switch —
+// SERVER_CATALOGUE.features.leaderboard_names in catalogue.js:
 //
-// Chosen names are user-written text shown to strangers, so they are held to
-// what App Store Guideline 1.2 asks of that: a filter on the way in
-// (cleanDisplayName), a way to report one (POST /api/leaderboard/report),
-// and action on reports — REPORTS_TO_HIDE distinct reporters put a row back
-// to its handle, and /api/admin/leaderboard-names lets a person review,
-// hide and restore.
+//   off (how it ships)  A generated user number, "User 482913", derived from
+//       the user id by a keyed hash: stable for that person, meaningless to
+//       anyone else. Nothing anyone typed is shown to anyone, so there is no
+//       user-written content on a board and App Store Guideline 1.2 has
+//       nothing to say about it. Names people set in their profile are still
+//       sent here and kept (setDisplayName), just never displayed.
+//
+//   on   The display name its owner chose — but only a name sent by an app
+//       that had told them it would be public (`noticed`). Everyone else
+//       keeps their number. This is user-written text shown to strangers,
+//       so the rest of this file's name handling comes into play: a filter
+//       on the way in (cleanDisplayName), a way to report one
+//       (reportDisplayName), and action on reports — REPORTS_TO_HIDE
+//       distinct reporters put a row back to its number, and
+//       /api/admin/leaderboard-names lets a person review, hide, restore.
 
 /// Rows shown on a board.
 export const BOARD_SIZE = 10;
@@ -119,17 +125,24 @@ async function keyedHex(secret, text, bytes) {
 /// `hidden`: the new text has not been reported, and it went through the
 /// filter again. (Someone cycling through bad names is what the admin list
 /// and its per-user history are for.)
-export async function setDisplayName(db, { userId, rawName, secret }) {
+///
+/// [noticed] is whether the sending app had told its owner the name would
+/// be shown on leaderboards. Once 1 it stays 1 for the same name; a changed
+/// name takes the new value.
+export async function setDisplayName(db, { userId, rawName, secret, noticed = false }) {
     const cleaned = cleanDisplayName(rawName);
     if (!cleaned.ok) return cleaned;
     const ref = await keyedHex(secret, `leaderboard-ref:${userId}`, 12);
     await db.prepare(`
-        INSERT INTO leaderboard_names (user_id, name, ref) VALUES (?, ?, ?)
+        INSERT INTO leaderboard_names (user_id, name, ref, noticed) VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             hidden = CASE WHEN leaderboard_names.name = excluded.name THEN leaderboard_names.hidden ELSE 0 END,
+            noticed = CASE WHEN leaderboard_names.name = excluded.name
+                           THEN MAX(leaderboard_names.noticed, excluded.noticed)
+                           ELSE excluded.noticed END,
             name = excluded.name,
             updated_at = CURRENT_TIMESTAMP
-    `).bind(userId, cleaned.name, ref).run();
+    `).bind(userId, cleaned.name, ref, noticed ? 1 : 0).run();
     return { ok: true, name: cleaned.name };
 }
 
@@ -211,26 +224,13 @@ const NOT_DEV = `user_id NOT IN (
 /// A gift row: a debit with reason 'gift'. `ref` is who it was given to.
 const IS_GIFT = `reason = 'gift' AND delta < 0`;
 
-const EPITHETS = [
-    "Swift", "Grey-Eyed", "Wine-Dark", "Laurelled", "Far-Sailing", "Golden",
-    "Storm-Born", "Silver-Tongued", "Lion-Hearted", "Rosy-Fingered",
-    "Fleet-Footed", "Bright-Helmed", "Star-Crowned", "Deep-Minded",
-    "Sea-Born", "Bronze-Clad", "Honey-Voiced", "Dawn-Lit", "Oak-Hearted",
-    "Moon-Watching", "Fire-Bringing", "Cloud-Gathering", "Wide-Wandering",
-    "Sure-Aiming",
-];
-const FIGURES = [
-    "Argonaut", "Oracle", "Voyager", "Muse", "Nymph", "Titan", "Weaver",
-    "Navigator", "Bard", "Huntress", "Champion", "Charioteer", "Herald",
-    "Sibyl", "Wanderer", "Helmsman", "Archer", "Lyrist", "Seer", "Shepherd",
-    "Torchbearer", "Mariner", "Sentinel", "Pilgrim",
-];
-
-/// The handle a user goes by on every board: "Wine-Dark Navigator 47".
+/// The number a user goes by on every board: "User 482913".
 ///
-/// Keyed with a server secret so a handle cannot be turned back into a user
-/// id by hashing guesses, and so two deployments do not share handles. The
-/// number is what keeps 576 word pairs from colliding among a board's ten.
+/// Six digits from a keyed hash of the user id. Keyed with a server secret so
+/// a number cannot be turned back into a user id by hashing guesses; six
+/// digits so that two of a board's ten rows sharing one is a
+/// once-in-twenty-thousand-boards event rather than a weekly one. It is not
+/// a count of anything and says nothing about how many users there are.
 export async function boardHandle(userId, secret) {
     const key = await crypto.subtle.importKey(
         "raw", new TextEncoder().encode(secret || "mythos-leaderboard"),
@@ -239,10 +239,8 @@ export async function boardHandle(userId, secret) {
     const mac = new Uint8Array(await crypto.subtle.sign(
         "HMAC", key, new TextEncoder().encode(`leaderboard:${userId}`),
     ));
-    const epithet = EPITHETS[mac[0] % EPITHETS.length];
-    const figure = FIGURES[mac[1] % FIGURES.length];
-    const number = 10 + (((mac[2] << 8) | mac[3]) % 90);
-    return `${epithet} ${figure} ${number}`;
+    const number = 100000 + ((((mac[0] << 24) | (mac[1] << 16) | (mac[2] << 8) | mac[3]) >>> 0) % 900000);
+    return `User ${number}`;
 }
 
 /// One board. `where` narrows the gift rows (to a character, or not at all);
@@ -252,7 +250,7 @@ export async function boardHandle(userId, secret) {
 /// same total, the one whose latest gift is older holds the higher place, so
 /// matching someone does not bump them. The requester's own standing comes
 /// back even when they are below the fold, as { rank, spent, gifts }.
-async function board(db, { where, binds, minGifts, userId, secret }) {
+async function board(db, { where, binds, minGifts, userId, secret, showNames }) {
     const grouped = `
         SELECT user_id, SUM(-delta) AS spent, COUNT(*) AS gifts, MAX(created_at) AS last_at
         FROM coin_ledger
@@ -268,15 +266,15 @@ async function board(db, { where, binds, minGifts, userId, secret }) {
     // The chosen names of the people on this page, in one read.
     const ids = (results || []).map((r) => r.user_id);
     const chosen = new Map();
-    if (ids.length) {
+    if (showNames && ids.length) {
         try {
             const { results: named } = await db.prepare(`
                 SELECT user_id, name, ref FROM leaderboard_names
-                WHERE hidden = 0 AND user_id IN (${ids.map(() => "?").join(", ")})
+                WHERE hidden = 0 AND noticed = 1 AND user_id IN (${ids.map(() => "?").join(", ")})
             `).bind(...ids).all();
             for (const n of named || []) chosen.set(n.user_id, n);
         } catch (_) {
-            // Migration 0022 not applied yet: everyone keeps their handle,
+            // Migration 0022 not applied yet: everyone keeps their number,
             // and the board itself still answers.
         }
     }
@@ -290,7 +288,7 @@ async function board(db, { where, binds, minGifts, userId, secret }) {
             name: own ? own.name : await boardHandle(row.user_id, secret),
             spent: Number(row.spent),
             // `ref` only on a chosen name, and never on your own row: it is
-            // what a report names, and a handle we generated needs no
+            // what a report names, and a number we generated needs no
             // reporting.
             ...(own && !mine ? { ref: own.ref } : {}),
             ...(mine ? { you: true } : {}),
@@ -328,9 +326,12 @@ async function board(db, { where, binds, minGifts, userId, secret }) {
 /// GLOBAL_MIN_GIFTS gifts — no entries, no hint of who is on it. Everything
 /// about the character's own board is public to anyone who can open the
 /// character.
-export async function leaderboards(db, { characterId, userId, secret }) {
+///
+/// [showNames] is the leaderboard_names switch: false shows a user number on
+/// every row, true shows chosen names where there is one.
+export async function leaderboards(db, { characterId, userId, secret, showNames = false }) {
     const character = await board(db, {
-        where: "ref = ?", binds: [characterId], minGifts: 1, userId, secret,
+        where: "ref = ?", binds: [characterId], minGifts: 1, userId, secret, showNames,
     });
 
     let totalGifts = 0;
@@ -343,7 +344,7 @@ export async function leaderboards(db, { characterId, userId, secret }) {
     const unlocked = totalGifts >= GLOBAL_MIN_GIFTS;
     const global = unlocked
         ? { unlocked: true, ...(await board(db, {
-            where: "1 = 1", binds: [], minGifts: GLOBAL_MIN_GIFTS, userId, secret,
+            where: "1 = 1", binds: [], minGifts: GLOBAL_MIN_GIFTS, userId, secret, showNames,
         })) }
         : { unlocked: false };
 

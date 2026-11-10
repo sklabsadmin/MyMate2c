@@ -207,6 +207,20 @@ class _AIAppState extends ConsumerState<AIApp> {
     try {
       recentChats = await ref.read(storageServiceProvider).loadRecentChats();
     } catch (_) {}
+    // How much they have talked to each, so the notifications come from the
+    // characters they talk to most rather than whoever was open last. Keyed
+    // as the chat screen keys its reply counter: the character id, or the
+    // chat's name for a character somebody made up.
+    final messageCounts = <String, int>{};
+    try {
+      final storage = ref.read(storageServiceProvider);
+      for (final chat in recentChats) {
+        final id = chat['characterId'];
+        final key = id is String && id.isNotEmpty ? id : chat['name'];
+        if (key is! String || key.isEmpty) continue;
+        messageCounts[key] = await storage.getReplyCount(key);
+      }
+    } catch (_) {}
     if (!mounted || leftAt != _foregroundCount) return;
 
     // Quick return notification: only when they left the app from inside a
@@ -237,12 +251,15 @@ class _AIAppState extends ConsumerState<AIApp> {
     // Daily Morning/Evening Notifications
     NotificationService().scheduleDailyNotifications();
 
-    // Four hours, a day and three days on: from the characters they have
-    // talked to, or in the app's own voice when there are none yet. See
-    // CharacterNudgePlanner for who gets which slot and why it is still
-    // three notifications rather than three more.
-    for (final nudge
-        in CharacterNudgePlanner.plan(recentChats: recentChats, now: now)) {
+    // Three from the character they talk to most and one each from the next
+    // two, spread over five days — or the app's own three when they have
+    // talked to nobody yet. See CharacterNudgePlanner for who gets which
+    // slot, and for how a line about "tonight" is kept to the evening.
+    for (final nudge in CharacterNudgePlanner.plan(
+      recentChats: recentChats,
+      now: now,
+      messageCounts: messageCounts,
+    )) {
       final characterId = nudge.characterId;
       NotificationService().scheduleNotification(
         id: nudge.id,

@@ -9,6 +9,13 @@ import 'leaderboard.dart';
 /// The display name someone is listed under on the gift leaderboards, and
 /// the rule that they have one before they give a gift.
 ///
+/// ALL OF WHICH IS BEHIND A SWITCH ([publicNames], the worker's
+/// `leaderboard_names` feature) THAT SHIPS OFF. While it is off the boards
+/// show a generated user number for everyone, nobody is asked for a name,
+/// and the only thing this class does is pass a name they have already put
+/// in their profile to the worker to keep. What follows describes the
+/// switch being on.
+///
 /// The name IS the profile's Name field — one name, not two. What this adds
 /// is the moment it becomes public: nothing typed into the profile is shown
 /// to anyone until it has been sent to the worker from here, which happens
@@ -23,11 +30,34 @@ class LeaderboardNameGate {
   final Future<String> Function() loadName;
   final Future<void> Function(String name) saveName;
 
+  /// Whether leaderboards show chosen names (true) or user numbers (false).
+  /// Callers pass RemoteCatalogue.current.feature('leaderboard_names').
+  final bool publicNames;
+
   LeaderboardNameGate({
     required this.service,
     required this.loadName,
     required this.saveName,
+    required this.publicNames,
   });
+
+  /// The name most recently handed to the worker to keep, while names were
+  /// not public. Separate from [sentKey] on purpose: a name logged quietly
+  /// has not been "sent as public", and must be sent again — with its owner
+  /// told — on the day the switch is turned on.
+  static const String loggedKey = 'leaderboard_name_logged_v1';
+
+  /// Passes a profile name to the worker to keep, when it has changed. Never
+  /// awaited by a gift and never shown an error: nothing depends on it.
+  Future<void> _logQuietly(String name) async {
+    if (name.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getString(loggedKey) == name) return;
+    final result = await service.setName(name, public: false);
+    if (result.outcome == NameOutcome.saved) {
+      await prefs.setString(loggedKey, name);
+    }
+  }
 
   /// The name most recently accepted by the worker from this install. When
   /// it equals the profile name there is nothing to do before a gift.
@@ -51,6 +81,11 @@ class LeaderboardNameGate {
   /// is nothing to retry, so the prompt stays up until it is sent or they
   /// back out; the gift needs the same network anyway.
   Future<bool> ensureBeforeGift(BuildContext context) async {
+    if (!publicNames) {
+      // User numbers on the boards: nothing to ask, nothing to wait for.
+      _logQuietly((await loadName()).trim()).ignore();
+      return true;
+    }
     final prefs = await SharedPreferences.getInstance();
     final name = (await loadName()).trim();
     final sent = prefs.getString(sentKey);
@@ -94,6 +129,10 @@ class LeaderboardNameGate {
   /// has never given a gift (their name is still private). Returns a
   /// sentence to show when the new name was refused, otherwise null.
   Future<String?> afterProfileSaved(String name) async {
+    if (!publicNames) {
+      await _logQuietly(name.trim());
+      return null;
+    }
     final prefs = await SharedPreferences.getInstance();
     final sent = prefs.getString(sentKey);
     final trimmed = name.trim();

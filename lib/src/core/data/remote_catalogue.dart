@@ -49,6 +49,10 @@ class RemoteCatalogue {
   /// Notification lines by character id.
   final Map<String, List<String>> nudges;
 
+  /// Switches the worker sets (`features` in backend/src/catalogue.js). Read
+  /// with [feature]; one that is absent is off.
+  final Map<String, bool> features;
+
   const RemoteCatalogue({
     this.characters = const [],
     this.hiddenCharacters = const {},
@@ -57,7 +61,13 @@ class RemoteCatalogue {
     this.gifts = const [],
     this.hiddenGifts = const {},
     this.nudges = const {},
+    this.features = const {},
   });
+
+  /// Whether the worker has switched [name] on. Off when the catalogue has
+  /// never been fetched, so a feature the worker gates stays shut on a first
+  /// launch with no network rather than guessing.
+  bool feature(String name) => features[name] == true;
 
   static const RemoteCatalogue empty = RemoteCatalogue();
 
@@ -259,7 +269,16 @@ class RemoteCatalogue {
       gifts.add(out);
     }
 
+    final features = <String, bool>{};
+    final rawFeatures = json['features'];
+    if (rawFeatures is Map) {
+      rawFeatures.forEach((key, value) {
+        if (key is String && value is bool) features[key] = value;
+      });
+    }
+
     return RemoteCatalogue(
+      features: Map.unmodifiable(features),
       characters: List.unmodifiable(characters),
       hiddenCharacters: _textList(json['hidden_characters']).toSet(),
       order: Map.unmodifiable(order),

@@ -16,9 +16,9 @@ Map<String, dynamic> response({bool unlocked = false, bool belowFold = false}) =
       'character': {
         'id': 'zeus',
         'entries': [
-          entry(1, 'Wine-Dark Navigator 47', 1500),
-          entry(2, 'Swift Oracle 12', 500, you: !belowFold),
-          entry(3, 'Golden Bard 88', 150),
+          entry(1, 'User 482913', 1500),
+          entry(2, 'User 120044', 500, you: !belowFold),
+          entry(3, 'User 880321', 150),
         ],
         'you': belowFold
             ? {'rank': 14, 'spent': 50, 'gifts': 1}
@@ -28,8 +28,8 @@ Map<String, dynamic> response({bool unlocked = false, bool belowFold = false}) =
           ? {
               'unlocked': true,
               'entries': [
-                entry(1, 'Storm-Born Titan 31', 9000),
-                entry(2, 'Swift Oracle 12', 650, you: true),
+                entry(1, 'User 310207', 9000),
+                entry(2, 'User 120044', 650, you: true),
               ],
               'you': {'rank': 2, 'spent': 650, 'gifts': 3},
             }
@@ -143,9 +143,9 @@ void main() {
     testWidgets('lists the board, and calls this person "You"', (tester) async {
       await openSheet(tester, LeaderboardResult.tryParse(response())!);
       expect(find.text('Who has given Zeus the most'), findsOneWidget);
-      expect(find.text('Wine-Dark Navigator 47'), findsOneWidget);
+      expect(find.text('User 482913'), findsOneWidget);
       expect(find.text('You'), findsOneWidget);
-      expect(find.text('Swift Oracle 12'), findsNothing,
+      expect(find.text('User 120044'), findsNothing,
           reason: 'their own alias is replaced, not shown beside "You"');
       expect(find.text('#1'), findsOneWidget);
       expect(find.text('1500'), findsOneWidget);
@@ -166,9 +166,9 @@ void main() {
       await tester.tap(find.text('All characters'));
       await tester.pumpAndSettle();
       expect(find.text('Who has given the most, to anyone'), findsOneWidget);
-      expect(find.text('Storm-Born Titan 31'), findsOneWidget);
+      expect(find.text('User 310207'), findsOneWidget);
       expect(find.text('9000'), findsOneWidget);
-      expect(find.text('Wine-Dark Navigator 47'), findsNothing);
+      expect(find.text('User 482913'), findsNothing);
     });
 
     testWidgets('below the rows shown, their own place is added at the foot',
@@ -177,7 +177,7 @@ void main() {
           tester, LeaderboardResult.tryParse(response(belowFold: true))!);
       expect(find.text('#14'), findsOneWidget);
       expect(find.text('You'), findsOneWidget);
-      expect(find.text('Swift Oracle 12'), findsOneWidget);
+      expect(find.text('User 120044'), findsOneWidget);
     });
 
     testWidgets('an empty board invites the first gift', (tester) async {
