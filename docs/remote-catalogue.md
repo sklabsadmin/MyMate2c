@@ -174,6 +174,19 @@ the app shows no tab and no hint that it exists.
 - **Tuning.** `BOARD_SIZE` (10) and `GLOBAL_MIN_GIFTS` (2) are constants at
   the top of the module. Changing them needs no app release.
 
+## The version line in Settings
+
+Settings shows one line: `1.0.6 build 99 · server build 100`. The first half
+is the app's own version and build. The second is the build number of the
+web bundle the worker was deployed with, read by the worker from that
+bundle's `version.json` and sent in the catalogue. Only the server's build
+number is shown, never its version, so nobody sees two version numbers that
+differ. Offline, or before the first fetch, the line is the app's half alone.
+
+`npm run deploy` builds the web app and deploys the worker together, so
+bumping the build number in `pubspec.yaml` before a deploy is what moves the
+server build.
+
 ## What still needs an app release
 
 - Hearts for a new gift (see above).

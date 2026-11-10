@@ -53,6 +53,11 @@ class RemoteCatalogue {
   /// with [feature]; one that is absent is off.
   final Map<String, bool> features;
 
+  /// The build number of what the worker is serving, for the version line
+  /// in Settings. Null when it has not been heard (never fetched, or a
+  /// worker older than this field).
+  final String? serverBuild;
+
   const RemoteCatalogue({
     this.characters = const [],
     this.hiddenCharacters = const {},
@@ -62,6 +67,7 @@ class RemoteCatalogue {
     this.hiddenGifts = const {},
     this.nudges = const {},
     this.features = const {},
+    this.serverBuild,
   });
 
   /// Whether the worker has switched [name] on. Off when the catalogue has
@@ -277,7 +283,13 @@ class RemoteCatalogue {
       });
     }
 
+    final rawBuild = json['server_build'];
+    final serverBuild = rawBuild is String && RegExp(r'^\d{1,9}$').hasMatch(rawBuild)
+        ? rawBuild
+        : null;
+
     return RemoteCatalogue(
+      serverBuild: serverBuild,
       features: Map.unmodifiable(features),
       characters: List.unmodifiable(characters),
       hiddenCharacters: _textList(json['hidden_characters']).toSet(),
@@ -410,6 +422,22 @@ class RemoteCatalogue {
     }
     return ids;
   }
+}
+
+/// The version line in Settings: "1.0.6 build 99 · server build 100".
+///
+/// One version number, on purpose. The app's version and build are its own;
+/// of the server only the build is shown, because "1.0.6" beside "1.0.7"
+/// reads as something being wrong when it is only the server having moved
+/// on, which it is meant to do. With no server build to show (offline, never
+/// fetched) the line is the app's alone.
+String versionLine({
+  required String version,
+  required String buildNumber,
+  String? serverBuild,
+}) {
+  final app = '$version build $buildNumber';
+  return serverBuild == null ? app : '$app · server build $serverBuild';
 }
 
 /// Draws a roster or gift image wherever it lives: compiled into the build

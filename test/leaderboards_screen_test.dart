@@ -146,7 +146,7 @@ void main() {
         {
           'id': 'ada',
           'name': 'Ada',
-          'vibe': 'The Programmer',
+          'vibe': 'Girl Power Programmer',
           'desc': 'd',
           'image': 'https://x.test/ada.jpg',
           'color': '#1F8A8A',

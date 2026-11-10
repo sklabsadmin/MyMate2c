@@ -52,7 +52,7 @@ const Map<String, List<String>> kBundledNudges = {
     'A thread is easier to follow with company. Come and talk.',
   ],
   'calypso': [
-    'The tide brought nothing interesting today. I was hoping for you.',
+    'The tide brought nothing interesting today. I was hoping for company.',
     'Ogygia is beautiful and very quiet. Come and make it less quiet.',
     'I let a sailor go once. I am better at welcomes than goodbyes.',
   ],

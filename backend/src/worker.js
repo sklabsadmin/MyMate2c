@@ -1623,7 +1623,11 @@ export default {
         // who the user is, and a short shared cache keeps a launch from
         // costing a worker invocation's worth of work each time.
         if (request.method === "GET" && url.pathname === "/api/catalogue") {
-            return jsonResponse(publicCatalogue(url.origin), {
+            return jsonResponse({
+                ...publicCatalogue(url.origin),
+                // What Settings shows as "server build": see serverBuild().
+                server_build: await serverBuild(env, url.origin),
+            }, {
                 headers: { ...corsHeaders(request), "Cache-Control": "public, max-age=300" },
             });
         }
@@ -4050,6 +4054,46 @@ function jsonHeaders(request) {
         ...corsHeaders(request),
         "Content-Type": "application/json",
     };
+}
+
+/// The build number of what is deployed, for the "server build" in the
+/// app's Settings — or null when it cannot be read.
+///
+/// It is the build number of the web bundle this worker was deployed WITH,
+/// read from the bundle's own version.json (Flutter writes it on every
+/// build), not from anything in this file. `npm run deploy` builds the web
+/// app and deploys the worker in one step, so the two are always the same
+/// release, and reading the artefact means the number is what actually went
+/// out rather than what somebody remembered to bump — the same reasoning as
+/// tool/log_deploy.sh. Only the build number is reported: the app shows its
+/// own version, and two version numbers side by side read as a mismatch.
+///
+/// Remembered for the life of the isolate; a deploy starts new ones.
+let cachedServerBuild = null;
+async function serverBuild(env, origin) {
+    if (cachedServerBuild !== null) return cachedServerBuild;
+    let build = null;
+    try {
+        if (env.ASSETS) {
+            const res = await env.ASSETS.fetch(new URL("/version.json", origin));
+            if (res.ok) {
+                const info = await res.json();
+                const raw = info && info.build_number;
+                if ((typeof raw === "string" || typeof raw === "number") && /^\d{1,9}$/.test(String(raw))) {
+                    build = String(raw);
+                }
+            }
+        }
+    } catch (_) {
+        // Unreadable is "unknown", and Settings then shows the app's own
+        // version alone. Not cached, so the next request tries again.
+        return null;
+    }
+    // Only a number that was actually read is remembered. "Unknown" is
+    // asked again next time: caching it would leave Settings without a
+    // server build until the isolate was recycled.
+    if (build !== null) cachedServerBuild = build;
+    return build;
 }
 
 function jsonResponse(data, init = {}) {

@@ -233,6 +233,31 @@ test('GET /api/catalogue serves the additions, unsigned, and never a persona', a
     assert.equal(lyre.heldBadge, 'Played');
 });
 
+test('the catalogue carries the server build, read from the deployed bundle', async () => {
+    // version.json is what Flutter writes into the web build that ships with
+    // the worker; the build number in it is "what is deployed".
+    const { env: e } = env();
+    const asked = [];
+    const assets = (body, ok = true) => ({
+        fetch: async (u) => {
+            asked.push(new URL(u).pathname);
+            return new Response(body, { status: ok ? 200 : 404 });
+        },
+    });
+    const withBundle = await call(
+        { ...e, ASSETS: assets('{"app_name":"mythos_live","version":"1.0.7","build_number":"101"}') },
+        '/api/catalogue',
+    );
+    assert.equal(withBundle.json.server_build, '101');
+    assert.deepEqual(asked, ['/version.json']);
+    assert.ok(!JSON.stringify(withBundle.json).includes('1.0.7'),
+        'only the build number: the app shows one version, its own');
+
+    // Remembered for the isolate: a second request does not read it again.
+    await call({ ...e, ASSETS: assets('{"build_number":"999"}') }, '/api/catalogue');
+    assert.deepEqual(asked, ['/version.json']);
+});
+
 test('publicCatalogue of an empty catalogue is empty, not missing keys', () => {
     const empty = publicCatalogue('https://x.test', {
         characters: [], hiddenCharacters: [], order: {}, gifts: [], hiddenGifts: [], nudges: {},

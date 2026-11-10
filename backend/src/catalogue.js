@@ -70,7 +70,7 @@ export const SERVER_CATALOGUE = {
         {
             id: "ada",
             name: "Ada",
-            vibe: "The Programmer",
+            vibe: "Girl Power Programmer",
             desc: "A computer science PhD from Kenting who debugs by day and sings karaoke like nobody is grading it.",
             image: "assets/images/avatar_ada_placeholder.jpg",
             color: "#1F8A8A",

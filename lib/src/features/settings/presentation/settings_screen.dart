@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/data/remote_catalogue.dart';
 import '../../auth/presentation/sign_in_sheet.dart';
 import '../../wallet/coin_wallet.dart';
 import '../../../core/presentation/clear_history_prompt.dart';
@@ -392,16 +393,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
             const SizedBox(height: 30),
             _buildSectionHeader('ABOUT'),
-            FutureBuilder<PackageInfo>(
-              future: _packageInfoFuture,
-              builder: (context, snapshot) {
-                final packageInfo = snapshot.data;
-                return _buildAboutCard(
-                  version: packageInfo == null
-                      ? 'Loading...'
-                      : '${packageInfo.version} (${packageInfo.buildNumber})',
-                );
-              },
+            // Rebuilt when the catalogue arrives, which is what carries the
+            // server's build number — on a first launch it can land after
+            // this screen is already open.
+            ValueListenableBuilder<int>(
+              valueListenable: RemoteCatalogue.revision,
+              builder: (context, _, _) => FutureBuilder<PackageInfo>(
+                future: _packageInfoFuture,
+                builder: (context, snapshot) {
+                  final packageInfo = snapshot.data;
+                  return _buildAboutCard(
+                    version: packageInfo == null
+                        ? 'Loading...'
+                        : versionLine(
+                            version: packageInfo.version,
+                            buildNumber: packageInfo.buildNumber,
+                            serverBuild: RemoteCatalogue.current.serverBuild,
+                          ),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -536,7 +547,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _onVersionTap,
-            child: _buildInfoRow('Mythos Live Version', version),
+            child: _buildInfoRow('Version', version),
           ),
         ],
       ),

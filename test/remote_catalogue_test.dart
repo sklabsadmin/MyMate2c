@@ -104,6 +104,24 @@ void main() {
       expect(RemoteCatalogue.current.feature('never_heard_of_it'), isFalse);
     });
 
+    test('the version line shows one version and, when known, the server build',
+        () {
+      expect(versionLine(version: '1.0.6', buildNumber: '99', serverBuild: '100'),
+          '1.0.6 build 99 · server build 100');
+      expect(versionLine(version: '1.0.6', buildNumber: '99'), '1.0.6 build 99');
+
+      expect(RemoteCatalogue.current.serverBuild, isNull);
+      RemoteCatalogue.debugSet(
+          RemoteCatalogue.tryParse({'schema': 1, 'server_build': '100'}));
+      expect(RemoteCatalogue.current.serverBuild, '100');
+      // Anything that is not a plain number is not shown.
+      for (final junk in ['1.0.7+100', '<b>', '', 100, null]) {
+        RemoteCatalogue.debugSet(
+            RemoteCatalogue.tryParse({'schema': 1, 'server_build': junk}));
+        expect(RemoteCatalogue.current.serverBuild, isNull, reason: '$junk');
+      }
+    });
+
     test('an empty response changes nothing', () {
       RemoteCatalogue.debugSet(RemoteCatalogue.tryParse({
         'schema': 1,
