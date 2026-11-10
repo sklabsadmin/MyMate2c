@@ -80,7 +80,8 @@ A shipped character's persona is not overridable from the catalogue. Edit
 The three "come back" notifications scheduled when the app is left (four
 hours, one day, three days) are now written as the characters the person has
 talked to, most recent first, each in that character's voice. Tapping one
-opens that conversation. Someone with no chats yet gets the app-level lines as
+opens that conversation. Each is titled "Zeus says" with the line beneath.
+Someone with no chats yet gets the app-level lines as
 before. The daily dawn and nightfall notifications are unchanged.
 
 It is the same three slots, not three more. Times that would land between

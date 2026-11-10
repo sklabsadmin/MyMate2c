@@ -80,7 +80,9 @@ class CharacterNudgePlanner {
       final line = lines[(_dayNumber(now) + turn) % lines.length];
       planned.add(PlannedNudge(
         id: id,
-        title: speaker.name,
+        // "Zeus says" over the line, so the lock screen reads as the
+        // character speaking rather than as a message that arrived from them.
+        title: '${speaker.name} says',
         body: line,
         when: when,
         characterId: speaker.characterId,

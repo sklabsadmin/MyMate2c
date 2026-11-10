@@ -44,7 +44,8 @@ void main() {
     expect(plan.map((n) => n.id), [101, 102, 103]);
     expect(plan.map((n) => n.characterId), ['zeus', 'penelope', 'hector']);
     // The roster's name, not the stored "Zeus (Olympian King)".
-    expect(plan.map((n) => n.title), ['Zeus', 'Penelope', 'Hector']);
+    expect(plan.map((n) => n.title),
+        ['Zeus says', 'Penelope says', 'Hector says']);
     for (final nudge in plan) {
       expect(kBundledNudges[nudge.characterId], contains(nudge.body));
     }
@@ -77,7 +78,7 @@ void main() {
       recentChats: [chat('Marcus (My Stoic)', null), chat('', null)],
       now: noon,
     );
-    expect(plan.map((n) => n.title).toSet(), {'Marcus'});
+    expect(plan.map((n) => n.title).toSet(), {'Marcus says'});
     expect(plan.every((n) => n.characterId == null), isTrue,
         reason: 'there is no /c/<id> route to open for them');
     for (final nudge in plan) {
@@ -112,7 +113,7 @@ void main() {
       ],
       now: noon,
     );
-    expect(plan[0].title, 'Achilles');
+    expect(plan[0].title, 'Achilles says');
     expect(plan[0].body, 'The camp is quiet tonight.');
     expect(plan[1].body, 'Olympus is dull without an argument.');
   });
