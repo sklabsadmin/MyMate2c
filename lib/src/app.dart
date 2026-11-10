@@ -16,6 +16,7 @@ import 'features/chat/presentation/recent_chats_screen.dart';
 import 'features/home/presentation/dashboard_screen.dart';
 import 'features/profile/presentation/user_profile_screen.dart';
 import 'core/presentation/scaffold_with_navbar.dart';
+import 'core/presentation/app_gate.dart';
 import 'features/maintenance/presentation/maintenance_screen.dart';
 import 'features/wallet/presentation/coin_store_screen.dart';
 import 'features/settings/presentation/settings_screen.dart';
@@ -444,6 +445,10 @@ class _AIAppState extends ConsumerState<AIApp> {
       theme: AppTheme.romanticTheme,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
+      // Above every route: the one place the worker can hold the whole app,
+      // for "please update" or "back shortly". See AppGate.
+      builder: (context, child) =>
+          AppGate(child: child ?? const SizedBox.shrink()),
     );
   }
 }

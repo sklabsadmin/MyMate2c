@@ -148,6 +148,37 @@ export const SERVER_CATALOGUE = {
     /// its own in `nudges` above.
     nudges: {},
 
+    /// The two ways to stop an app from here. Both are obeyed by builds from
+    /// 1.0.7 on; nothing older ever asks. docs/remote-catalogue.md, "Stopping
+    /// the app", has the when and the how.
+    app: {
+        /// "Please update." The oldest build number still supported, per
+        /// store. An app whose own build number is LOWER shows one screen
+        /// asking for an update and nothing else. 0 supports everything.
+        /// Raise it only once the newer build is actually live in that
+        /// store — the screen sends people there to get it.
+        min_build: { ios: 0, android: 0 },
+
+        /// Where that screen's button goes. The iOS one needs the app's
+        /// numeric App Store id: https://apps.apple.com/app/id<number>.
+        /// Left empty, the screen has no button and says to open the store.
+        update_url: {
+            ios: "",
+            android: "https://play.google.com/store/apps/details?id=com.sklabs.mythoslive",
+        },
+
+        /// "Back shortly." true puts every app, web included, on a holding
+        /// screen that re-checks once a minute. For a bad deploy or a data
+        /// problem, not for routine deploys. An app that cannot reach the
+        /// worker at all does NOT show it (it works from what it has), so
+        /// this cannot lock anyone out by accident.
+        maintenance: false,
+
+        /// Optional sentence under the heading on that screen. Empty uses
+        /// the app's own wording.
+        maintenance_message: "",
+    },
+
     /// Switches the app and the worker both read. true or false only.
     features: {
         /// What a leaderboard row shows for other people.
@@ -251,6 +282,23 @@ export function catalogueProblems(catalogue = SERVER_CATALOGUE, known = { charac
     for (const [name, value] of Object.entries(catalogue.features || {})) {
         if (typeof value !== "boolean") problems.push(`features.${name}: must be true or false`);
     }
+    const app = catalogue.app || {};
+    if (app.maintenance !== undefined && typeof app.maintenance !== "boolean") {
+        problems.push("app.maintenance: must be true or false");
+    }
+    if (app.maintenance_message !== undefined && typeof app.maintenance_message !== "string") {
+        problems.push("app.maintenance_message: must be text");
+    }
+    for (const [store, build] of Object.entries(app.min_build || {})) {
+        if (!["ios", "android"].includes(store)) problems.push(`app.min_build: unknown store ${JSON.stringify(store)}`);
+        else if (!Number.isInteger(build) || build < 0) problems.push(`app.min_build.${store}: must be a whole number, 0 or more`);
+    }
+    for (const [store, url] of Object.entries(app.update_url || {})) {
+        if (!["ios", "android"].includes(store)) problems.push(`app.update_url: unknown store ${JSON.stringify(store)}`);
+        else if (url !== "" && !/^https:\/\/(apps\.apple\.com|play\.google\.com)\//.test(url)) {
+            problems.push(`app.update_url.${store}: must be an App Store or Google Play https link, or empty`);
+        }
+    }
     return problems;
 }
 
@@ -302,6 +350,13 @@ export function publicCatalogue(origin, catalogue = SERVER_CATALOGUE) {
         hidden_gifts: [...(catalogue.hiddenGifts || [])],
         nudges: { ...(catalogue.nudges || {}) },
         features: { ...(catalogue.features || {}) },
+        app: {
+            min_build: { ...((catalogue.app || {}).min_build || {}) },
+            update_url: { ...((catalogue.app || {}).update_url || {}) },
+            maintenance: (catalogue.app || {}).maintenance === true,
+            maintenance_message: typeof (catalogue.app || {}).maintenance_message === "string"
+                ? catalogue.app.maintenance_message : "",
+        },
     };
 }
 

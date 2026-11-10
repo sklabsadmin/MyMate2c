@@ -53,6 +53,20 @@ class RemoteCatalogue {
   /// with [feature]; one that is absent is off.
   final Map<String, bool> features;
 
+  /// "Please update": the oldest build number the worker still supports, by
+  /// store ('ios' | 'android'). Absent or 0 supports everything.
+  final Map<String, int> minBuild;
+
+  /// Where the update screen's button goes, by store. Only ever an App Store
+  /// or Google Play https link — anything else was dropped when parsing.
+  final Map<String, String> updateUrl;
+
+  /// "Back shortly": the worker has asked every app to hold.
+  final bool maintenance;
+
+  /// The worker's own sentence for that screen, or empty for the app's.
+  final String maintenanceMessage;
+
   /// The build number of what the worker is serving, for the version line
   /// in Settings. Null when it has not been heard (never fetched, or a
   /// worker older than this field).
@@ -68,6 +82,10 @@ class RemoteCatalogue {
     this.nudges = const {},
     this.features = const {},
     this.serverBuild,
+    this.minBuild = const {},
+    this.updateUrl = const {},
+    this.maintenance = false,
+    this.maintenanceMessage = '',
   });
 
   /// Whether the worker has switched [name] on. Off when the catalogue has
@@ -83,6 +101,12 @@ class RemoteCatalogue {
 
   /// Bumped whenever [current] changes. Listen to rebuild.
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
+
+  /// Whether the worker has answered during THIS launch. The maintenance
+  /// screen is only shown on a live answer: a "hold" remembered from
+  /// yesterday, on a phone that cannot reach the worker to learn it is over,
+  /// must not lock anyone out.
+  static bool fetchedThisLaunch = false;
 
   /// The asset paths compiled into this build, once [loadCached] has read the
   /// manifest. Null before that (and in unit tests), which is treated as
@@ -164,12 +188,19 @@ class RemoteCatalogue {
       final parsed = tryParse(jsonDecode(raw));
       if (parsed == null) return;
       _lastRefresh = DateTime.now();
+      fetchedThisLaunch = true;
       final prefs = await SharedPreferences.getInstance();
       final changed = prefs.getString(_kCacheKey) != raw;
       if (changed) await prefs.setString(_kCacheKey, raw);
       // Installed even when the bytes match the cache: the cache may have
       // been written by a launch whose manifest read differed.
-      if (changed || identical(current, empty)) _install(parsed);
+      if (changed || identical(current, empty)) {
+        _install(parsed);
+      } else {
+        // Same catalogue as the cached one — but it is now a live answer,
+        // which is what the maintenance screen was waiting to know.
+        revision.value++;
+      }
     } catch (e) {
       if (kDebugMode) debugPrint('Catalogue refresh failed: $e');
     }
@@ -190,6 +221,7 @@ class RemoteCatalogue {
   @visibleForTesting
   static void debugReset() {
     current = empty;
+    fetchedThisLaunch = false;
     bundledAssets = null;
     _lastRefresh = null;
     _inFlight = null;
@@ -200,6 +232,9 @@ class RemoteCatalogue {
   // Parsing
   // ---------------------------------------------------------------------
 
+  /// The only places an update button may lead.
+  static final RegExp _storeLink =
+      RegExp(r'^https://(apps\.apple\.com|play\.google\.com)/');
   static final RegExp _idPattern = RegExp(r'^[a-z0-9_]{1,40}$');
   static final RegExp _itemPattern = RegExp(r'^[a-z_]{1,40}$');
   static final RegExp _colorPattern = RegExp(r'^#[0-9a-fA-F]{6}$');
@@ -283,12 +318,42 @@ class RemoteCatalogue {
       });
     }
 
+    final minBuild = <String, int>{};
+    final updateUrl = <String, String>{};
+    var maintenance = false;
+    var maintenanceMessage = '';
+    final app = json['app'];
+    if (app is Map) {
+      final rawMin = app['min_build'];
+      if (rawMin is Map) {
+        rawMin.forEach((key, value) {
+          if (key is String && value is int && value > 0) minBuild[key] = value;
+        });
+      }
+      final rawUrls = app['update_url'];
+      if (rawUrls is Map) {
+        rawUrls.forEach((key, value) {
+          if (key is String && value is String && _storeLink.hasMatch(value)) {
+            updateUrl[key] = value;
+          }
+        });
+      }
+      // Exactly true, and nothing else, holds the app.
+      maintenance = app['maintenance'] == true;
+      final message = app['maintenance_message'];
+      if (message is String) maintenanceMessage = message.trim();
+    }
+
     final rawBuild = json['server_build'];
     final serverBuild = rawBuild is String && RegExp(r'^\d{1,9}$').hasMatch(rawBuild)
         ? rawBuild
         : null;
 
     return RemoteCatalogue(
+      minBuild: Map.unmodifiable(minBuild),
+      updateUrl: Map.unmodifiable(updateUrl),
+      maintenance: maintenance,
+      maintenanceMessage: maintenanceMessage,
       serverBuild: serverBuild,
       features: Map.unmodifiable(features),
       characters: List.unmodifiable(characters),

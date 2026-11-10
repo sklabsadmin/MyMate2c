@@ -81,6 +81,32 @@ test('Ada ships whole: a card, a profile, a voice, and a picture that exists', (
     assert.equal(catalogueShareCard('zeus', SHIPPED), null, 'built-in characters keep their own card');
 });
 
+test('as shipped, nothing is stopped: no minimum build, no maintenance', () => {
+    // These two can lock every user out of the app. They ship open, and a
+    // deploy that changes them should be a deliberate edit that also edits
+    // this test.
+    assert.deepEqual(SHIPPED.app.min_build, { ios: 0, android: 0 });
+    assert.equal(SHIPPED.app.maintenance, false);
+    const served = publicCatalogue('https://x.test', SHIPPED).app;
+    assert.equal(served.maintenance, false);
+    assert.deepEqual(served.min_build, { ios: 0, android: 0 });
+    assert.match(served.update_url.android, /^https:\/\/play\.google\.com\//);
+});
+
+test('the stop settings are checked before they can ship broken', () => {
+    const bad = (app) => catalogueProblems({ ...SHIPPED, app: { ...SHIPPED.app, ...app } }, BUNDLED);
+    assert.deepEqual(bad({ maintenance: true, maintenance_message: 'Back at noon.' }), []);
+    assert.deepEqual(bad({ min_build: { ios: 101, android: 0 } }), []);
+    assert.ok(bad({ maintenance: 'yes' }).length > 0);
+    assert.ok(bad({ min_build: { ios: '101' } }).length > 0, 'a build number is a number');
+    assert.ok(bad({ min_build: { ios: -1 } }).length > 0);
+    assert.ok(bad({ min_build: { web: 5 } }).length > 0, 'the web is always current');
+    assert.ok(bad({ update_url: { ios: 'https://evil.example/app' } }).length > 0,
+        'the update button only ever goes to a store');
+    assert.ok(bad({ update_url: { ios: 'http://apps.apple.com/app/id1' } }).length > 0);
+    assert.deepEqual(bad({ update_url: { ios: 'https://apps.apple.com/app/id1234567890' } }), []);
+});
+
 test('the shipped switches are the ones that were decided', () => {
     // Boards show user numbers. Turning names on is an App Review decision,
     // so a stray edit that flips it should fail here first.
@@ -265,6 +291,7 @@ test('publicCatalogue of an empty catalogue is empty, not missing keys', () => {
     assert.deepEqual(empty, {
         schema: 1, characters: [], hidden_characters: [], order: {}, gifts: [], hidden_gifts: [], nudges: {},
         features: {},
+        app: { min_build: {}, update_url: {}, maintenance: false, maintenance_message: '' },
     });
 });
 

@@ -176,6 +176,47 @@ the app shows no tab and no hint that it exists.
 - **Tuning.** `BOARD_SIZE` (10) and `GLOBAL_MIN_GIFTS` (2) are constants at
   the top of the module. Changing them needs no app release.
 
+## Stopping the app: "please update" and "back shortly"
+
+Two settings under `app` in `backend/src/catalogue.js` let the worker hold
+the app. Builds from 1.0.7 on obey them; 1.0.6 and earlier never ask and
+cannot be told anything. Both ship open and `npm test` fails if either is
+changed without also changing the test that says so.
+
+**Please update.** `min_build: { ios: 0, android: 0 }` is the oldest build
+number still supported in each store. An app whose own build number is lower
+shows one screen, "Time to update", with a button to the store.
+
+- Raise it only after the newer build is live in that store. The screen sends
+  people there to get it.
+- `update_url.ios` is empty until someone fills in the App Store link,
+  `https://apps.apple.com/app/id<number>`. Without it the screen has no
+  button and tells people to open the App Store. Only App Store and Google
+  Play links are accepted, by the worker's check and again by the app.
+- The web is never asked to update. It is always the current bundle.
+
+**Back shortly.** `maintenance: true` puts every app, web included, on a
+holding screen. `maintenance_message` replaces the default sentence. The
+screen re-checks once a minute and has a "Try again" button, so it lifts on
+its own when the setting goes back to `false`.
+
+How it avoids locking people out:
+
+- A phone that cannot reach the worker never shows the maintenance screen. It
+  is only shown on an answer the worker gave during that launch, not on one
+  remembered from earlier.
+- An unknown build number, an unknown store, or a response that does not
+  parse all mean "carry on".
+- "Please update" is honoured from the remembered catalogue, because a
+  minimum only goes up.
+
+Phones pick a change up at launch and on return to the foreground. The
+catalogue is cached for five minutes at the edge, so allow that long.
+
+For one feature rather than the whole app, use the narrower switches:
+`LEADERBOARDS` in `wrangler.jsonc`, `hiddenCharacters`, `hiddenGifts`, and
+`features` in the catalogue.
+
 ## The version line in Settings
 
 Settings shows one line: `1.0.6 build 99 · server build 100`. The first half
