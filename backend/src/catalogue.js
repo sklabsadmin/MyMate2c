@@ -163,7 +163,7 @@ export const SERVER_CATALOGUE = {
         /// numeric App Store id: https://apps.apple.com/app/id<number>.
         /// Left empty, the screen has no button and says to open the store.
         update_url: {
-            ios: "",
+            ios: "https://apps.apple.com/app/id6817279097",
             android: "https://play.google.com/store/apps/details?id=com.sklabs.mythoslive",
         },
 

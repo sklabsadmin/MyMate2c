@@ -189,10 +189,10 @@ shows one screen, "Time to update", with a button to the store.
 
 - Raise it only after the newer build is live in that store. The screen sends
   people there to get it.
-- `update_url.ios` is empty until someone fills in the App Store link,
-  `https://apps.apple.com/app/id<number>`. Without it the screen has no
-  button and tells people to open the App Store. Only App Store and Google
-  Play links are accepted, by the worker's check and again by the app.
+- `update_url` holds the store links the button opens. A store left empty
+  gets no button and a sentence telling people to open the store. Only App
+  Store and Google Play links are accepted, by the worker's check and again
+  by the app.
 - The web is never asked to update. It is always the current bundle.
 
 **Back shortly.** `maintenance: true` puts every app, web included, on a
