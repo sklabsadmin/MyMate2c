@@ -91,3 +91,16 @@ then, hand Adam the `.aab` to upload.
 Web and iOS share one build number (currently 96). Android's versionCode
 must only ever go up; start at 97 and tell Build Boy, so the next web/iOS
 release uses 98+.
+
+## Android session log (2026-10-09, later the same day)
+
+- Adam chose option 2: update the old listing. `applicationId` is
+  `com.iosappv2.ai_boyfriend_chat`; namespace stays `com.sklabs.mythoslive`.
+- Mac toolchain finished (SDK 36, JDK 17 via Homebrew); runbook updated.
+- Parity commits applied by hand (not cherry-picked): key.properties signing,
+  `tool/build_android.sh`, `tool/run_android.sh`, manifest permissions and
+  receivers, notification-service fallback, runbook.
+- **pubspec is now 1.0.5+97.** Build Boy: next web/iOS release is 98+.
+- Keystore copied to `android/app/upload-keystore.jks` in this worktree,
+  passwords in `android/key.properties` (both gitignored). Fingerprint matches
+  Play's upload cert (`1E:1B:ED:A0…`).
