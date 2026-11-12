@@ -400,7 +400,10 @@ Future<void> showCoinsSheet(
                 ),
                 if (AuthNotifier.signInAvailable)
                   _EarnRow(Icons.account_circle_outlined,
-                      'Sign in with Apple or Google', _grant(grants, 'link')),
+                      AuthNotifier.appleAvailable
+                          ? 'Sign in with Apple or Google'
+                          : 'Sign in with Google',
+                      _grant(grants, 'link')),
                 _EarnRow(Icons.badge_outlined, 'Complete your profile',
                     _grant(grants, 'profile')),
                 if (wallet != null && wallet.recent.isNotEmpty) ...[

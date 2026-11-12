@@ -47,10 +47,11 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- mythoslive://dashboard and mythoslive://settings?google=connected
-                 are the return addresses the worker's Google-connect flow sends
-                 native builds back to (signed_out_screen.dart,
-                 settings_screen.dart). Same scheme as the iOS CFBundleURLTypes. -->
+            <!-- mythoslive:// is a leftover from the old web-redirect "Google
+                 connect" flow. Native sign-in no longer returns through it
+                 (the Google sheet hands the app a token directly), but the
+                 filter stays so old links still open the app. Same scheme as
+                 the iOS CFBundleURLTypes. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
