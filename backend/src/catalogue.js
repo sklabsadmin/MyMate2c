@@ -164,7 +164,9 @@ export const SERVER_CATALOGUE = {
         /// Left empty, the screen has no button and says to open the store.
         update_url: {
             ios: "https://apps.apple.com/app/id6817279097",
-            android: "https://play.google.com/store/apps/details?id=com.sklabs.mythoslive",
+            // The Play package is the OLD listing's id, not the Kotlin
+            // namespace or the iOS bundle id. See android/app/build.gradle.kts.
+            android: "https://play.google.com/store/apps/details?id=com.iosappv2.ai_boyfriend_chat",
         },
 
         /// "Back shortly." true puts every app, web included, on a holding
