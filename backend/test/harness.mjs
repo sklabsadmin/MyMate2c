@@ -31,15 +31,38 @@ export function migrationFiles() {
         .sort();
 }
 
+/// Later migrations that cannot be applied without an earlier one, because they
+/// ALTER a table it creates. Keyed by the migration being skipped.
+///
+/// Skipping a migration in a test means "production has not run this yet", and
+/// wrangler applies them in order — so everything after it is unrun too. That
+/// is fine for a migration which merely stops mentioning the missing table, and
+/// fatal for one that ALTERs it: the ALTER throws "no such table" while
+/// building the database and the test fails before it has asserted anything,
+/// pointing at the wrong file.
+///
+/// Listed by hand rather than detected, because a parser that guessed which
+/// table an ALTER belongs to would be a second, worse schema reader living
+/// alongside the real one. Add a line when a migration adds a column to a
+/// table some test skips the creation of.
+const DEPENDENT_MIGRATIONS = {
+    '0011_message_delivery.sql': ['0023_client_platform.sql'],
+};
+
 /// An in-memory database with the full migration history applied.
 ///
 /// `skip` drops named migrations, which is how the "table does not exist yet"
 /// paths are tested — deploy_log is unapplied on production until someone runs
-/// it, and every route that touches it has to survive that.
+/// it, and every route that touches it has to survive that. Migrations that
+/// depend on a skipped one are dropped with it; see [DEPENDENT_MIGRATIONS].
 export function freshDb({ skip = [] } = {}) {
+    const dropped = new Set(skip);
+    for (const name of skip) {
+        for (const dependent of DEPENDENT_MIGRATIONS[name] || []) dropped.add(dependent);
+    }
     const db = new DatabaseSync(':memory:');
     for (const name of migrationFiles()) {
-        if (skip.includes(name)) continue;
+        if (dropped.has(name)) continue;
         db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'));
     }
     return db;

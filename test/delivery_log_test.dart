@@ -176,6 +176,13 @@ void main() {
       expect(sent['renderedAt'], isNotNull);
       expect(sent['seenAt'], isNotNull);
       expect(sent['textLen'], 'Tell me of the wanderer.'.length);
+      // Which app drew it. On every receipt, not just the first, and never
+      // absent: it is a compile-time property of the build rather than
+      // something fetched, so unlike appVersion it has no "not known yet"
+      // state to be left out of. It is also the only field here that can
+      // answer "which platform", app_version being identical across all three
+      // (migration 0023).
+      expect(sent['clientPlatform'], isNotNull);
       expect(log.pendingCount, 0, reason: 'seen and acked ends the story');
     });
 

@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/auth_service.dart';
+import '../../../core/services/client_platform.dart';
 import '../../../core/services/device_identity.dart';
 import '../../../core/services/analytics.dart';
 import '../data/chat_prompt.dart';
@@ -230,6 +231,11 @@ LANGUAGE: Respond ONLY in $_currentLanguage. All your messages must be in $_curr
       if (visitId != null && visitId.isNotEmpty) {
         headers['x-visit-id'] = visitId;
       }
+      // Which app sent it. Unconditional, and the companion to the line above:
+      // a missing x-visit-id says this was not a browser page load, which is
+      // not the same as saying what it was — and the apps write no site_visits
+      // row for the server to ask instead (migration 0023).
+      headers['x-client-platform'] = clientPlatform();
 
       // Call Backend Worker
       final response = await _dio.post(

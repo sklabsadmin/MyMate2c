@@ -1954,6 +1954,13 @@ export default {
             // (no page load) and on any client predating the header.
             const visitId = (request.headers.get("x-visit-id") || "").slice(0, 64) || null;
 
+            // Which client sent it: ios, android or web. The companion to the
+            // line above and the reason it is needed — x-visit-id being absent
+            // tells you this was not a browser page load, which is not the
+            // same as telling you what it was, and the mobile app writes no
+            // site_visits row to ask instead (migration 0023).
+            const clientPlatform = clientPlatformOrNull(request.headers.get("x-client-platform"));
+
             // Signature checking is on unless REQUIRE_SIGNATURE is explicitly
             // "false". It exists to stop strangers spending our OpenAI credits
             // through this endpoint, not to protect user data — so it can be
@@ -2030,6 +2037,7 @@ export default {
                     userId,
                     synthetic,
                     visitId,
+                    clientPlatform,
                     chatId,
                     scenario: metadata.scenario,
                     language: metadata.language,
@@ -2061,6 +2069,7 @@ export default {
                         userId,
                         synthetic,
                         visitId,
+                        clientPlatform,
                         chatId,
                         scenario: metadata.scenario,
                         language: metadata.language,
@@ -2168,6 +2177,7 @@ export default {
                             userId,
                             synthetic,
                             visitId,
+                            clientPlatform,
                             chatId,
                             scenario: metadata.scenario,
                             language: metadata.language,
@@ -2357,6 +2367,7 @@ export default {
                 userId,
                 synthetic,
                 visitId,
+                clientPlatform,
                 latencyMs: replyLatencyMs,
                 chatId,
                 scenario: metadata.scenario,
@@ -2607,6 +2618,11 @@ async function finishGoogleAuth(request, env, url) {
             displayName: profile.name || null,
             anonId: anonId || null,
             anonTicket: anonTicket || null,
+            // This is the browser redirect flow — it is only ever reached by a
+            // page navigation, so the platform is not asserted by anyone, it
+            // is a property of the route. The app's equivalent is
+            // handleNativeSignIn, which has to be told.
+            clientPlatform: "web",
         });
 
         return redirectResponse(returnTo || `${requestOrigin(request)}/settings?google=connected`, [
@@ -2769,6 +2785,9 @@ async function finishAppleAuth(request, env) {
         anonTicket: anonTicket || null,
         appleRefreshToken: refreshToken,
         appleClientId: refreshToken ? env.APPLE_SERVICES_ID : null,
+        // Apple's form_post lands here and nowhere else; see the Google
+        // callback above.
+        clientPlatform: "web",
     });
 
     const sessionValue = await issueSession(env, { ...identity, name: displayName }, WEB_SESSION_TTL_S);
@@ -2781,7 +2800,7 @@ async function finishAppleAuth(request, env) {
 /// POST /auth/native — the app's sign-in.
 ///
 /// Body: { provider: "google"|"apple", id_token, raw_nonce?, authorization_code?,
-///         given_name?, family_name?, anon_id?, anon_ticket? }
+///         given_name?, family_name?, anon_id?, anon_ticket?, platform? }
 ///
 /// Answers { ok, token, expires_at, user }. The token is a session the app
 /// keeps in the keychain and sends as `Authorization: Bearer`. No cookie is
@@ -2840,6 +2859,34 @@ async function handleNativeSignIn(request, env) {
         });
     }
 
+    // Which app this is. Only this route and the web callbacks can answer it,
+    // which is the whole argument of migration 0023: by the time a row is in
+    // the database the evidence is gone, so it is recorded here or not at all.
+    //
+    // The client's own statement is preferred over anything derived, because
+    // only the client can tell iOS from Android. The derivation below can see
+    // "a native app" and no further — Apple mints the token for the bundle id
+    // either way — and Google native sign-ins, which is most of them, leave no
+    // such trace at all: handleNativeSignIn writes them byte-identically to
+    // the web's.
+    let clientPlatform = clientPlatformOrNull(body?.platform);
+    if (!clientPlatform && provider === "apple" && env.APPLE_BUNDLE_ID
+        && identity.clientId === env.APPLE_BUNDLE_ID) {
+        // Builds already in the field send no platform, and will keep signing
+        // in for as long as people take to update. The bundle id proves this
+        // is the app rather than the web (0020 explains the pair), and the app
+        // offers Apple sign-in natively on iOS only — Android would need the
+        // web flow in a Custom Tab, which is not wired up (see
+        // AuthNotifier.appleAvailable). So this particular token can only have
+        // come from an iPhone.
+        //
+        // That last step is an inference from how the client is built, not
+        // from the token, and it stops being true the day Android gets native
+        // Apple sign-in. By then every build in the field sends `platform` and
+        // this branch is dead — but if Android ships it first, delete this.
+        clientPlatform = "ios";
+    }
+
     const userId = `${provider}:${identity.sub}`;
     await recordLinkedAccount(env, {
         userId,
@@ -2851,6 +2898,7 @@ async function handleNativeSignIn(request, env) {
         anonTicket: cleanAnonTicket(body.anon_ticket),
         appleRefreshToken: refreshToken,
         appleClientId: refreshToken ? identity.clientId : null,
+        clientPlatform,
     });
 
     // The name Apple sent once, or the one stored from that first time.
@@ -2973,7 +3021,7 @@ async function handleAccountDelete(request, env) {
 // reattributes that anonymous user's existing conversation_logs rows to the
 // linked account so their prior history carries over. Never throws: a DB
 // hiccup here shouldn't fail an otherwise-successful login.
-async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null, appleRefreshToken = null, appleClientId = null }) {
+async function recordLinkedAccount(env, { userId, provider, providerId, email, displayName, anonId, anonTicket = null, appleRefreshToken = null, appleClientId = null, clientPlatform = null }) {
     if (!env.CHAT_LOGS_DB) return;
 
     try {
@@ -2983,17 +3031,31 @@ async function recordLinkedAccount(env, { userId, provider, providerId, email, d
 
         await env.CHAT_LOGS_DB.prepare(`
             INSERT INTO linked_accounts (
-                id, user_id, provider, provider_id, email, display_name, merged_anon_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, user_id, provider, provider_id, email, display_name, merged_anon_id,
+                client_platform
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider, provider_id) DO UPDATE SET
                 linked_at = CURRENT_TIMESTAMP,
                 email = COALESCE(excluded.email, linked_accounts.email),
                 -- Apple sends the name on the first sign-in only; a later
                 -- sign-in must not blank it.
-                display_name = COALESCE(excluded.display_name, linked_accounts.display_name)
+                display_name = COALESCE(excluded.display_name, linked_accounts.display_name),
+                -- Last writer wins, but never back to NULL. linked_at above is
+                -- refreshed on every sign-in, so this row already means "the
+                -- most recent sign-in" and the platform has to agree with it:
+                -- someone who signed in on the web in August and on the phone
+                -- this morning is an iOS user today. COALESCE the other way
+                -- round would have frozen the first platform ever seen and
+                -- made the pair self-contradictory.
+                --
+                -- The COALESCE is still needed in this direction, though: a
+                -- client predating this column sends nothing, and an old build
+                -- signing in must not erase what a new one established.
+                client_platform = COALESCE(excluded.client_platform, linked_accounts.client_platform)
         `).bind(
             crypto.randomUUID(), userId, provider, providerId, email, displayName,
-            existing ? existing.merged_anon_id : (anonId || null)
+            existing ? existing.merged_anon_id : (anonId || null),
+            clientPlatformOrNull(clientPlatform)
         ).run();
 
         // Separate statement so a database without migration 0020 still
@@ -4044,7 +4106,7 @@ function corsHeaders(request) {
         // at all (preflight rejects it), so the tester drops the header to make
         // the request work and their traffic lands in the analytics tables —
         // which is how a "browsertest" user id got into conversation_logs.
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-synthetic-test, x-wallet-claim",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-signature, x-timestamp, x-user-id, x-chat-id, x-scenario, x-language, x-character-id, x-visit-id, x-client-platform, x-synthetic-test, x-wallet-claim",
         "Vary": "Origin",
     };
 }
@@ -4546,8 +4608,9 @@ async function writeConversationLogRow(env, entry) {
             total_tokens,
             client_timestamp,
             visit_id,
-            latency_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            latency_ms,
+            client_platform
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
         entry.id,
         new Date().toISOString(),
@@ -4568,7 +4631,8 @@ async function writeConversationLogRow(env, entry) {
         numberOrNull(usage.total_tokens),
         entry.clientTimestamp,
         stringOrNull(entry.visitId),
-        numberOrNull(entry.latencyMs)
+        numberOrNull(entry.latencyMs),
+        clientPlatformOrNull(entry.clientPlatform)
     ).run();
 }
 
@@ -4836,9 +4900,9 @@ async function recordMessageDelivery(rows, request, env) {
                 intended_at, rendered_at, seen_at,
                 failure_reason, queued_ms, flush_attempts, queue_dropped,
                 app_version, locale, tz_offset_min, connection_type,
-                viewport_w, viewport_h,
+                viewport_w, viewport_h, client_platform,
                 country, colo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bubble_id) DO UPDATE SET
                 intended_at = COALESCE(message_delivery.intended_at, excluded.intended_at),
                 rendered_at = COALESCE(message_delivery.rendered_at, excluded.rendered_at),
@@ -4865,7 +4929,15 @@ async function recordMessageDelivery(rows, request, env) {
                 tz_offset_min   = COALESCE(message_delivery.tz_offset_min,   excluded.tz_offset_min),
                 connection_type = COALESCE(message_delivery.connection_type, excluded.connection_type),
                 viewport_w      = COALESCE(message_delivery.viewport_w,      excluded.viewport_w),
-                viewport_h      = COALESCE(message_delivery.viewport_h,      excluded.viewport_h)
+                viewport_h      = COALESCE(message_delivery.viewport_h,      excluded.viewport_h),
+                -- Unlike app_version, this one is known before the first
+                -- flush — it is a compile-time property of the build, not
+                -- something fetched — so it should never actually need
+                -- filling in later. COALESCEd with the rest anyway, because
+                -- the one case that does arrive late is a receipt queued by
+                -- an older build and flushed after an update, and the row it
+                -- completes should end up saying which platform it was.
+                client_platform = COALESCE(message_delivery.client_platform, excluded.client_platform)
         `).bind(
             bubbleId,
             turnId,
@@ -4893,6 +4965,7 @@ async function recordMessageDelivery(rows, request, env) {
             stringOrNull(row.connectionType),
             numberOrNull(row.viewportW),
             numberOrNull(row.viewportH),
+            clientPlatformOrNull(row.clientPlatform),
             country,
             colo
         ));
@@ -4928,6 +5001,32 @@ function stringOrNull(value) {
 
 function numberOrNull(value) {
     return typeof value === "number" ? value : null;
+}
+
+/// Which client a request came from, as the client itself states it.
+///
+/// The three that ship are "web", "ios" and "android"; the desktop names are
+/// here because the Flutter project has those targets scaffolded and a build
+/// from one must be able to say so rather than be filed as a phone. See
+/// migration 0023 for why this is recorded rather than inferred.
+const CLIENT_PLATFORMS = ["web", "ios", "android", "macos", "windows", "linux"];
+
+/// An allowlisted platform name, or null.
+///
+/// Closed vocabulary rather than a length-capped passthrough, for two reasons.
+/// Anything reaching this is client-asserted and unauthenticated — /api/chat
+/// and /api/delivery both accept anonymous callers — so a free-text column
+/// here would be a place for a stranger to write whatever they liked into a
+/// table the admin pages render. And the column only earns its keep if it
+/// GROUP BYs into a handful of buckets: one typo'd client shipping "iOS" or
+/// "ios-17.2" would split the very count this exists to produce, and would do
+/// it silently.
+///
+/// Null for an unrecognised value, and null means unknown — never a guess, the
+/// 0009 rule. An old client sending nothing and a new one sending nonsense are
+/// both "we do not know", which is the honest answer in each case.
+function clientPlatformOrNull(value) {
+    return CLIENT_PLATFORMS.includes(value) ? value : null;
 }
 
 /**
@@ -7176,6 +7275,11 @@ async function exportAllTables(env, params) {
     // and the ordering. It is also the only table that records app_version,
     // which makes it the one place a visit says which bundle it actually ran;
     // an export without it cannot segment anything across a deploy.
+    // The fourth element is the select list, defaulting to everything. It
+    // exists for linked_accounts below and should stay the exception: a column
+    // added to a table nobody has to remember to list is a column that shows
+    // up in the export, which is the behaviour that makes this route worth
+    // having.
     const TABLES = [
         ["site_visits", "created_at", "created_at"],
         ["conversation_logs", "replace(created_at, 'T', ' ')", "created_at"],
@@ -7187,16 +7291,34 @@ async function exportAllTables(env, params) {
         // it can always be rebuilt from. Windowed on updated_at because a
         // wallet that has not moved has nothing new to say.
         ["coin_wallets", "updated_at", "updated_at"],
+        // Who signed in, and from which client. Absent until now, and its
+        // absence is why "how many iOS users signed in this week" could not be
+        // answered remotely at all — not because the data was missing but
+        // because no route would show it, so the question could not even be
+        // asked from outside the worker. Windowed on linked_at, which
+        // recordLinkedAccount refreshes on every sign-in, so the window means
+        // "signed in during it" rather than "first linked during it".
+        //
+        // Columns listed rather than SELECT *, and this one must stay listed:
+        // apple_refresh_token is a live credential that can revoke an Apple
+        // account (migration 0020), and this route's output is a JSON file
+        // that leaves the building — it is downloaded, saved, pasted into
+        // tools. A star here would hand every one of those a copy. email and
+        // display_name are personal but are the point of the table; the token
+        // has no business being read by a human at all.
+        ["linked_accounts", "linked_at", "linked_at",
+            "id, linked_at, user_id, provider, provider_id, email, display_name, " +
+            "merged_anon_id, apple_client_id, client_platform"],
     ];
 
     const tables = {};
     let totalRows = 0;
     let truncated = false;
 
-    for (const [name, timeExpr, orderCol] of TABLES) {
+    for (const [name, timeExpr, orderCol, columns = "*"] of TABLES) {
         try {
             const { results } = await env.CHAT_LOGS_DB.prepare(`
-                SELECT * FROM ${name}
+                SELECT ${columns} FROM ${name}
                 WHERE ${timeExpr} >= datetime('now', ?)
                 ORDER BY ${orderCol} DESC
                 LIMIT ${EXPORT_ALL_TABLE_LIMIT + 1}
