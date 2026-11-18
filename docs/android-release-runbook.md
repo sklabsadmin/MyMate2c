@@ -36,6 +36,22 @@ run. Found on the first pass:
   the Play data-safety form does not have to explain an advertising ID the
   app never reads. Put it back only if an ads SDK is added.
 
+## Emulator (added 2026-11-12)
+
+    sdkmanager "emulator" "system-images;android-36;google_apis_playstore;arm64-v8a"
+    avdmanager create avd -n mythos36 -k "system-images;android-36;google_apis_playstore;arm64-v8a" -d pixel_8
+    ~/Library/Android/sdk/emulator/emulator -avd mythos36 &
+    npm run android                      # debug, hot reload
+    npm run build:android:apk && adb install -r build/app/outputs/flutter-apk/app-release.apk
+
+Test the release APK too: code shrinking only runs in release. To see a
+scheduled notification without waiting hours, background the app, read its
+next alarm from `adb shell dumpsys alarm`, then
+`adb shell settings put global auto_time 0` and
+`adb shell cmd alarm set-time <millis>` past it (set `auto_time 1` after).
+The Android 8 image (`android-26`) does not boot on Apple Silicon. The app
+was first run on a device this way on 2026-11-12 (Android 16).
+
 ## One-time setup on the build machine (Adam's Mac, done 2026-10-09)
 
 No Android Studio. Homebrew only:
@@ -104,11 +120,11 @@ read `.env` either, so pass the defines by hand:
 or the app boots but every chat fails. The script prints "APP_SECRET is
 MISSING" in the run log when that happens.
 
-Version comes from `pubspec.yaml`: `version: 1.0.5+97` is versionName 1.0.5,
-versionCode 97. Play requires each upload's versionCode to be higher than
+Version comes from `pubspec.yaml`: `version: 1.0.7+103` is versionName 1.0.7,
+versionCode 103. Play requires each upload's versionCode to be higher than
 the last, so bump `+N` for every upload. Web, iOS and Android share the one
-build number: Android went first to 97 (2026-10-09), so the next web/iOS
-release uses 98 or higher.
+build number and whoever builds next takes the next one: Android took 97,
+101 and 103; after 103 the next build on any platform is 104 or higher.
 
 Release builds need `android/key.properties` (see `key.properties.example`);
 without it the script refuses to build a bundle and signs an APK with the
@@ -123,7 +139,10 @@ debug key.
   were baked in). "Invalid signature" means they were not.
 - Background the app for 15 seconds: the "you left mid-thought" nudge should
   arrive (may be a few minutes late on Android 13+ without exact alarms).
-- Settings → Google connect returns to the app via `mythoslive://settings?...`.
+- Settings → Continue with Google opens Google's own sheet and returns
+  signed in. This needs the Android OAuth clients described in
+  `docs/play-submission-1.0.7.md`; without them the sheet fails. Apple
+  sign-in is not offered on Android.
 - Coins: claim the daily coins, open the coins sheet, and confirm "Get more
   coins" is hidden - there is no `REVENUECAT_ANDROID_KEY` yet, so
   `RevenueCatService.isSupported` is false on Android and the store hides

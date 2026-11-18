@@ -1,5 +1,11 @@
 # Handoff: Android, for Build Boy 2
 
+> **Superseded 2026-11-12.** The port is on `main` (PR 17, 2026-11-10), the
+> app has run on an emulator, and the current build is 1.0.7 (103) from
+> branch `feat/android-1-0-7`. Current state and next steps are in
+> `docs/play-submission-1.0.7.md` and `docs/android-release-runbook.md`.
+> Everything below is history; "never merged" and "use 99" are no longer true.
+
 Written 2026-10-28 by the Android port session, which is closing. This
 supersedes `docs/HANDOFF-android-port-2026-10-09.md` (keep that for the
 history and the reasoning; this file is the current state).

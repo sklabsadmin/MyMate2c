@@ -3,6 +3,11 @@
     <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is on -->
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:forceDarkAllowed">false</item>
+        <!-- Android 12+ ignores windowBackground for the launch splash and
+             draws its own: these keep it the brand cream with the medallion,
+             matching the older splash (flutter_native_splash color). -->
+        <item name="android:windowSplashScreenBackground">#FCECE5</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_v31</item>
         <item name="android:windowFullscreen">false</item>
         <item name="android:windowDrawsSystemBarBackgrounds">false</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>

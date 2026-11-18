@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds shrink resources that no code references by R.id. The
+     notification icon is looked up by NAME from Dart, which the shrinker
+     cannot see, so it is kept explicitly. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_stat_mythos" />

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ system splash icon. The system masks the icon to a circle two
+     thirds of its width, so the medallion is inset to sit inside that circle.
+     The artwork's own corners are the same cream as the splash background. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_launcher_foreground"
+    android:inset="18%" />

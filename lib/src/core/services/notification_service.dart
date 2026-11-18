@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart'
     as fln;
@@ -93,8 +95,13 @@ class NotificationService {
 
     tz.initializeTimeZones();
 
+    // The small (status bar) icon. Android draws only its alpha channel, so
+    // the full-colour launcher icon showed as a white blob, and an adaptive
+    // icon here can crash the system UI on Android 8. This one is a plain
+    // white silhouette: android/app/src/main/res/drawable/ic_stat_mythos.xml,
+    // kept through resource shrinking by res/raw/keep.xml.
     const fln.AndroidInitializationSettings initializationSettingsAndroid =
-        fln.AndroidInitializationSettings('@mipmap/ic_launcher');
+        fln.AndroidInitializationSettings('ic_stat_mythos');
 
     final fln.DarwinInitializationSettings initializationSettingsDarwin =
         fln.DarwinInitializationSettings(
@@ -150,16 +157,6 @@ class NotificationService {
             fln.AndroidFlutterLocalNotificationsPlugin>();
     if (android == null) return;
 
-    // Android 13+: notifications are a runtime permission. Without this
-    // prompt every scheduled reminder is dropped without a trace. iOS asks
-    // through the DarwinInitializationSettings flags above; this is the
-    // Android equivalent. Older versions return true without prompting.
-    try {
-      await android.requestNotificationsPermission();
-    } catch (e) {
-      debugPrint('Notification permission request failed: $e');
-    }
-
     try {
       _canScheduleExact =
           await android.canScheduleExactNotifications() ?? false;
@@ -167,6 +164,22 @@ class NotificationService {
       debugPrint('canScheduleExactNotifications failed: $e');
       _canScheduleExact = false;
     }
+
+    // Android 13+: notifications are a runtime permission. Without this
+    // prompt every scheduled reminder is dropped without a trace. iOS asks
+    // through the DarwinInitializationSettings flags above; this is the
+    // Android equivalent. Older versions return true without prompting.
+    //
+    // Deliberately NOT awaited. main() awaits init() before runApp, and this
+    // future only completes when the person answers the system dialog, so
+    // awaiting it left the app sitting on its splash screen behind the
+    // prompt (seen on the first emulator run, 2026-11-12). Nothing is
+    // scheduled until the app is backgrounded, long after the answer.
+    unawaited(android.requestNotificationsPermission().then<void>(
+      (_) {},
+      onError: (Object e) =>
+          debugPrint('Notification permission request failed: $e'),
+    ));
   }
 
   // One channel for everything the app sends. Channel ids are permanent once
@@ -175,7 +188,7 @@ class NotificationService {
   static const String _channelId = 'mythos_reminders';
   static const String _channelName = 'Reminders';
   static const String _channelDescription =
-      'Morning and evening messages, and a nudge when a story is left unfinished.';
+      'Morning and evening messages, and a word from the personalities you talk to.';
 
   Future<void> showNotification({
     required int id,

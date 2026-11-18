@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification small icon: a speech bubble with three dots, the mark from
+     the top of the Mythos Live medallion. White on transparent, because
+     Android uses only the alpha channel in the status bar. Referenced by name
+     in lib/src/core/services/notification_service.dart. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,3C6.48,3 2,6.58 2,11c0,2.4 1.33,4.56 3.43,6.03L4.5,21l4.3,-2.38C9.8,18.87 10.88,19 12,19c5.52,0 10,-3.58 10,-8S17.52,3 12,3z M7.5,12.25a1.25,1.25 0,1 0,0 -2.5a1.25,1.25 0,0 0,0 2.5z M12,12.25a1.25,1.25 0,1 0,0 -2.5a1.25,1.25 0,0 0,0 2.5z M16.5,12.25a1.25,1.25 0,1 0,0 -2.5a1.25,1.25 0,0 0,0 2.5z" />
+</vector>

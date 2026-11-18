@@ -195,15 +195,33 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
 
   static bool _googleInitialized = false;
 
-  /// Sign in with Apple is offered wherever Google is (App Review 4.8). On the
-  /// web it is the redirect flow; natively, iOS only for now — Android would
-  /// need the web flow inside a Custom Tab, which is not wired up.
+  /// Sign in with Apple is offered wherever Google is on Apple's platforms and
+  /// the web (App Review 4.8). Not on Android: it would need the web flow
+  /// inside a Custom Tab plus a worker redirect, which is not wired up, and
+  /// 4.8 is an App Store rule, not a Play one. Android is Google only.
   static bool get appleAvailable =>
       kIsWeb || defaultTargetPlatform == TargetPlatform.iOS;
 
-  /// Whether this build can sign in at all. Android has no native client yet.
+  /// Whether this build can sign in at all.
   static bool get signInAvailable =>
-      kIsWeb || defaultTargetPlatform == TargetPlatform.iOS;
+      kIsWeb ||
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.android;
+
+  /// The Google "Web application" OAuth client, the same one the worker has
+  /// as GOOGLE_CLIENT_ID (wrangler.jsonc). Android's Credential Manager only
+  /// returns an ID token when told which server client the token is for, and
+  /// the token's audience is then this id, which the worker already accepts.
+  /// Not a secret: client ids are public. iOS reads the same value from
+  /// Info.plist (GIDServerClientID) instead.
+  ///
+  /// Android also needs an "Android" OAuth client in the same Google Cloud
+  /// project for package com.iosappv2.ai_boyfriend_chat and the signing
+  /// certificate's SHA-1 (one client per certificate: Play app signing,
+  /// upload key, debug key). That one is never named in code; without it the
+  /// sheet fails with a developer/configuration error.
+  static const String _googleServerClientId =
+      '791029751937-vf4kbpfs1h1t6kmvb83eu9mquidj070g.apps.googleusercontent.com';
 
   @override
   Future<AuthState> build() => _fetch();
@@ -369,8 +387,13 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
   Future<Map<String, dynamic>?> _googleCredential() async {
     final google = GoogleSignIn.instance;
     if (!_googleInitialized) {
-      // Client ids come from Info.plist (GIDClientID, GIDServerClientID).
-      await google.initialize();
+      // iOS: client ids come from Info.plist (GIDClientID, GIDServerClientID).
+      // Android has no such file, so the server client is passed here.
+      await google.initialize(
+        serverClientId: defaultTargetPlatform == TargetPlatform.android
+            ? _googleServerClientId
+            : null,
+      );
       _googleInitialized = true;
     }
     try {
