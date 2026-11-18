@@ -5548,7 +5548,30 @@ async function recordSiteVisit(raw, request, env) {
             Number.isFinite(hideCount) && hideCount >= 0 ? Math.round(hideCount) : null,
             exitMode,
             navType,
-            detectPlatform(request),
+            // The BEACON'S referrer (payload.referer, read from the page's
+            // document.referrer), not this request's Referer header.
+            //
+            // That substitution is the whole of the drift migration 0008's
+            // comment describes. This is an XHR the page makes to our own
+            // worker, so its Referer header is always the page it was sent
+            // from — our own URL — and the previous code here called a
+            // request-based helper that read exactly that. Every row whose
+            // user-agent was not Instagram or Facebook recorded our own
+            // hostname as its "platform", which is why the live column reads
+            // 'chat.deeploveechoes.com' and 'chat.deeplovepoems.com' and never
+            // the vocabulary 0008 documents.
+            //
+            // `source` three fields up was already right: the block above
+            // assembles a fake request carrying payload.referer precisely
+            // because this request's own headers cannot answer the question.
+            // Only platform was left reading the live request, and the
+            // request-based helper has been deleted so that the two cannot
+            // drift apart again — there is now one way to ask.
+            detectPlatformFrom(
+                request.headers.get("User-Agent"),
+                referer,
+                url.hostname
+            ),
             appVersion,
             Number.isFinite(touchCount) && touchCount >= 0 ? Math.round(touchCount) : null,
             isReturn,
@@ -5582,7 +5605,12 @@ async function recordReferralVisit(env, visit) {
             // No request here — this is called with the fields already lifted
             // off it, so the detector reads them directly rather than a fake
             // request being assembled to feed it.
-            detectPlatformFrom(visit.userAgent, visit.referer)
+            //
+            // Unlike the beacon, this referer was always the right one: the
+            // caller is a real page navigation to /c/<character>, so its
+            // Referer header is the page the visitor actually came from. Only
+            // the vocabulary changes for this table.
+            detectPlatformFrom(visit.userAgent, visit.referer, visit.selfHost)
         ).run();
     } catch (error) {
         console.error(JSON.stringify({ event: "referral_visit_log_failed", error: error.message }));
@@ -5880,7 +5908,34 @@ const REFERER_PLATFORMS = [
 /// against a worker.js 2,500 lines smaller than this one and the tables it
 /// regrouped have been redesigned twice since. This is the capture half only,
 /// which is what stops new rows recording platform = NULL.
-function detectPlatformFrom(userAgent, referer) {
+///
+/// CLOSED VOCABULARY: one of the REFERER_PLATFORMS names, or "internal",
+/// "other" or "direct". It used to return the referring hostname itself for
+/// anything unrecognised, which broke the column in two ways at once.
+///
+/// The first was cardinality. A column whose whole purpose is `GROUP BY
+/// platform` cannot have one bucket per host on the internet; the counts
+/// scatter across rows that each mean "one person came from somewhere".
+///
+/// The second was that it recorded OUR OWN hostname, which is not a platform
+/// and not a traffic source — it is the absence of one. Live rows read
+/// 'chat.deeploveechoes.com' and 'chat.deeplovepoems.com', and a count of
+/// those says nothing except "a visitor was already on the site". See the
+/// caller in recordSiteVisit for how every row came to say that, and
+/// migration 0024 for the repair of the ones already written.
+///
+/// Nothing is lost by closing the vocabulary: `referer` is stored raw and
+/// uncapped on every row of both tables, so the exact host behind "other" is
+/// always one query away. That is what makes a bounded label the right thing
+/// to store here rather than a lossy summary — the evidence stays, and this
+/// column goes back to being the one thing it can usefully be, which is
+/// groupable.
+///
+/// `selfHost` is the hostname serving the request, against which "internal" is
+/// decided. Passed in rather than hardcoded so a preview deployment classifies
+/// its own traffic correctly instead of counting itself as an acquisition
+/// channel.
+function detectPlatformFrom(userAgent, referer, selfHost = null) {
     const ua = userAgent || "";
     // Instagram first, so a Meta user-agent carrying both tokens is not filed
     // as Facebook.
@@ -5891,17 +5946,55 @@ function detectPlatformFrom(userAgent, referer) {
         try {
             const host = new URL(referer).hostname.replace(/^www\./, "");
             const known = REFERER_PLATFORMS.find(([pattern]) => pattern.test(host));
-            return known ? known[1] : host.slice(0, 60);
-        } catch (_) {}
+            if (known) return known[1];
+            // Checked after the known platforms on purpose: Facebook's link
+            // shim puts the destination in the query string
+            // (l.facebook.com/l.php?u=https://chat.deeploveechoes.com/...),
+            // so a URL carrying both names is a Facebook click, not an
+            // internal one. Matching on the parsed hostname rather than a
+            // substring makes that unambiguous.
+            return isSelfHost(host, selfHost) ? "internal" : "other";
+        } catch (_) {
+            // Unparseable Referer. Not "direct" — a referrer was sent and we
+            // failed to read it, which is a different fact.
+            return "other";
+        }
     }
     return "direct";
 }
 
-function detectPlatform(request) {
-    return detectPlatformFrom(
-        request.headers.get("User-Agent"),
-        request.headers.get("Referer")
-    );
+/// The apex domains this worker serves, from `routes` in wrangler.jsonc
+/// (chat.deeploveechoes.com, chat.deeplovepoems.com, logs.deeplovepoems.com).
+///
+/// A list rather than something derived from the request, because the product
+/// runs on two brands and a single request cannot know that: it only sees the
+/// host it arrived on, so crossing from chat.deeploveechoes.com to
+/// chat.deeplovepoems.com would read as an external referral to whichever side
+/// received it. Both are the same app, with the same characters, so a visitor
+/// crossing between them is navigating inside the site and not arriving from a
+/// channel.
+///
+/// Keep in step with wrangler.jsonc. A domain missing here reads as 'other',
+/// which is wrong but bounded and recomputable from the stored `referer` —
+/// unlike the hostname-valued column this replaced, where the error was
+/// unbounded and indistinguishable from real data.
+const SITE_APEX_DOMAINS = ["deeploveechoes.com", "deeplovepoems.com"];
+
+/// Whether a referring host is us: one of our apexes above or a subdomain of
+/// one, or the host this request itself arrived on.
+///
+/// The request host is matched exactly and by subdomain rather than reduced to
+/// an apex, because reducing it would be wrong exactly where it matters: the
+/// last two labels of a workers.dev preview are "workers.dev", and treating
+/// all of workers.dev as ours would classify genuinely external referrals as
+/// internal. Our own names under it are ours; the registry is not.
+function isSelfHost(host, selfHost) {
+    const h = String(host || "").toLowerCase();
+    if (!h) return false;
+    const under = (domain) => h === domain || h.endsWith("." + domain);
+    if (SITE_APEX_DOMAINS.some(under)) return true;
+    const self = String(selfHost || "").replace(/^www\./, "").toLowerCase();
+    return Boolean(self) && under(self);
 }
 
 function detectTrafficSource(request, url) {
@@ -5982,6 +6075,7 @@ async function serveCharacterLanding(request, env, url, ctx) {
                 utmCampaign: url.searchParams.get("utm_campaign"),
                 referer: request.headers.get("Referer"),
                 userAgent: request.headers.get("User-Agent"),
+                selfHost: url.hostname,
                 known: Boolean(card),
             }).catch(() => {})
         );

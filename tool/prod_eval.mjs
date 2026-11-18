@@ -319,6 +319,42 @@ if (splitAt) {
 }
 
 // ---------------------------------------------------------------------------
+// Where did they come FROM — the traffic platform, repaired by migration 0024.
+//
+// Three adjacent things that are not each other, and the reason this report
+// names all three separately:
+//
+//   source                  the campaign tag as written on the link. Says
+//                           where it was PUBLISHED.
+//   platform (below)        the in-app browser, else the referring host. Says
+//                           where it was CLICKED. The gap between this and
+//                           source measures how much of an Instagram campaign
+//                           Meta served on Facebook (0008).
+//   client_platform (next)  ios / android / web. Says which APP drew it (0023).
+//
+// Until 0024 this column held our own hostname on every row whose user-agent
+// was not Instagram or Facebook, because the beacon handler read the Referer of
+// the XHR instead of the page's own referrer. If 'internal' dominates a window
+// AFTER that deploy that is a real finding (people reloading inside the app);
+// hostnames appearing at all means the repair has not been applied.
+const trafficRows = dump.tables?.site_visits?.rows || [];
+if (trafficRows.length) {
+    console.log(`\n== traffic platform — where they were when they clicked (${dump.window_hours}h) ==`);
+    const counts = {};
+    for (const r of trafficRows) {
+        if (r.is_dev === 1) continue;
+        const k = r.platform || '(unknown)';
+        counts[k] = (counts[k] || 0) + 1;
+    }
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    for (const [k, n] of Object.entries(counts).sort((a, z) => z[1] - a[1])) {
+        const flag = k.includes('.') ? '   <- a hostname: migration 0024 is not applied' : '';
+        console.log(`  ${String(n).padStart(6)} ${pct(n, total).padStart(7)}  ${k}${flag}`);
+    }
+    console.log('  (rows, not visits — one visit sends several events; `source` above is the campaign tag)');
+}
+
+// ---------------------------------------------------------------------------
 // Which platform is this user on?
 //
 // Separate from everything above, and it has to be: every number in the report
