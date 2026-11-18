@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../features/wallet/coin_wallet.dart';
 import '../config/app_config.dart';
+import 'client_platform.dart';
 import 'delivery_log.dart';
 import 'device_identity.dart';
 import 'revenue_cat_service.dart';
@@ -360,6 +361,13 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
           ...body,
           'anon_id': anonId,
           'anon_ticket': ?ticket,
+          // Which app is signing in. Only this moment knows: by the time the
+          // row is in linked_accounts the evidence is gone, and the worker
+          // writes a Google sign-in from the app identically to one from a
+          // browser. The Apple pair of client ids is the one trace that
+          // survives, and it separates app from web without separating iOS
+          // from Android — so the client has to say. See migration 0023.
+          'platform': clientPlatform(),
         }),
         options: Options(
           headers: {'Content-Type': 'application/json'},

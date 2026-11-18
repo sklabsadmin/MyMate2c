@@ -317,3 +317,100 @@ if (splitAt) {
         console.log(`  ${h}  reached ${String(b.reached).padStart(4)}  asked ${String(b.shown).padStart(4)}  not-asked-silent ${String(b.quiet).padStart(3)}  tapped ${String(b.tapped).padStart(3)}`);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Where did they come FROM — the traffic platform, repaired by migration 0024.
+//
+// Three adjacent things that are not each other, and the reason this report
+// names all three separately:
+//
+//   source                  the campaign tag as written on the link. Says
+//                           where it was PUBLISHED.
+//   platform (below)        the in-app browser, else the referring host. Says
+//                           where it was CLICKED. The gap between this and
+//                           source measures how much of an Instagram campaign
+//                           Meta served on Facebook (0008).
+//   client_platform (next)  ios / android / web. Says which APP drew it (0023).
+//
+// Until 0024 this column held our own hostname on every row whose user-agent
+// was not Instagram or Facebook, because the beacon handler read the Referer of
+// the XHR instead of the page's own referrer. If 'internal' dominates a window
+// AFTER that deploy that is a real finding (people reloading inside the app);
+// hostnames appearing at all means the repair has not been applied.
+const trafficRows = dump.tables?.site_visits?.rows || [];
+if (trafficRows.length) {
+    console.log(`\n== traffic platform — where they were when they clicked (${dump.window_hours}h) ==`);
+    const counts = {};
+    for (const r of trafficRows) {
+        if (r.is_dev === 1) continue;
+        const k = r.platform || '(unknown)';
+        counts[k] = (counts[k] || 0) + 1;
+    }
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    for (const [k, n] of Object.entries(counts).sort((a, z) => z[1] - a[1])) {
+        const flag = k.includes('.') ? '   <- a hostname: migration 0024 is not applied' : '';
+        console.log(`  ${String(n).padStart(6)} ${pct(n, total).padStart(7)}  ${k}${flag}`);
+    }
+    console.log('  (rows, not visits — one visit sends several events; `source` above is the campaign tag)');
+}
+
+// ---------------------------------------------------------------------------
+// Which platform is this user on?
+//
+// Separate from everything above, and it has to be: every number in the report
+// so far is web-only by construction. site_visits is written by the splash
+// beacon, which is a web page, and the apps write nothing to it at all
+// (analytics.dart exports a no-op logFunnelEvent off the web) — so "visits"
+// has never meant "arrivals", it has meant "browser arrivals". Over the 7 days
+// to 2026-11-17 that was 26 rows against 1,689 delivery receipts from 51
+// distinct users: the funnel was reporting on a minority it could not name as
+// one.
+//
+// Note that site_visits.platform is NOT this. Migration 0008 built that column
+// as traffic source (instagram / facebook / direct) and it has since drifted to
+// holding hostnames; it has never held a device. The column read here is
+// client_platform, added by 0023 and stated by the client at the moment it
+// signs in or sends a request, because nothing server-side can recover it
+// afterwards — app_version cannot, web and app being built from one
+// pubspec.yaml.
+//
+// NULL is printed as its own bucket and must stay that way. It means the row
+// came from a client predating 0023, which during the rollout is most of them,
+// and folding it into any platform would invent the very measurement this
+// section exists to provide.
+//
+// linked_accounts is windowed on linked_at, which the worker refreshes on every
+// sign-in, so its count is "signed in during the window" rather than "first
+// linked during it" — which is the question anyone asking this actually means.
+const PLATFORM_TABLES = [
+    ['accounts (signed in)', 'linked_accounts'],
+    ['chat requests', 'conversation_logs'],
+    ['delivery receipts', 'message_delivery'],
+];
+console.log(`\n== client platform (${dump.window_hours}h) ==`);
+for (const [label, table] of PLATFORM_TABLES) {
+    const entry = dump.tables?.[table];
+    const counts = {};
+    const users = {};
+    for (const r of entry?.rows || []) {
+        const k = r.client_platform || '(unknown)';
+        counts[k] = (counts[k] || 0) + 1;
+        (users[k] || (users[k] = new Set())).add(r.user_id);
+    }
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    if (!total) {
+        // Three different nothings, and they are not interchangeable: the
+        // table is missing from the export, the export could not read it, or
+        // nobody did this. Only the last one is a finding about people.
+        const why = !entry ? 'not in the export — the worker predates it'
+            : entry.error ? entry.error
+                : 'no rows in this window';
+        console.log(`  ${label}: ${why}`);
+        continue;
+    }
+    console.log(`  ${label} (n=${total})`);
+    for (const [k, n] of Object.entries(counts).sort((a, z) => z[1] - a[1])) {
+        console.log(`    ${String(n).padStart(6)} ${pct(n, total).padStart(7)}  ${k.padEnd(10)} ${String(users[k].size).padStart(4)} users`);
+    }
+    if (entry.truncated) console.log(`    !! ${table} hit the export cap — these shares are from a partial window.`);
+}

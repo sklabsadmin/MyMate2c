@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import 'analytics.dart';
 import 'auth_service.dart';
+import 'client_platform.dart';
 import 'delivery_env.dart';
 
 /// Where a line the visitor read actually came from.
@@ -711,6 +712,12 @@ class DeliveryLog {
         // platforms.
         'locale': PlatformDispatcher.instance.locale.toLanguageTag(),
         'tzOffsetMin': DateTime.now().timeZoneOffset.inMinutes,
+        // Unconditional, unlike the optional fields below: this one is decided
+        // at compile time and cannot be absent or arrive late, so there is no
+        // "not known yet" state for it to be left out of. It is also the only
+        // field here that says which app drew the bubble — app_version cannot,
+        // because web and app share a pubspec version (migration 0023).
+        'clientPlatform': clientPlatform(),
       };
       final appVersion = _appVersion;
       if (appVersion != null) environment['appVersion'] = appVersion;
