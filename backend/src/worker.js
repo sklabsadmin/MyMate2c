@@ -1148,6 +1148,42 @@ export default {
             }
         }
 
+        if (request.method === "GET" && url.pathname === "/admin/platforms") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            return new Response(adminPlatformsPageHtml(), {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        }
+
+        // Activity by the client it came from. The question this database
+        // could not answer before migration 0023 — see that file for why
+        // site_visits.platform, app_version and the funnel tables could none
+        // of them stand in for it.
+        if (request.method === "GET" && url.pathname === "/api/admin/platforms") {
+            const authError = requireAdminAuth(request, env);
+            if (authError) return authError;
+            const db = env.CHAT_LOGS_DB;
+            if (!db) return jsonResponse({ error: "No database bound" }, { status: 503 });
+            try {
+                const asked = parseInt(url.searchParams.get("hours") || "24", 10);
+                const hours = PLATFORM_WINDOW_HOURS.includes(asked) ? asked : 24;
+                const filter = clientPlatformOrNull(url.searchParams.get("platform")) || "";
+                return jsonResponse(await platformReport(db, hours, filter));
+            } catch (e) {
+                const message = e && e.message ? e.message : String(e);
+                // Same courtesy as the delivery and deploy reports: an
+                // unapplied migration is the expected reason this fails, and
+                // naming it beats a bare 500.
+                if (/no such column|no such table/i.test(message)) {
+                    return jsonResponse({
+                        error: "client_platform does not exist yet — apply migration 0023.",
+                    }, { status: 503 });
+                }
+                return jsonResponse({ error: `Server error: ${message}` }, { status: 500 });
+            }
+        }
+
         if (request.method === "GET" && url.pathname === "/admin/delivery") {
             const authError = requireAdminAuth(request, env);
             if (authError) return authError;
@@ -5029,6 +5065,154 @@ function clientPlatformOrNull(value) {
     return CLIENT_PLATFORMS.includes(value) ? value : null;
 }
 
+/// The windows the platform page offers. A closed list rather than a clamped
+/// integer: these are the three questions actually asked of it ("since
+/// yesterday", "since the day before", "this week"), and an arbitrary number
+/// invites comparing two windows that were never meant to line up.
+const PLATFORM_WINDOW_HOURS = [24, 48, 168];
+
+/// Device from a stored browser user-agent, as SQL.
+///
+/// Only for site_visits, and only ever labelled "(web)": those rows exist
+/// because a browser ran the splash beacon, so every one of them IS a web
+/// visit and this says which device that browser was on. It is not a
+/// substitute for client_platform — the apps write no rows here at all, which
+/// is most of why that column had to exist.
+///
+/// Distinct from the `platform` column beside it, which 0024 has just repaired
+/// to mean the traffic source. Two different questions on one table, and the
+/// page keeps them in separate tables so neither can be read as the other.
+///
+/// iPadOS 13+ reports a desktop user-agent indistinguishable from a Mac's, so
+/// an iPad lands in "mac (web)". Left that way rather than guessed at from
+/// touch support: a wrong device is worse than a coarse one.
+function webDeviceSql(alias) {
+    return `CASE
+        WHEN ${alias}.user_agent LIKE '%iPhone%'
+          OR ${alias}.user_agent LIKE '%iPod%'
+          OR ${alias}.user_agent LIKE '%iPad%'      THEN 'ios (web)'
+        WHEN ${alias}.user_agent LIKE '%Android%'   THEN 'android (web)'
+        WHEN ${alias}.user_agent LIKE '%Macintosh%' THEN 'mac (web)'
+        WHEN ${alias}.user_agent LIKE '%Windows%'   THEN 'windows (web)'
+        WHEN ${alias}.user_agent IS NULL
+          OR ${alias}.user_agent = ''               THEN 'unknown'
+        ELSE 'other (web)'
+    END`;
+}
+
+/**
+ * Activity by client platform over the last `hours`, optionally narrowed to one.
+ *
+ * Each table is reported separately rather than joined into one "users"
+ * figure, because they do not cover the same population and a single total
+ * would hide that: conversation_logs is people who sent something,
+ * message_delivery is every bubble drawn at anyone, linked_accounts is
+ * sign-ins only, and site_visits is web page loads and nothing else.
+ *
+ * `(unattributed)` is a first-class row everywhere and never folded into a
+ * platform. Every client built before 0023 reports nothing, so for as long as
+ * those builds are in the wild it is most of the data; showing it as a share
+ * is what keeps the page from reading as a measurement before it is one.
+ */
+async function platformReport(db, hours, filter) {
+    const since = `-${hours} hours`;
+    const bind = [since, filter || ""];                       // ?1 window, ?2 filter
+    const matches = (col) => `(?2 = '' OR COALESCE(${col}, '') = ?2)`;
+
+    const chats = await db.prepare(`
+        SELECT COALESCE(client_platform, '(unattributed)') AS platform,
+               COUNT(*) AS rows_n,
+               COUNT(DISTINCT user_id) AS users
+        FROM conversation_logs
+        -- conversation_logs writes ISO-8601 while every other table takes
+        -- SQLite's own format; as strings those do not compare. The same trap
+        -- exportAllTables documents.
+        WHERE replace(created_at, 'T', ' ') >= datetime('now', ?1)
+          AND ${realUserIdSql("user_id")}
+          AND ${matches("client_platform")}
+        GROUP BY 1 ORDER BY rows_n DESC
+    `).bind(...bind).all();
+
+    const receipts = await db.prepare(`
+        SELECT COALESCE(client_platform, '(unattributed)') AS platform,
+               COUNT(*) AS rows_n,
+               COUNT(DISTINCT user_id) AS users,
+               SUM(CASE WHEN seen_at IS NULL THEN 1 ELSE 0 END) AS unseen
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?1)
+          AND ${matches("client_platform")}
+        GROUP BY 1 ORDER BY rows_n DESC
+    `).bind(...bind).all();
+
+    const signins = await db.prepare(`
+        SELECT COALESCE(client_platform, '(unattributed)') AS platform,
+               provider,
+               COUNT(*) AS accounts
+        FROM linked_accounts
+        -- linked_at is refreshed on every sign-in, so this is "signed in
+        -- during the window", not "created an account during it".
+        WHERE linked_at >= datetime('now', ?1)
+          AND ${matches("client_platform")}
+        GROUP BY 1, 2 ORDER BY accounts DESC
+    `).bind(...bind).all();
+
+    // Shown beside the platform, never translated into it. In November 2026
+    // the Android build happened to carry 2.0.0+8x while iOS and web shared
+    // 1.0.7+10x, so the version nearly separated them — but web and both apps
+    // are built from one pubspec, so that is release numbering coinciding and
+    // a worker encoding it would start lying at the next bump.
+    const versions = await db.prepare(`
+        SELECT COALESCE(client_platform, '(unattributed)') AS platform,
+               COALESCE(app_version, '(none)') AS app_version,
+               COUNT(*) AS rows_n,
+               COUNT(DISTINCT user_id) AS users
+        FROM message_delivery
+        WHERE server_received_at >= datetime('now', ?1)
+          AND ${matches("client_platform")}
+        GROUP BY 1, 2 ORDER BY rows_n DESC LIMIT 20
+    `).bind(...bind).all();
+
+    // Web only, and deliberately not narrowed by the filter: these rows
+    // predate the column and can never carry it, because the beacon that
+    // writes them runs only in a browser.
+    const webDevices = await db.prepare(`
+        SELECT ${webDeviceSql("a")} AS device,
+               COUNT(*) AS arrivals
+        FROM site_visits a
+        WHERE a.event = 'arrive'
+          AND a.created_at >= datetime('now', ?1)
+          AND IFNULL(a.is_dev, 0) = 0
+        GROUP BY 1 ORDER BY arrivals DESC
+    `).bind(since).all();
+
+    const rows = (r) => r.results || [];
+    const sum = (list) => list.reduce((n, r) => n + (r.rows_n || 0), 0);
+    const receiptRows = rows(receipts);
+    const attributed = sum(receiptRows.filter((r) => r.platform !== "(unattributed)"));
+    const unattributed = sum(receiptRows.filter((r) => r.platform === "(unattributed)"));
+
+    return {
+        hours,
+        platform: filter || null,
+        windows: PLATFORM_WINDOW_HOURS,
+        platforms: CLIENT_PLATFORMS,
+        chats: rows(chats),
+        receipts: receiptRows,
+        signins: rows(signins),
+        versions: rows(versions),
+        webDevices: rows(webDevices),
+        // The headline, and the honest one: what share of this window can be
+        // placed on a platform at all.
+        coverage: {
+            attributed,
+            unattributed,
+            pct: attributed + unattributed
+                ? Math.round((1000 * attributed) / (attributed + unattributed)) / 10
+                : null,
+        },
+    };
+}
+
 /**
  * Validates user input for banned content/patterns
  */
@@ -8567,6 +8751,14 @@ function adminIndexPageHtml() {
      traffic by source.</div>
 </a>
 
+<a class="card" href="/admin/platforms">
+  <div class="t">Platforms <span class="em">iOS / Android / web</span></div>
+  <div class="d">Activity by the client it came from, over 24 or 48 hours or a week,
+     filterable to one platform. Counts what each client said it was rather than
+     guessing from a version string — and states plainly how much of the window
+     predates the clients that say.</div>
+</a>
+
 <a class="card" href="/admin/first30">
   <div class="t">First 30 seconds <span class="em">tick by tick</span></div>
   <div class="d">The survival curve for the chat screen at the resolution it was
@@ -9927,6 +10119,159 @@ async function render(out) {
 }
 load();
 </script></body></html>`;
+}
+
+function adminPlatformsPageHtml() {
+    return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Mythos Live - Platforms</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #0f0f14; color: #e6e6ea; }
+  header { padding: 16px 24px; border-bottom: 1px solid #2a2a33; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; }
+  a { color: #8ab4ff; }
+  select, button { background: #1c1c24; border: 1px solid #33333d; color: #e6e6ea; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  main { padding: 16px 24px; max-width: 1100px; margin: 0 auto; }
+  h2 { font-size: 14px; color: #9a9aa5; text-transform: uppercase; letter-spacing: .06em; margin: 28px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #22222a; }
+  th { color: #9a9aa5; font-weight: 600; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: #6f6f7a; }
+  .warn { color: #ffb454; }
+  .big { font-size: 26px; font-weight: 600; }
+  .wrap { overflow-x: auto; }
+  .note { color: #9a9aa5; font-size: 13px; line-height: 1.5; max-width: 80ch; margin: 0 0 8px; }
+  .banner { background: #1c1726; border: 1px solid #3a2f18; border-left: 3px solid #ffb454;
+            padding: 10px 14px; border-radius: 6px; margin: 14px 0 0; font-size: 13px;
+            line-height: 1.5; max-width: 80ch; }
+${sortableTableCss()}
+</style>
+</head>
+<body>
+<header>
+  <h1>Platforms</h1>
+  <a href="/admin">&larr; Admin</a>
+  <a href="/admin/visits">Visits &rarr;</a>
+  <select id="hours" onchange="load()">
+    <option value="24" selected>Last 24 hours</option>
+    <option value="48">Last 48 hours</option>
+    <option value="168">Last 7 days</option>
+  </select>
+  <select id="platform" onchange="load()">
+    <option value="" selected>All platforms</option>
+    <option value="ios">iOS only</option>
+    <option value="android">Android only</option>
+    <option value="web">Web only</option>
+    <option value="macos">macOS only</option>
+    <option value="windows">Windows only</option>
+    <option value="linux">Linux only</option>
+  </select>
+</header>
+<main>
+  <div class="big" id="cov">-</div>
+  <div class="muted">of delivery receipts in this window can be attributed to a platform</div>
+  <div id="banner"></div>
+
+  <h2>Chats</h2>
+  <p class="note">Rows in <code>conversation_logs</code> — someone sent a message and the
+     server answered. Test and developer ids excluded.</p>
+  <div class="wrap"><table id="chats" class="sortable"><thead><tr><th>Platform</th><th class="num" data-type="num" data-sorted="desc">Chats</th><th class="num" data-type="num">Users</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Bubbles drawn</h2>
+  <p class="note">Delivery receipts — every bubble a client reported putting on screen,
+     scripted lines included. This is the widest view of real activity, and the only
+     one the apps appear in at all: they write no arrival rows.</p>
+  <div class="wrap"><table id="receipts" class="sortable"><thead><tr><th>Platform</th><th class="num" data-type="num" data-sorted="desc">Bubbles</th><th class="num" data-type="num">Users</th><th class="num" data-type="num">Never seen</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Sign-ins</h2>
+  <p class="note">Accounts whose most recent sign-in falls in this window — not new
+     accounts. Anyone riding an existing session token does not re-authenticate and so
+     does not appear, which makes this a floor.</p>
+  <div class="wrap"><table id="signins" class="sortable"><thead><tr><th>Platform</th><th>Provider</th><th class="num" data-type="num" data-sorted="desc">Accounts</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>App version by platform</h2>
+  <p class="note">Side by side, not merged. Web and both apps are built from one
+     <code>pubspec.yaml</code>, so the version string is shared and cannot identify a
+     platform on its own — if a version looks like it separates them, that is release
+     numbering coinciding, and it stops being true at the next bump.</p>
+  <div class="wrap"><table id="versions" class="sortable"><thead><tr><th>Platform</th><th>App version</th><th class="num" data-type="num" data-sorted="desc">Bubbles</th><th class="num" data-type="num">Users</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Web arrivals by device</h2>
+  <p class="note">Derived from the stored browser user-agent on <code>site_visits</code>,
+     which only a browser writes — so nothing here is app traffic, and this table ignores
+     the platform filter. Not the same thing as that table's <code>platform</code> column,
+     which means the traffic source. An iPad reports a desktop user-agent and lands under
+     mac.</p>
+  <div class="wrap"><table id="devices" class="sortable"><thead><tr><th>Device</th><th class="num" data-type="num" data-sorted="desc">Arrivals</th></tr></thead><tbody></tbody></table></div>
+</main>
+<script>
+${sortableTableJs()}
+const esc = s => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
+const sv = v => ' data-sv="' + (v === null || v === undefined ? '' : v) + '"';
+// Same guard as the referrals and visits pages: without it a failed request
+// leaves the previous numbers on screen with nothing saying they are stale.
+function load() {
+  render().catch(function (err) {
+    console.error('platforms page failed', err);
+    document.getElementById('cov').textContent =
+      'error: ' + (err && err.message ? err.message : err);
+  });
+}
+function fill(id, rows, cells, cols) {
+  document.querySelector('#' + id + ' tbody').innerHTML = (rows || []).map(cells).join('')
+    || '<tr><td colspan="' + cols + '" class="muted">Nothing in this window.</td></tr>';
+}
+// An unattributed row is never styled like a platform: it is the absence of one.
+const name = p => p === '(unattributed)'
+  ? '<span class="warn">(unattributed)</span>' : esc(p);
+async function render() {
+  const hours = document.getElementById('hours').value;
+  const platform = document.getElementById('platform').value;
+  const res = await fetch('/api/admin/platforms?hours=' + hours +
+    (platform ? '&platform=' + encodeURIComponent(platform) : ''));
+  if (!res.ok && res.status !== 503) throw new Error('HTTP ' + res.status);
+  const d = await res.json();
+  if (d.error) {
+    document.getElementById('cov').textContent = '-';
+    document.getElementById('banner').innerHTML = '<div class="banner">' + esc(d.error) + '</div>';
+    return;
+  }
+  const c = d.coverage || {};
+  document.getElementById('cov').textContent = c.pct === null || c.pct === undefined
+    ? 'no data' : c.pct + '%';
+  // The banner is the point of the page while coverage is low: a platform
+  // table read without it looks like iOS is absent, when it is only silent.
+  document.getElementById('banner').innerHTML = c.unattributed
+    ? '<div class="banner"><b>' + c.unattributed + '</b> of ' +
+      (c.attributed + c.unattributed) + ' bubbles carry no platform. Those came from ' +
+      'clients built before it was recorded; they are real activity from real people, ' +
+      'and no table on this page can say which platform they were on. Coverage rises ' +
+      'only as new app builds reach the stores — read a per-platform count as a lower ' +
+      'bound until this reaches 100%.</div>'
+    : '';
+  fill('chats', d.chats, r => '<tr><td>' + name(r.platform) + '</td><td class="num"' +
+    sv(r.rows_n) + '>' + r.rows_n + '</td><td class="num"' + sv(r.users) + '>' + r.users + '</td></tr>', 3);
+  fill('receipts', d.receipts, r => '<tr><td>' + name(r.platform) + '</td><td class="num"' +
+    sv(r.rows_n) + '>' + r.rows_n + '</td><td class="num"' + sv(r.users) + '>' + r.users +
+    '</td><td class="num muted"' + sv(r.unseen || 0) + '>' + (r.unseen || 0) + '</td></tr>', 4);
+  fill('signins', d.signins, r => '<tr><td>' + name(r.platform) + '</td><td>' +
+    esc(r.provider) + '</td><td class="num"' + sv(r.accounts) + '>' + r.accounts + '</td></tr>', 3);
+  fill('versions', d.versions, r => '<tr><td>' + name(r.platform) + '</td><td>' +
+    esc(r.app_version) + '</td><td class="num"' + sv(r.rows_n) + '>' + r.rows_n +
+    '</td><td class="num"' + sv(r.users) + '>' + r.users + '</td></tr>', 4);
+  fill('devices', d.webDevices, r => '<tr><td>' + esc(r.device) + '</td><td class="num"' +
+    sv(r.arrivals) + '>' + r.arrivals + '</td></tr>', 2);
+  makeSortable(document);
+}
+load();
+</script>
+</body>
+</html>`;
 }
 
 function adminReferralsPageHtml() {

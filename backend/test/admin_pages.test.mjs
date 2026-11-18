@@ -19,6 +19,7 @@ const PAGES = [
     ['/admin/deploys', 'Deploy log'],
     ['/admin/delivery', 'Message delivery'],
     ['/admin/coins', 'Coins'],
+    ['/admin/platforms', 'Platforms'],
 ];
 
 for (const [pathname, marker] of PAGES) {
