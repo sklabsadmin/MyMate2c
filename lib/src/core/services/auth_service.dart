@@ -217,7 +217,7 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
   /// Info.plist (GIDServerClientID) instead.
   ///
   /// Android also needs an "Android" OAuth client in the same Google Cloud
-  /// project for package com.iosappv2.ai_boyfriend_chat and the signing
+  /// project for package com.sklabs.mythoslive and the signing
   /// certificate's SHA-1 (one client per certificate: Play app signing,
   /// upload key, debug key). That one is never named in code; without it the
   /// sheet fails with a developer/configuration error.
