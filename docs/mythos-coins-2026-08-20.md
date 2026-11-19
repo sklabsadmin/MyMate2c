@@ -64,9 +64,11 @@ charged, the reply still happens, and the response carries
 did not occur. The sheet reads **Worn** instead of a price. From then on
 every turn with that character carries `PENDANT_NOTE` in the system prompt —
 worded permissively on purpose, because a model told to mention a keepsake
-mentions it in every single reply. Which characters wear one is derived from
-the ledger (`coinPendantWorn`), so there is no second source of truth to keep
-in step.
+mentions it in every single reply. Which characters hold a keepsake is in
+`coin_keepsakes` (migration 0025): the gift row writes the holding through a
+trigger in the same statement, and a sign-in merge moves holdings onto the
+account under the same verdict as the coins (refused merge, nothing moves).
+The ledger cannot carry them itself: a gift row stays under the id that paid.
 
 The way in from the conversation is a **Gift** button in the quick-reply
 strip, beside Photo. Before it existed the only door was the coin chip in the

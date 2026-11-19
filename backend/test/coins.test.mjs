@@ -11,9 +11,10 @@
 // is judged on what it did around that answer.
 
 import { createHmac } from 'node:crypto';
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { testEnv, loadWorker, adminFetch } from './harness.mjs';
+import { testEnv, loadWorker, adminFetch, freshDb } from './harness.mjs';
 
 const USER = 'user_1700000000123';
 
@@ -57,7 +58,7 @@ function stubFetch(t, handler) {
     return calls;
 }
 
-async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.', metadata } = {}) {
+async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.', metadata, claim } = {}) {
     const worker = await loadWorker();
     const body = {
         messages: [{ role: 'user', content: message }],
@@ -71,6 +72,7 @@ async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.'
             'x-user-id': userId,
             'x-character-id': 'odysseus',
             'x-visit-id': 'v_test',
+            ...(claim ? { 'x-wallet-claim': claim } : {}),
         },
         body: JSON.stringify(body),
     });
@@ -84,21 +86,25 @@ async function callChat(env, { gift, userId = USER, message = 'Tell me of Troy.'
     return { status: res.status, json: JSON.parse(text) };
 }
 
-async function callGet(env, { userId = USER } = {}) {
+async function callGet(env, { userId = USER, claim } = {}) {
     const worker = await loadWorker();
     const request = new Request('https://mythos.test/api/wallet', {
         method: 'GET',
-        headers: { 'x-user-id': userId },
+        headers: { 'x-user-id': userId, ...(claim ? { 'x-wallet-claim': claim } : {}) },
     });
     const res = await worker.fetch(request, env, { waitUntil() {}, passThroughOnException() {} });
     return { status: res.status, json: JSON.parse(await res.text()) };
 }
 
-async function callSync(env, { userId = USER, localDate } = {}) {
+async function callSync(env, { userId = USER, localDate, claim } = {}) {
     const worker = await loadWorker();
     const request = new Request('https://mythos.test/api/wallet/sync', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-user-id': userId },
+        headers: {
+            'content-type': 'application/json',
+            'x-user-id': userId,
+            ...(claim ? { 'x-wallet-claim': claim } : {}),
+        },
         body: JSON.stringify({ local_date: localDate, app_version: '1.7.2+76' }),
     });
     const res = await worker.fetch(request, env, { waitUntil() {}, passThroughOnException() {} });
@@ -372,10 +378,11 @@ test('saving a profile pays once, and a nameless save pays nothing', async () =>
 test('the admin api names the missing migration instead of a bare 500', async () => {
     const { env } = coinsEnv();
     // The wallet route says it too, for the client's benefit.
-    // 0017 alters the tables 0014 creates, and 0021 indexes one of them, so
-    // they have to go too.
+    // 0017 alters the tables 0014 creates, 0021 indexes one of them and 0025
+    // hangs a trigger on its ledger, so they have to go too.
     const noTables = testEnv({ skip: [
         '0014_coin_ledger.sql', '0017_coin_packs.sql', '0021_gift_leaderboard_index.sql',
+        '0025_coin_keepsakes.sql',
     ] });
     const res = await adminFetch(
         { ...noTables.env },
@@ -827,4 +834,253 @@ test('a keepsake given to one character is not thanked for by another', async (t
     await res.text();
     await Promise.all(pending);
     assert.ok(!bodies.at(-1).includes('OWED THANKS'), 'Penelope owes nothing for a laurel given to Odysseus');
+});
+
+// --- Keepsakes across a sign-in (0025) ---------------------------------------
+//
+// A keepsake is paid for once, under whichever id gave it, and from then on
+// it is HELD. Holding has to follow the person onto their account the way the
+// coins do, and under the same verdict: an allowed merge carries both, a
+// refused one carries neither. These drive the real Google callback, so the
+// merge ticket travels the way it does in production — in the state cookie.
+
+const LAUREL_NOTE_TEXT = 'crowned you with a golden laurel';
+const PENDANT_NOTE_TEXT = 'wearing a pendant';
+
+function googleEnv() {
+    return coinsEnv({
+        GOOGLE_CLIENT_ID: 'cid',
+        GOOGLE_CLIENT_SECRET: 'csecret',
+        APP_ORIGIN: 'https://mythos.test',
+    });
+}
+
+/// Upstream for tests that both sign in and chat. Google answers as whoever
+/// the callback's `code` names (code → token → userinfo), so one stub serves
+/// any number of accounts; anything else is the model, and its prompts are
+/// kept for the keepsake-note assertions.
+function stubGoogleAndModel(t) {
+    const prompts = [];
+    const ok = (body) => new Response(JSON.stringify(body),
+        { status: 200, headers: { 'content-type': 'application/json' } });
+    stubFetch(t, (url, init) => {
+        if (url.includes('oauth2.googleapis.com/token')) {
+            return ok({ access_token: `tok-${new URLSearchParams(String(init.body)).get('code')}` });
+        }
+        if (url.includes('googleapis.com/oauth2/v3/userinfo')) {
+            const sub = init.headers.Authorization.replace('Bearer tok-', '');
+            return ok({ sub, email: `${sub}@example.com`, name: sub });
+        }
+        prompts.push(init && init.body ? String(init.body) : '');
+        return openAiOk();
+    });
+    return prompts;
+}
+
+/// The real OAuth callback, with the anonymous id and (optionally) a merge
+/// ticket in the state cookie exactly where startGoogleAuth leaves them.
+async function signInWithGoogle(env, { sub, anonId = USER, ticket = '' }) {
+    const worker = await loadWorker();
+    const res = await worker.fetch(new Request(
+        `https://mythos.test/auth/google/callback?state=st&code=${sub}`,
+        { headers: { Cookie: `mymate_google_state=st||${anonId}|${ticket}` } },
+    ), env, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(res.status, 302);
+    assert.doesNotMatch(res.headers.get('location') || '', /failed/);
+    return `google:${sub}`;
+}
+
+async function mergeTicketFor(env, claim, { userId = USER } = {}) {
+    const worker = await loadWorker();
+    const res = await worker.fetch(new Request('https://mythos.test/api/wallet/merge-ticket', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': userId, 'x-wallet-claim': claim },
+        body: '{}',
+    }), env, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(res.status, 200);
+    return JSON.parse(await res.text()).ticket;
+}
+
+function seedCoins(db, userId, amount) {
+    db.prepare(
+        "INSERT INTO coin_ledger (id, user_id, delta, kind, reason) VALUES (?, ?, ?, 'adjust', 'admin')"
+    ).run(`seed:${userId}`, userId, amount);
+}
+
+const heldBy = (wallet) => wallet.keepsakes.map((k) => [k.item, k.ref]);
+
+test('keepsakes given before sign-in are held by the account after it', async (t) => {
+    const { env, db } = googleEnv();
+    const prompts = stubGoogleAndModel(t);
+    seedCoins(db, USER, 2500);
+    await callChat(env, { gift: { id: 'pendant_pre00001', item: 'pendant' } });
+    await callChat(env, { gift: { id: 'laurel_pre000001', item: 'laurel' } });
+    const before = (await callGet(env)).json.wallet;
+    assert.deepEqual(heldBy(before), [['pendant', 'odysseus'], ['laurel', 'odysseus']]);
+
+    const account = await signInWithGoogle(env, { sub: 'gkeep1' });
+
+    // What the profile's "Gifts From You", the sheet's held badges and the
+    // iOS 1.0.3 pendants list all read.
+    const after = (await callGet(env, { userId: account })).json.wallet;
+    assert.deepEqual(heldBy(after), heldBy(before));
+    assert.deepEqual(after.keepsakes.map((k) => k.at), before.keepsakes.map((k) => k.at),
+        'a keepsake keeps the day it was given, not the day of the sign-in');
+    assert.deepEqual(after.pendants, ['odysseus']);
+
+    // They moved with the coins: the anonymous id holds nothing now.
+    const left = (await callGet(env)).json.wallet;
+    assert.deepEqual(left.keepsakes, []);
+    assert.deepEqual(left.pendants, []);
+
+    // The character still remembers both, speaking to the account.
+    await callChat(env, { userId: account, message: 'It is me, signed in.' });
+    assert.ok(prompts.at(-1).includes(LAUREL_NOTE_TEXT) && prompts.at(-1).includes(PENDANT_NOTE_TEXT));
+
+    // And no ledger row was rewritten to get there: the gifts are still paid
+    // for under the id that paid, and both caches still equal their ledgers.
+    assert.equal(rowCount(db, "reason = 'gift' AND user_id = ?", USER), 2);
+    assert.equal(rowCount(db, "reason = 'gift' AND user_id = ?", account), 0);
+    for (const uid of [USER, account]) assert.equal(cachedBalance(db, uid), ledgerSum(db, uid));
+});
+
+test('a keepsake carried across is not sold to the account a second time', async (t) => {
+    // The account's own key for the pendant (gift:pendant:<account>:...) is
+    // new, so the ledger alone would happily charge again.
+    const { env, db } = googleEnv();
+    stubGoogleAndModel(t);
+    seedCoins(db, USER, 600);
+    await callChat(env, { gift: { id: 'pendant_pre00002', item: 'pendant' } });
+    const account = await signInWithGoogle(env, { sub: 'gkeep2' });
+    seedCoins(db, account, 1000); // enough that only the holding can stop the charge
+    const balanceBefore = cachedBalance(db, account);
+
+    // A client that missed the wallet refresh offers it again.
+    const again = await callChat(env, { userId: account, gift: { id: 'pendant_post0002', item: 'pendant' } });
+    assert.equal(again.status, 200);
+    assert.equal(again.json.wallet.gift.charged, false);
+    assert.equal(again.json.wallet.balance, balanceBefore + 8); // the reply grant only
+    assert.equal(rowCount(db, "reason = 'gift' AND user_id = ?", account), 0);
+    assert.equal(cachedBalance(db, account), ledgerSum(db, account));
+});
+
+test('a keepsake crosses even when it took every coin the wallet had', async (t) => {
+    // Merge rows are written only for a non-zero balance, and the laurel buyer
+    // has often spent the lot on it. The keepsake must not depend on change.
+    const { env, db } = googleEnv();
+    stubGoogleAndModel(t);
+    seedCoins(db, USER, 1500);
+    db.prepare(`
+        INSERT INTO coin_ledger (id, user_id, delta, kind, reason, ref, meta_json)
+        VALUES (?, ?, -1500, 'spend', 'gift', 'odysseus', '{"item":"laurel"}')
+    `).run(`gift:laurel:${USER}:odysseus`, USER);
+    assert.equal(cachedBalance(db, USER), 0);
+
+    const account = await signInWithGoogle(env, { sub: 'gkeep3' });
+    assert.equal(rowCount(db, "kind = 'merge'"), 0, 'no coins to move');
+    assert.deepEqual(heldBy((await callGet(env, { userId: account })).json.wallet), [['laurel', 'odysseus']]);
+    assert.equal(cachedBalance(db, account), 100); // the link bonus alone
+});
+
+test('a refused merge carries no keepsakes: a claimed wallet needs its ticket', async (t) => {
+    // The stranger who guessed a device id and signed in with a fresh account
+    // gets the link bonus and nothing else — not the coins (the pack tests pin
+    // that) and not the laurel. The owner, with a ticket, gets both.
+    const { env, db } = googleEnv();
+    const prompts = stubGoogleAndModel(t);
+    const claim = (await callSync(env, { localDate: '2026-10-01', claim: 'new' })).json.claim_token;
+    assert.match(claim, /^[0-9a-f]{64}$/);
+    seedCoins(db, USER, 2000);
+    const given = await callChat(env, { claim, gift: { id: 'laurel_claim0001', item: 'laurel' } });
+    assert.equal(given.json.wallet.gift.charged, true);
+
+    const stranger = await signInWithGoogle(env, { sub: 'gstranger' });
+    const strangerWallet = (await callGet(env, { userId: stranger })).json.wallet;
+    assert.deepEqual(strangerWallet.keepsakes, []);
+    assert.deepEqual(strangerWallet.pendants, []);
+    assert.equal(strangerWallet.balance, 100, 'the link bonus, and only that');
+    await callChat(env, { userId: stranger, message: 'Remember me?' });
+    assert.ok(!prompts.at(-1).includes(LAUREL_NOTE_TEXT), 'the character does not remember a stranger');
+
+    // A forged ticket is no ticket.
+    const forger = await signInWithGoogle(env, { sub: 'gforger', ticket: '9999999999.deadbeef' });
+    assert.deepEqual((await callGet(env, { userId: forger })).json.wallet.keepsakes, []);
+
+    // Neither attempt moved it: still the anonymous wallet's.
+    assert.deepEqual(heldBy((await callGet(env, { claim })).json.wallet), [['laurel', 'odysseus']]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM coin_keepsakes WHERE moved_to IS NOT NULL').get().n, 0);
+
+    // The device holding the claim asks for a ticket, and the laurel follows.
+    const owner = await signInWithGoogle(env, { sub: 'gowner', ticket: await mergeTicketFor(env, claim) });
+    assert.deepEqual(heldBy((await callGet(env, { userId: owner })).json.wallet), [['laurel', 'odysseus']]);
+    assert.deepEqual((await callGet(env, { claim })).json.wallet.keepsakes, []);
+});
+
+test('keepsakes move once: a second account from the same device finds none left', async (t) => {
+    const { env, db } = googleEnv();
+    stubGoogleAndModel(t);
+    seedCoins(db, USER, 600);
+    await callChat(env, { gift: { id: 'pendant_once0001', item: 'pendant' } });
+
+    const first = await signInWithGoogle(env, { sub: 'gfirst' });
+    const second = await signInWithGoogle(env, { sub: 'gsecond' });
+    assert.deepEqual(heldBy((await callGet(env, { userId: first })).json.wallet), [['pendant', 'odysseus']]);
+    assert.deepEqual((await callGet(env, { userId: second })).json.wallet.keepsakes, []);
+
+    // One live holding; the original stays as history, saying where it went.
+    const rows = db.prepare('SELECT user_id, from_user_id, moved_to FROM coin_keepsakes ORDER BY id').all();
+    assert.deepEqual(rows.map((r) => ({ ...r })), [
+        { user_id: USER, from_user_id: null, moved_to: first },
+        { user_id: first, from_user_id: USER, moved_to: null },
+    ]);
+});
+
+test('a keepsake that moved away does not stop its old holder holding a new one', async (t) => {
+    // Uniqueness covers live holdings only (a partial index, 0025). As a key
+    // on (user, item, character), a holder whose carried-in pendant had since
+    // moved on would be charged 500 for a new one and the holding dropped.
+    const { env, db } = coinsEnv();
+    stubFetch(t, openAiOk);
+    db.prepare(`
+        INSERT INTO coin_keepsakes (user_id, item, ref, given_at, gift_id, from_user_id, moved_to)
+        VALUES (?, 'pendant', 'odysseus', '2026-09-01 00:00:00',
+                'gift:pendant:user_1700000000555:odysseus', 'user_1700000000555', 'google:elsewhere')
+    `).run(USER);
+    seedCoins(db, USER, 600);
+
+    const res = await callChat(env, { gift: { id: 'pendant_anew0001', item: 'pendant' } });
+    assert.equal(res.json.wallet.gift.charged, true);
+    assert.deepEqual(heldBy((await callGet(env)).json.wallet), [['pendant', 'odysseus']]);
+});
+
+test('the migration backfills every keepsake already given, and nothing else', () => {
+    // 0025 lands on a production ledger that already holds pendants. The
+    // backfill applies the trigger's rule to rows written before the table
+    // existed — including ids whose user and character contain colons.
+    const db = freshDb({ skip: ['0025_coin_keepsakes.sql'] });
+    const gift = db.prepare(`
+        INSERT INTO coin_ledger (id, user_id, delta, kind, reason, ref, created_at)
+        VALUES (?, ?, ?, 'spend', 'gift', ?, ?)
+    `);
+    gift.run(`gift:pendant:${USER}:odysseus`, USER, -500, 'odysseus', '2026-09-01 10:00:00');
+    gift.run('gift:laurel:google:abc:Hermes: Herald of the Gods', 'google:abc', -1500,
+        'Hermes: Herald of the Gods', '2026-09-02 10:00:00');
+    gift.run('gift:roses_00000001', USER, -50, 'odysseus', '2026-09-03 10:00:00'); // repeatable
+
+    db.exec(fs.readFileSync(new URL('../migrations/0025_coin_keepsakes.sql', import.meta.url), 'utf8'));
+
+    const rows = db.prepare(
+        'SELECT user_id, item, ref, given_at, gift_id, from_user_id, moved_to FROM coin_keepsakes ORDER BY id'
+    ).all();
+    assert.deepEqual(rows.map((r) => ({ ...r })), [
+        {
+            user_id: USER, item: 'pendant', ref: 'odysseus', given_at: '2026-09-01 10:00:00',
+            gift_id: `gift:pendant:${USER}:odysseus`, from_user_id: null, moved_to: null,
+        },
+        {
+            user_id: 'google:abc', item: 'laurel', ref: 'Hermes: Herald of the Gods',
+            given_at: '2026-09-02 10:00:00', gift_id: 'gift:laurel:google:abc:Hermes: Herald of the Gods',
+            from_user_id: null, moved_to: null,
+        },
+    ]);
 });
