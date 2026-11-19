@@ -90,12 +90,12 @@ test('as shipped, nothing is stopped: no minimum build, no maintenance', () => {
     const served = publicCatalogue('https://x.test', SHIPPED).app;
     assert.equal(served.maintenance, false);
     assert.deepEqual(served.min_build, { ios: 0, android: 0 });
-    // The Play listing lives under the old package id (applicationId in
-    // android/app/build.gradle.kts), not the iOS bundle id. A link to any
-    // other id opens a page that does not exist.
+    // Mythos Live is its own Play app (applicationId in
+    // android/app/build.gradle.kts), not the old MyMate listing. A link to
+    // any other id opens the wrong page.
     assert.equal(
         served.update_url.android,
-        'https://play.google.com/store/apps/details?id=com.iosappv2.ai_boyfriend_chat',
+        'https://play.google.com/store/apps/details?id=com.sklabs.mythoslive',
     );
 });
 

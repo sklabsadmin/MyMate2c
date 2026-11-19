@@ -35,9 +35,7 @@ if (hasReleaseSigning) {
 }
 
 android {
-    // Where R and MainActivity resolve. Deliberately NOT the applicationId
-    // below: the namespace follows the brand, the applicationId follows the
-    // Play listing.
+    // Where R and MainActivity resolve. The same as the applicationId below.
     namespace = "com.sklabs.mythoslive"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
@@ -54,14 +52,13 @@ android {
     }
 
     defaultConfig {
-        // The Google Play identity, and it cannot change: the listing the
-        // previous owner published ("MyMate: AI Boyfriend Chat", 164 installs,
-        // last release versionCode 22) lives under this package, and an update
-        // only reaches those users if the bundle carries the same name. Adam
-        // chose to update that listing (2026-10-09) rather than start a new
-        // one. It differs from the iOS bundle id (com.sklabs.mythoslive),
-        // which is fine; the stores never compare them.
-        applicationId = "com.iosappv2.ai_boyfriend_chat"
+        // The Google Play identity. Mythos Live is its OWN Play app, with the
+        // same id as the iOS bundle and the Kotlin namespace. Until 2026-11-19
+        // this was com.iosappv2.ai_boyfriend_chat, so that builds would update
+        // the previous owner's "MyMate: AI Boyfriend Chat" listing; Adam
+        // reversed that on 2026-11-19: Mythos Live must not ship as MyMate.
+        // A Play package can never change once an app is created under it.
+        applicationId = "com.sklabs.mythoslive"
         // 26 is what flutter_local_notifications' desugaring was set up for,
         // and covers effectively every active device. Flutter picks the
         // compile/target SDK so Play's yearly target-API requirement is met by

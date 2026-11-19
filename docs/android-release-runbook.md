@@ -1,3 +1,5 @@
+> **SUPERSEDED IN PART, 2026-11-19.** Mythos Live is now its own Play app, package `com.sklabs.mythoslive`. It no longer ships under the MyMate listing or `com.iosappv2.ai_boyfriend_chat`. Read `docs/DECISION-android-new-play-app-2026-11-19.md` first.
+
 # Android release runbook
 
 How to get Mythos Live from this repo onto a phone and onto Google Play.

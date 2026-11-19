@@ -16,10 +16,16 @@ test('a second dawn offering is what counts as a return, not a second visit', as
   const grant = db.prepare(
     "INSERT INTO coin_ledger (id, user_id, created_at, delta, kind, reason) VALUES (?, ?, ?, 20, 'grant', 'daily')"
   );
+  // Dated relative to today, not fixed: these were literal August dates
+  // inside a 90-day window, and the test began failing on the day they aged
+  // out of it (2026-11-19).
+  const dayAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const first = dayAgo(11);
+  const second = dayAgo(10);
   // A came back: dailies on two different days. B claimed once and vanished.
-  grant.run('d1', 'user_1700000000001', '2026-08-20 08:00:00');
-  grant.run('d2', 'user_1700000000001', '2026-08-21 09:00:00');
-  grant.run('d3', 'user_1700000000002', '2026-08-21 10:00:00');
+  grant.run('d1', 'user_1700000000001', `${first} 08:00:00`);
+  grant.run('d2', 'user_1700000000001', `${second} 09:00:00`);
+  grant.run('d3', 'user_1700000000002', `${second} 10:00:00`);
 
   const res = await adminFetch(env, '/api/admin/coins?days=90');
   assert.equal(res.status, 200);
@@ -27,10 +33,10 @@ test('a second dawn offering is what counts as a return, not a second visit', as
   assert.equal(ret.claimers, 2);
   assert.equal(ret.returned, 1, 'only A claimed on a second day');
   assert.equal(ret.best_streak_days, 2);
-  // The 21st: two claims, one from a returning user, one first-timer.
-  const day21 = ret.by_day.find((r) => r.day === '2026-08-21');
-  assert.equal(day21.claims, 2);
-  assert.equal(day21.repeat_claims, 1);
+  // The second day: two claims, one from a returning user, one first-timer.
+  const day2 = ret.by_day.find((r) => r.day === second);
+  assert.equal(day2.claims, 2);
+  assert.equal(day2.repeat_claims, 1);
 });
 
 test('a wallet full of automatic grants is not an engaged user', async () => {
